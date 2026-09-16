@@ -92,6 +92,65 @@ stockRoutes.post('/opening', async (ctx) => {
   return { ok: true, count };
 });
 
+/* ------------------ Excel'den toplu acilis stogu ------------------- */
+/**
+ * Sablondaki "Acilis Stogu" sekmesini iceri alir.
+ * Urun barkod ile, barkod yoksa ad ile; kampus ise kodu ile eslestirilir.
+ * Boylece kullanici id bilmek zorunda kalmaz.
+ */
+stockRoutes.post('/opening-import', async (ctx) => {
+  requireWrite(ctx.user);
+  const openingDate = date(ctx.body.date, 'Acilis tarihi', { def: today() });
+  const items = arr(ctx.body.items, 'Satirlar', { required: true, min: 1 });
+  if (items.length > 5000) throw badRequest('Tek seferde en fazla 5000 satir aktarilabilir.');
+
+  const campuses = new Map(
+    all('SELECT id, code, name FROM campuses').map((c) => [c.code.toLocaleUpperCase('tr'), c])
+  );
+  const result = { imported: 0, skipped: 0, errors: [], byCampus: {} };
+
+  tx(() => {
+    for (const [i, raw] of items.entries()) {
+      const rowNo = raw.__row ?? i + 1;
+      try {
+        const code = str(raw.campusCode, `Satir ${rowNo} kampus kodu`, { required: true, max: 20 }).toLocaleUpperCase('tr');
+        const campus = campuses.get(code);
+        if (!campus) throw badRequest(`"${code}" kodlu kampus bulunamadi.`);
+        assertCampusAccess(ctx.user, campus.id);
+
+        const barcode = str(raw.barcode, 'Barkod', { max: 64 });
+        const name = str(raw.productName, 'Urun adi', { max: 200 });
+        const product = barcode
+          ? get('SELECT * FROM products WHERE barcode = ?', [barcode])
+          : (name ? get('SELECT * FROM products WHERE lower(name) = lower(?)', [name]) : null);
+        if (!product) throw badRequest(`Urun bulunamadi (${barcode || name || '-'}). Once urun listesini yukleyin.`);
+
+        const quantity = num(raw.quantity, `Satir ${rowNo} miktar`, { required: true, min: 0 });
+        if (quantity === 0) { result.skipped += 1; continue; }
+
+        assertNotLocked(campus.id, openingDate);
+
+        const prices = effectivePrices(campus.id, product.id);
+        addMovement({
+          campusId: campus.id, productId: product.id, type: 'ACILIS', quantity,
+          unitCost: prices?.purchase_price ?? product.purchase_price, date: openingDate,
+          refType: 'opening', note: 'Excel ile acilis stogu', userId: ctx.user.id,
+        });
+        result.imported += 1;
+        result.byCampus[campus.name] = (result.byCampus[campus.name] || 0) + 1;
+      } catch (err) {
+        result.errors.push({ row: rowNo, message: err.message });
+      }
+    }
+  });
+
+  logAudit({
+    user: ctx.user, action: 'OPENING_STOCK', entity: 'stock_movements',
+    detail: { imported: result.imported, errors: result.errors.length, openingDate }, ip: ctx.ip,
+  });
+  return result;
+});
+
 /* ----------------------------- Fire ------------------------------- */
 export const wasteRoutes = new Router();
 

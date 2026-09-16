@@ -30,6 +30,13 @@ export async function renderProducts(root) {
       searchInput, catSelect,
       el('div', { style: 'flex:1' }),
       canWrite() ? el('button.btn.btn-primary', { text: '+ Yeni Ürün', onclick: () => openProductForm(cats.items, null, draw) }) : null,
+      canWrite() ? el('button.btn', {
+        text: '📊 Excel\'den Aktar',
+        onclick: async () => {
+          const { openImportWizard } = await import('./import.js');
+          openImportWizard(draw);
+        },
+      }) : null,
       canWrite() ? el('button.btn', { text: '🏷️ Kategoriler', onclick: () => openCategories(cats.items, draw) }) : null,
       el('button.btn', { text: '⬇ Excel (CSV)', onclick: () => api.download('/api/products', { campusId: state.campusId, ...filters }) }),
     ]));

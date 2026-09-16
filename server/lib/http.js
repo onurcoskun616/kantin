@@ -78,6 +78,8 @@ const MIME = {
   '.jpg': 'image/jpeg',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.csv': 'text/csv; charset=utf-8',
   '.webmanifest': 'application/manifest+json',
 };
 

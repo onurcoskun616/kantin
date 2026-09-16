@@ -293,6 +293,81 @@ describe('Rol ve yetki kontrolleri', () => {
   });
 });
 
+
+/* ------------------------- Excel ice aktarma ----------------------- */
+describe('Toplu ice aktarma', () => {
+  let campusId; let campusCode;
+
+  test('urun listesi kategori adiyla birlikte aktarilir', async () => {
+    // Onceki testlerde sayim kesinlesmemis bir kampus kullan; aksi halde
+    // gecmise donuk acilis stogu kilidi devreye girer (bkz. assertNotLocked)
+    const campus = (await ok('GET', '/api/campuses')).items[2];
+    campusId = campus.id;
+    campusCode = campus.code;
+
+    const r = await ok('POST', '/api/products/bulk-import', {
+      items: [
+        { __row: 2, barcode: 'IMP-001', name: 'İçe Aktarılan Ayran', categoryName: 'Yeni Kategori',
+          unit: 'ADET', purchasePrice: 8.5, salePrice: 13, vatRate: 1, criticalStock: 24 },
+        { __row: 3, barcode: null, name: 'İçe Aktarılan Tost', categoryName: 'Yeni Kategori',
+          purchasePrice: 18, salePrice: 35, vatRate: 10 },
+        { __row: 4, name: '', purchasePrice: 1, salePrice: 2 },
+      ],
+    });
+    assert.equal(r.created, 2);
+    assert.equal(r.categoriesCreated, 1, 'olmayan kategori otomatik olusturulmali');
+    assert.equal(r.errors.length, 1, 'adi bos satir hata vermeli');
+    assert.equal(r.errors[0].row, 4);
+  });
+
+  test('ayni barkod tekrar yuklenirse yeni kayit acilmaz, guncellenir', async () => {
+    const r = await ok('POST', '/api/products/bulk-import', {
+      items: [{ barcode: 'IMP-001', name: 'İçe Aktarılan Ayran', purchasePrice: 9, salePrice: 14, vatRate: 1 }],
+    });
+    assert.equal(r.created, 0);
+    assert.equal(r.updated, 1);
+
+    const list = await ok('GET', '/api/products?search=İçe Aktarılan Ayran');
+    assert.equal(list.items.length, 1, 'mukerrer kayit olusmamali');
+    assert.equal(list.items[0].purchase_price, 9);
+  });
+
+  test('barkodsuz urun ada gore eslestirilir', async () => {
+    const r = await ok('POST', '/api/products/bulk-import', {
+      items: [{ name: 'İçe Aktarılan Tost', purchasePrice: 20, salePrice: 38, vatRate: 10 }],
+    });
+    assert.equal(r.created, 0);
+    assert.equal(r.updated, 1);
+  });
+
+  test('acilis stogu kampus koduyla aktarilir', async () => {
+    const r = await ok('POST', '/api/stock/opening-import', {
+      date: daysAgo(30),
+      items: [
+        { __row: 2, barcode: 'IMP-001', campusCode, quantity: 48 },
+        { __row: 3, productName: 'İçe Aktarılan Tost', campusCode, quantity: 12 },
+        { __row: 4, barcode: 'IMP-001', campusCode, quantity: 0 },
+        { __row: 5, barcode: 'IMP-001', campusCode: 'YOK', quantity: 5 },
+        { __row: 6, barcode: 'OLMAYAN-BARKOD', campusCode, quantity: 5 },
+      ],
+    });
+    assert.equal(r.imported, 2);
+    assert.equal(r.skipped, 1, 'miktari sifir olan satir atlanmali');
+    assert.equal(r.errors.length, 2, 'gecersiz kampus ve bulunamayan urun hata vermeli');
+
+    const stock = await ok('GET', `/api/stock?campusId=${campusId}`);
+    const ayran = stock.items.find((i) => i.barcode === 'IMP-001');
+    assert.equal(ayran.stock_qty, 48);
+    const tost = stock.items.find((i) => i.name === 'İçe Aktarılan Tost');
+    assert.equal(tost.stock_qty, 12);
+  });
+
+  test('bos liste reddedilir', async () => {
+    assert.equal((await api('POST', '/api/products/bulk-import', { items: [] })).status, 400);
+    assert.equal((await api('POST', '/api/stock/opening-import', { items: [] })).status, 400);
+  });
+});
+
 /* --------------------------- Denetim izi --------------------------- */
 describe('Denetim izi', () => {
   test('islemler kayit altina alinir', async () => {

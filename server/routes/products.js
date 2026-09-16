@@ -201,37 +201,74 @@ productRoutes.post('/bulk-import', async (ctx) => {
   requireWrite(ctx.user);
   const rows = Array.isArray(ctx.body.items) ? ctx.body.items : null;
   if (!rows || !rows.length) throw badRequest('Iceri aktarilacak satir bulunamadi.');
-  if (rows.length > 2000) throw badRequest('Tek seferde en fazla 2000 satir aktarilabilir.');
+  if (rows.length > 5000) throw badRequest('Tek seferde en fazla 5000 satir aktarilabilir.');
 
-  const result = { created: 0, updated: 0, errors: [] };
+  const result = { created: 0, updated: 0, categoriesCreated: 0, errors: [] };
   tx(() => {
+    // Kategori adlarini id'ye cevir; olmayan kategoriyi olustur
+    const categories = new Map(
+      all('SELECT id, name FROM categories').map((c) => [c.name.toLocaleLowerCase('tr'), c.id])
+    );
+    const resolveCategory = (raw) => {
+      const name = str(raw.categoryName, 'Kategori', { max: 80 });
+      if (!name) return int(raw.categoryId, 'Kategori', { def: null });
+      const key = name.toLocaleLowerCase('tr');
+      if (categories.has(key)) return categories.get(key);
+      const id = insert('INSERT INTO categories (name, sort_order) VALUES (?, ?)', [name, categories.size]);
+      categories.set(key, id);
+      result.categoriesCreated += 1;
+      return id;
+    };
+
     rows.forEach((raw, idx) => {
       try {
-        const data = parseProduct(raw);
-        const existing = data.barcode ? get('SELECT * FROM products WHERE barcode = ?', [data.barcode]) : null;
+        const data = parseProduct({ ...raw, categoryId: resolveCategory(raw) });
+        // Once barkodla, barkod yoksa ad ile eslestir (barkodsuz urunler icin)
+        const existing = data.barcode
+          ? get('SELECT * FROM products WHERE barcode = ?', [data.barcode])
+          : get('SELECT * FROM products WHERE barcode IS NULL AND lower(name) = lower(?)', [data.name]);
+
         if (existing) {
           run(
             `UPDATE products SET name = ?, category_id = ?, unit = ?, purchase_price = ?, sale_price = ?,
-                    vat_rate = ?, critical_stock = ?, updated_at = datetime('now') WHERE id = ?`,
+                    vat_rate = ?, critical_stock = ?, max_price = ?, is_active = 1, updated_at = datetime('now')
+              WHERE id = ?`,
             [data.name, data.categoryId, data.unit, data.purchasePrice, data.salePrice,
-             data.vatRate, data.criticalStock, existing.id]
+             data.vatRate, data.criticalStock, data.maxPrice, existing.id]
           );
+          if (existing.purchase_price !== data.purchasePrice || existing.sale_price !== data.salePrice) {
+            insert(
+              `INSERT INTO price_history (product_id, campus_id, old_purchase, new_purchase, old_sale, new_sale, effective_date, changed_by)
+               VALUES (?, NULL, ?, ?, ?, ?, ?, ?)`,
+              [existing.id, existing.purchase_price, data.purchasePrice,
+               existing.sale_price, data.salePrice, today(), ctx.user.id]
+            );
+          }
           result.updated += 1;
         } else {
-          insert(
-            `INSERT INTO products (barcode, name, category_id, unit, purchase_price, sale_price, vat_rate, critical_stock)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          const id = insert(
+            `INSERT INTO products (barcode, name, category_id, unit, purchase_price, sale_price, vat_rate,
+                                   critical_stock, max_price)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [data.barcode, data.name, data.categoryId, data.unit, data.purchasePrice,
-             data.salePrice, data.vatRate, data.criticalStock]
+             data.salePrice, data.vatRate, data.criticalStock, data.maxPrice]
+          );
+          insert(
+            `INSERT INTO price_history (product_id, campus_id, old_purchase, new_purchase, old_sale, new_sale, effective_date, changed_by)
+             VALUES (?, NULL, NULL, ?, NULL, ?, ?, ?)`,
+            [id, data.purchasePrice, data.salePrice, today(), ctx.user.id]
           );
           result.created += 1;
         }
       } catch (err) {
-        result.errors.push({ row: idx + 1, message: err.message });
+        result.errors.push({ row: raw.__row ?? idx + 1, name: raw.name ?? '', message: err.message });
       }
     });
   });
-  logAudit({ user: ctx.user, action: 'BULK_IMPORT', entity: 'products', detail: result, ip: ctx.ip });
+  logAudit({
+    user: ctx.user, action: 'BULK_IMPORT', entity: 'products',
+    detail: { created: result.created, updated: result.updated, errors: result.errors.length }, ip: ctx.ip,
+  });
   return result;
 });
 

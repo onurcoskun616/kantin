@@ -84,21 +84,36 @@ Kantin dışarıya kiralıysa ciro üzerinden alınan okul payı otomatik hesapl
 
 ### Öncelik 1 — Kullanıma geçtikten hemen sonra
 
-**Yazar kasa / POS entegrasyonu**
-Şu anda satış adedi sayımdan geriye doğru hesaplanıyor. Kasadan ürün bazlı
-satış verisi alınabilirse (günlük dosya aktarımı veya API), fark **gün bazında**
-görülür; aylık sayımı beklemeye gerek kalmaz. Hangi kasa/POS yazılımını
-kullandığınızı öğrenmem yeterli. Bu, sistemin denetim gücünü en çok artıracak
-tek geliştirmedir.
+**Sayım disiplini — kasa yazılımı olmadığı için en kritik konu**
+Kasa/POS yazılımı kullanmadığınız için ürün bazında satış verisi hiçbir yerden
+gelmiyor. Bu, sayımı **tek denetim aracınız** yapar: iki sayım arasında ne olduğunu
+başka türlü göremezsiniz. Bu nedenle:
+
+- İlk 3 ay **haftalık** sayım yapın. Rakamlar oturduktan sonra 15 günde bire,
+  en son ayda bire düşürün. Sayım aralığı uzadıkça açığın hangi gün ve hangi
+  üründen kaynaklandığını tespit etmek zorlaşır.
+- Hızlandırmak için sayımı kategoriye bölün: içecekleri Pazartesi, unlu mamulleri
+  Salı saydırmak yerine **tümünü aynı gün** sayın — yarım sayım mutabakatı bozar.
+- Gün sonu nakit sayımını kasa föyüne yazıp sisteme aynı gün girin. Ertesi güne
+  bırakılan ciro girişleri en sık hata kaynağıdır.
+
+**İleride yazar kasa (ÖKC) eklerseniz**
+Ürün bazlı günlük satış verisi alınabilirse fark **gün bazında** görülür, sayımı
+beklemeye gerek kalmaz. Sistem buna hazır: `stock_movements` tablosuna `SATIS`
+tipinde günlük hareket yazacak bir içe aktarma ucu eklemek yeterli. Ayrıca
+kantinin yazar kasa kullanma yükümlülüğü olup olmadığını mali müşavirinize
+danışmanızı öneririm — işletme biçimine (okul kendi işletiyor / kiraya verilmiş)
+göre değişir.
 
 **Otomatik yedekleme görevi**
 `scripts/yedekle.sh` her gece 02:00'de cron ile çalışacak şekilde kurulmalı ve
 yedekler ikinci bir konuma (bulut deposu) kopyalanmalı.
 
-**Excel'den ürün listesi içe aktarma ekranı**
-API hazır (`POST /api/products/bulk-import`), arayüzde dosya yükleme ekranı
-eklenmeli. Mevcut ürün listeniz Excel'deyse ilk kurulum saatler yerine
-dakikalar sürer.
+**Excel'den ürün listesi içe aktarma**  ✅ tamamlandı
+Şablon `docs/sablonlar/urun-listesi-sablonu.xlsx` dosyasındadır; uygulamada
+Ürünler ekranındaki "Excel'den Aktar" düğmesinden hem indirebilir hem
+yükleyebilirsiniz. Ürün listesiyle birlikte kampüs bazlı açılış stokları da
+aynı dosyadan aktarılır.
 
 ### Öncelik 2 — İlk dönem içinde
 

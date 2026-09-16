@@ -1,0 +1,48 @@
+# Topkapi Kantin Yonetim Sistemi - systemd servis birimi
+#
+# Kurulum:
+#   sudo cp deploy/kantin.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now kantin
+
+[Unit]
+Description=Topkapi Okullari Kantin Yonetim Sistemi
+Documentation=https://github.com/onurcoskun616/kantin
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kantin
+Group=kantin
+WorkingDirectory=/opt/kantin
+ExecStart=/usr/bin/node server/index.js
+EnvironmentFile=/opt/kantin/.env
+Environment=NODE_ENV=production
+
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Gunlukler journald'a yazilir: journalctl -u kantin -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kantin
+
+# Guvenlik siniflandirmasi - servis yalnizca kendi dizinine yazabilir
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/kantin/data /opt/kantin/backups
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

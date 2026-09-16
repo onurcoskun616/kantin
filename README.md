@@ -98,6 +98,15 @@ npm run seed -- --demo      # 60 günlük örnek alım ve ciro verisi üretir
 npm run reset -- --demo     # her şeyi siler ve baştan örnek veri kurar
 ```
 
+### Gerçek kullanıma geçerken
+
+```bash
+npm run seed -- --bos       # örnek ürün/tedarikçi listesi OLMADAN kurar
+```
+
+`--bos` yalnızca 5 kampüsü (İkitelli OSB, İstanbul OSB, Esenyurt, Kıraç, Çorlu),
+kategorileri ve yönetici hesabını oluşturur. Ürünleri Excel şablonuyla yüklersiniz.
+
 ### Docker ile
 
 ```bash
@@ -112,15 +121,56 @@ npm test     # 24 uçtan uca API testi
 
 ---
 
+## Excel ile ürün listesi yükleme
+
+`docs/sablonlar/urun-listesi-sablonu.xlsx` dosyasını doldurup uygulamadaki
+**Ürünler → Excel'den Aktar** düğmesiyle yükleyin. Şablonu uygulamanın içinden
+de indirebilirsiniz.
+
+Şablonda üç sekme var:
+
+| Sekme | İçerik |
+|---|---|
+| Nasıl Doldurulur | Alan açıklamaları, fiyat/KDV kuralları, kampüs kodları |
+| Ürün Listesi | Doldurulacak ana liste — birim kâr ve marj anında hesaplanır |
+| Açılış Stoğu | İsteğe bağlı: kampüs kodu + miktar ile ilk stokları aynı dosyadan aktarın |
+
+- Sarı hücreler doldurulur, gri hücreler otomatik hesaplanır.
+- Zararına satış kırmızı, %20 altı marj sarı görünür — yüklemeden önce hatayı yakalarsınız.
+- Yükleme öncesi önizleme gösterilir; onaylamadan hiçbir kayıt oluşmaz.
+- Barkodu daha önce yüklenmiş ürün tekrar eklenmez, **güncellenir** — toplu fiyat
+  güncellemesi için de aynı şablonu kullanabilirsiniz.
+- `.xlsx` ve `.csv` desteklenir. Şablonu kullanmasanız da olur; başlıkları tanıyan
+  bir eşleştirme var (Ürün Adı / Alış Fiyatı / Satış Fiyatı yeterli).
+
+Şablonu yeniden üretmek için: `python3 scripts/sablon-olustur.py`
+
+---
+
+## Sunucuya kurulum (VPS)
+
+Ubuntu üzerinde systemd + nginx + HTTPS + otomatik yedekleme içeren adım adım
+rehber: **[docs/VPS-KURULUM.md](docs/VPS-KURULUM.md)**
+
+Hazır dosyalar `deploy/` klasöründedir (systemd servisi, nginx yapılandırması,
+cron yedekleme görevi).
+
+---
+
 ## Sisteme geçiş sırası
 
-1. **Kampüsler** ekranından 5 kampüsün adını, öğrenci sayısını ve (varsa) okul pay oranını girin.
+1. **Kampüsler** ekranından 5 kampüsün öğrenci sayısını ve (varsa) okul pay oranını girin.
+   Kampüsler kurulumda hazır gelir: İkitelli OSB, İstanbul OSB, Esenyurt, Kıraç, Çorlu.
 2. **Kullanıcılar** ekranından her kampüse bir kantin görevlisi ve bir kampüs yöneticisi tanımlayın.
-3. **Ürünler** ekranından ürün listesini, barkodları, alış/satış fiyatlarını ve KDV oranlarını girin.
+   Sayımı giren ile kesinleştiren farklı kişi olmalıdır — sistem bunu zorunlu kılar.
+3. **Ürünler → Excel'den Aktar** ile ürün listesini yükleyin (yukarıdaki bölüme bakın).
 4. **Tedarikçiler** ekranından çalıştığınız firmaları tanımlayın.
-5. **Stok Durumu → Açılış Stoğu Gir** ile her kampüsün mevcut rafını sayarak sisteme girin.
+5. **Açılış stoğunu** girin — Excel şablonunun "Açılış Stoğu" sekmesinden ya da
+   **Stok Durumu → Açılış Stoğu Gir** ekranından.
 6. Bu tarihten itibaren **her mal girişini** ve **her günün cirosunu** günü gününe işleyin.
-7. Ay sonunda (veya 15 günde bir) **Sayım** yapıp kesinleştirin — mutabakat raporu otomatik çıkar.
+7. **Sayım** yapıp kesinleştirin — mutabakat raporu otomatik çıkar.
+   Kasa yazılımı kullanılmadığı için ilk 3 ay **haftalık** sayım önerilir;
+   rakamlar oturunca 15 günde bire, sonra ayda bire düşürebilirsiniz.
 
 ---
 
@@ -137,8 +187,9 @@ npm test     # 24 uçtan uca API testi
 KDV devlete ait olduğu için kârlılık her zaman KDV hariç netler üzerinden
 hesaplanır; aksi halde kâr yapay olarak yüksek görünür.
 
-Yerleşik KDV oranları örnek değerlerdir — kendi mali müşavirinizle doğrulayıp
-ürün kartlarından güncelleyin.
+KDV oranını **tedarikçi faturanızdan** okuyup ürün kartına (veya Excel şablonuna)
+yazmanız yeterlidir. Süt, ekmek ve taze meyve gibi temel gıdalarda oran düşük;
+gazlı içecek ve kırtasiyede yüksektir. Emin olmadığınız üründe faturaya bakın.
 
 ---
 
@@ -157,10 +208,17 @@ public/
   index.html        Tek sayfa uygulama kabuğu
   css/app.css       Arayüz stilleri (açık/koyu tema)
   js/pages/         Ekranlar
+  js/xlsx.js        Tarayıcı içi Excel okuyucu (harici kütüphane yok)
 test/
   api.test.js       Uçtan uca API testleri
+deploy/             systemd, nginx ve cron dosyaları
+scripts/
+  yedekle.sh        Veritabanı yedekleme
+  sablon-olustur.py Excel şablonu üretici
 docs/
-  YOL-HARITASI.md   Sonraki aşama önerileri
+  VPS-KURULUM.md    Sunucu kurulum rehberi
+  YOL-HARITASI.md   Atlanan noktalar ve sonraki aşama önerileri
+  sablonlar/        Excel şablonu
 ```
 
 ---

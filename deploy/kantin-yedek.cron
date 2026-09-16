@@ -1,0 +1,13 @@
+# Topkapi Kantin - otomatik yedekleme
+# Kurulum:  sudo cp deploy/kantin-yedek.cron /etc/cron.d/kantin-yedek
+#           sudo chmod 644 /etc/cron.d/kantin-yedek
+
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+MAILTO=""
+
+# Her gece 02:00'de yedek al, son 30 yedegi sakla
+0 2 * * * kantin BACKUP_KEEP=30 /opt/kantin/scripts/yedekle.sh >> /var/log/kantin-yedek.log 2>&1
+
+# Her Pazar 03:00'te haftalik yedegi ikinci konuma kopyala (rclone kuruluysa)
+# 0 3 * * 0 kantin rclone copy /opt/kantin/backups remote:kantin-yedek --max-age 7d >> /var/log/kantin-yedek.log 2>&1

@@ -11,11 +11,11 @@ import { db, get, all, insert, run, migrate, tx } from './db.js';
 import { hashPassword } from './lib/auth.js';
 
 const CAMPUSES = [
-  { code: 'MRK', name: 'Topkapı Okulları - Merkez Kampüs', studentCount: 850 },
-  { code: 'BHC', name: 'Topkapı Okulları - Bahçelievler Kampüs', studentCount: 620 },
-  { code: 'ATK', name: 'Topkapı Okulları - Ataköy Kampüs', studentCount: 540 },
-  { code: 'BYK', name: 'Topkapı Okulları - Beylikdüzü Kampüs', studentCount: 730 },
-  { code: 'CKM', name: 'Topkapı Okulları - Çekmeköy Kampüs', studentCount: 480 },
+  { code: 'IKT', name: 'Topkapı Okulları - İkitelli OSB Kampüsü', studentCount: 0 },
+  { code: 'IST', name: 'Topkapı Okulları - İstanbul OSB Kampüsü', studentCount: 0 },
+  { code: 'ESN', name: 'Topkapı Okulları - Esenyurt Kampüsü', studentCount: 0 },
+  { code: 'KRC', name: 'Topkapı Okulları - Kıraç Kampüsü', studentCount: 0 },
+  { code: 'CRL', name: 'Topkapı Okulları - Çorlu Kampüsü', studentCount: 0 },
 ];
 
 // Kurulumda bu listeyi kendi kampüs adlarınızla değiştirin veya uygulamadaki
@@ -56,7 +56,12 @@ const SUPPLIERS = [
   ['Öz Kuruyemiş Toptan', '0212 000 00 04'],
 ];
 
-export function ensureSeedData() {
+/**
+ * @param {{withExamples?: boolean}} options
+ *   withExamples false ise ornek urun ve tedarikci listesi eklenmez
+ *   (gercek kullanima gecerken tercih edilmelidir).
+ */
+export function ensureSeedData({ withExamples = true } = {}) {
   const userCount = get('SELECT COUNT(*) AS c FROM users').c;
   if (userCount === 0) {
     const id = insert(
@@ -76,6 +81,11 @@ export function ensureSeedData() {
 
   if (get('SELECT COUNT(*) AS c FROM categories').c === 0) {
     CATEGORIES.forEach((name, i) => insert('INSERT INTO categories (name, sort_order) VALUES (?, ?)', [name, i]));
+  }
+
+  if (!withExamples) {
+    console.log('[KURULUM] Ornek urun ve tedarikci listesi atlandi (--bos).');
+    return;
   }
 
   if (get('SELECT COUNT(*) AS c FROM products').c === 0) {
@@ -192,7 +202,7 @@ if (process.argv[1] && process.argv[1].endsWith('seed.js')) {
     db.exec('PRAGMA foreign_keys = ON');
     console.log('[RESET] Tum veriler silindi.');
   }
-  ensureSeedData();
+  ensureSeedData({ withExamples: !process.argv.includes('--bos') });
   if (process.argv.includes('--demo')) generateDemo();
   console.log('Tamamlandi.');
 }
