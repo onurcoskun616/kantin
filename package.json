@@ -1,0 +1,19 @@
+{
+  "name": "topkapi-kantin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Topkapi Okullari - Cok kampuslu kantin stok, ciro ve karlilik denetim sistemi",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "seed": "node server/seed.js",
+    "reset": "node server/seed.js --reset",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {},
+  "license": "UNLICENSED"
+}

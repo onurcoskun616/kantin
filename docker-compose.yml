@@ -1,0 +1,21 @@
+services:
+  kantin:
+    build: .
+    container_name: topkapi-kantin
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - kantin-data:/app/data
+      - ./backups:/app/backups
+    environment:
+      NODE_ENV: production
+      # Uretimde bu degerleri mutlaka degistirin:
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET tanimlanmali}
+      SESSION_TTL_HOURS: 12
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@topkapiokullari.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD tanimlanmali}
+      ADMIN_NAME: Sistem Yoneticisi
+
+volumes:
+  kantin-data:
