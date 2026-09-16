@@ -6,3 +6,6 @@ data/*.db-wal
 *.log
 .DS_Store
 backups/
+
+# Demo paketi derleme çıktısı (demo/build.mjs ile üretilir)
+demo/dist/
