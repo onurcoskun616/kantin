@@ -1,21 +1,29 @@
 /**
  * SAYIM (envanter) modulu - sistemin denetim cekirdegi.
  *
- * Mantik:
- *   Donem ornek satisi = (kayitlara gore olmasi gereken stok) - (fiilen sayilan stok)
- *   Beklenen ciro       = SUM(ornek satis x satis fiyati)
- *   Fark                = Gerceklesen ciro (gunluk ciro girisleri) - Beklenen ciro
+ * Donem satisi   = (kayitlara gore olmasi gereken stok) - (fiilen sayilan stok)
+ * Beklenen ciro  = SUM(donem satisi x satis fiyati) + uretilen urun satislari
+ * Fark           = Gerceklesen ciro (gunluk ciro girisleri) - Beklenen ciro
  *
- * Fark eksi ise kantinde kayit disi cikis (kayip/kacak/eksik ciro beyani) vardir.
- * Fire, ikram ve transferler ayri kaydedildigi icin bu farka karismaz.
+ * Denetim kontrolleri (bkz. docs/DENETIM-KONTROLLERI.md):
+ *   1. KOR SAYIM      Miktar girilirken "olmasi gereken" gizlidir. Sayan kisi
+ *                     hedef rakami goremez; sapmalar ancak kilitledikten sonra acilir.
+ *   2. IKI IMZA       Sayimi kilitleyen ile kesinlestiren ayni kisi olamaz;
+ *                     sayima katilan ikinci kisinin adi kayda gecer.
+ *   3. URETILEN URUN  Tost/cay gibi raftan sayilamayan urunler ayri kalemdir;
+ *                     beyan edilen adetler mutabakatta ayrica gosterilir.
+ *   4. NOKTA SAYIMI   Habersiz ara sayim. Stoga dokunmaz, donemi kapatmaz;
+ *                     silinemez bir tespit kaydi birakir.
+ *
+ * Durumlar: TASLAK -> SAYILDI -> KESINLESMIS
  */
 import { Router } from '../lib/router.js';
 import { all, get, insert, run, tx } from '../db.js';
-import { notFound, badRequest, conflict, sendCsv, toCsv } from '../lib/http.js';
+import { notFound, badRequest, conflict, forbidden, sendCsv, toCsv } from '../lib/http.js';
 import { requireWrite, assertCampusAccess, campusFilter, requireRole } from '../lib/auth.js';
 import { logAudit } from '../lib/audit.js';
-import { str, num, int, date, arr, today } from '../lib/validate.js';
-import { stockSnapshot, addMovement } from '../lib/stock.js';
+import { str, num, int, date, arr, today, oneOf } from '../lib/validate.js';
+import { stockSnapshot, addMovement, effectivePrices } from '../lib/stock.js';
 import { round2, netFromGross, pctOf } from '../lib/money.js';
 
 export const countRoutes = new Router();
@@ -23,16 +31,24 @@ export const countRoutes = new Router();
 /* ----------------------------- Listeleme --------------------------- */
 countRoutes.get('/', async (ctx) => {
   const f = campusFilter(ctx.user, 'c.campus_id', ctx.query.campusId);
+  const extra = ctx.query.type ? ' AND c.count_type = ?' : '';
+  const params = [...f.params];
+  if (ctx.query.type) params.push(ctx.query.type);
+
   const items = all(
-    `SELECT c.*, k.name AS campus_name, u.full_name AS created_by_name, fu.full_name AS finalized_by_name,
+    `SELECT c.*, k.name AS campus_name,
+            u.full_name  AS created_by_name,
+            su.full_name AS submitted_by_name,
+            fu.full_name AS finalized_by_name,
             (SELECT COUNT(*) FROM count_lines l WHERE l.count_id = c.id) AS line_count
        FROM counts c
        JOIN campuses k ON k.id = c.campus_id
        LEFT JOIN users u  ON u.id = c.created_by
+       LEFT JOIN users su ON su.id = c.submitted_by
        LEFT JOIN users fu ON fu.id = c.finalized_by
-      WHERE 1 = 1 ${f.clause}
+      WHERE 1 = 1 ${f.clause} ${extra}
       ORDER BY c.count_date DESC, c.id DESC LIMIT ?`,
-    [...f.params, Number(ctx.query.limit || 100)]
+    [...params, Number(ctx.query.limit || 100)]
   );
   return { items: items.map(withVariance) };
 });
@@ -41,27 +57,53 @@ countRoutes.get('/', async (ctx) => {
 countRoutes.post('/', async (ctx) => {
   requireWrite(ctx.user);
   const campusId = assertCampusAccess(ctx.user, ctx.body.campusId);
+  const countType = oneOf(ctx.body.countType, 'Sayim tipi', ['DONEM', 'NOKTA'], { def: 'DONEM' });
   const countDate = date(ctx.body.countDate, 'Sayim tarihi', { def: today() });
   const note = str(ctx.body.note, 'Aciklama', { max: 500 });
+  // Kor sayim varsayilandir. Kapatmak bilincli bir yonetim karari oldugu icin
+  // yalnizca genel mudurluk/admin tarafindan ve denetim izine yazilarak yapilabilir.
+  let isBlind = true;
+  if (ctx.body.isBlind === false) {
+    requireRole(ctx.user, 'ADMIN', 'GENEL_MUDURLUK');
+    isBlind = false;
+  }
 
   if (countDate > today()) throw badRequest('Gelecek tarihli sayim olusturulamaz.');
 
-  const openDraft = get("SELECT id FROM counts WHERE campus_id = ? AND status = 'TASLAK'", [campusId]);
-  if (openDraft) throw conflict(`Bu kampusta acik bir sayim taslagi var (#${openDraft.id}). Once onu tamamlayin veya silin.`);
-
-  const last = lastFinalizedCount(campusId);
-  if (last && countDate <= last.count_date) {
-    throw badRequest(`Son kesinlesmis sayim ${last.count_date} tarihli. Sayim tarihi bundan sonra olmalidir.`);
+  const openDraft = get(
+    "SELECT id FROM counts WHERE campus_id = ? AND count_type = ? AND status IN ('TASLAK','SAYILDI')",
+    [campusId, countType]
+  );
+  if (openDraft) {
+    throw conflict(`Bu kampuste tamamlanmamis bir ${countType === 'NOKTA' ? 'nokta' : 'donem'} sayimi var (#${openDraft.id}). Once onu tamamlayin veya silin.`);
   }
-  const periodStart = last ? addDays(last.count_date, 1) : null;
+
+  let periodStart = null;
+  if (countType === 'DONEM') {
+    const last = lastFinalizedCount(campusId);
+    if (last && countDate <= last.count_date) {
+      throw badRequest(`Son kesinlesmis sayim ${last.count_date} tarihli. Sayim tarihi bundan sonra olmalidir.`);
+    }
+    periodStart = last ? addDays(last.count_date, 1) : null;
+  }
+
+  // Nokta sayiminda yalnizca secilen urunler sayilir
+  const selectedIds = countType === 'NOKTA'
+    ? arr(ctx.body.productIds, 'Urunler', { required: true, min: 1 }).map((id) => Number(id))
+    : null;
 
   const countId = tx(() => {
     const id = insert(
-      'INSERT INTO counts (campus_id, count_date, period_start, status, note, created_by) VALUES (?, ?, ?, ?, ?, ?)',
-      [campusId, countDate, periodStart, 'TASLAK', note, ctx.user.id]
+      `INSERT INTO counts (campus_id, count_date, period_start, count_type, status, is_blind, note, created_by)
+       VALUES (?, ?, ?, ?, 'TASLAK', ?, ?, ?)`,
+      [campusId, countDate, periodStart, countType, isBlind ? 1 : 0, note, ctx.user.id]
     );
-    // Sayim fisini urunlerle onceden doldur
-    for (const p of stockSnapshot(campusId, { untilDate: countDate })) {
+
+    const snapshot = stockSnapshot(campusId, { untilDate: countDate })
+      .filter((p) => !selectedIds || selectedIds.includes(p.product_id));
+    if (!snapshot.length) throw badRequest('Sayilacak urun bulunamadi.');
+
+    for (const p of snapshot) {
       insert(
         `INSERT INTO count_lines (count_id, product_id, expected_qty, counted_qty, diff_qty, sold_qty,
                                   purchase_price, sale_price, vat_rate)
@@ -69,18 +111,34 @@ countRoutes.post('/', async (ctx) => {
         [id, p.product_id, p.stock_qty, p.purchase_price, p.sale_price, p.vat_rate]
       );
     }
+
+    // Donem sayiminda uretilen urunler icin beyan satirlari hazirlanir
+    if (countType === 'DONEM') {
+      for (const p of producedProducts(campusId)) {
+        insert(
+          `INSERT INTO production_sales (count_id, product_id, quantity, purchase_price, sale_price, vat_rate)
+           VALUES (?, ?, 0, ?, ?, ?)`,
+          [id, p.id, p.purchase_price, p.sale_price, p.vat_rate]
+        );
+      }
+    }
     return id;
   });
 
-  logAudit({ user: ctx.user, action: 'CREATE', entity: 'counts', entityId: countId, campusId, detail: { countDate }, ip: ctx.ip });
-  return loadCount(countId);
+  logAudit({
+    user: ctx.user, action: 'CREATE', entity: 'counts', entityId: countId, campusId,
+    detail: { countDate, countType, isBlind }, ip: ctx.ip,
+  });
+  return loadCount(countId, ctx.user);
 });
 
 /* --------------------------- Sayim detayi -------------------------- */
 countRoutes.get('/:id', async (ctx) => {
-  const data = loadCount(Number(ctx.params.id));
+  const data = loadCount(Number(ctx.params.id), ctx.user);
   assertCampusAccess(ctx.user, data.campus_id);
+
   if (ctx.query.format === 'csv') {
+    if (data.blind_active) throw conflict('Kor sayim tamamlanmadan fis disari aktarilamaz.');
     return sendCsv(ctx.res, `sayim-${data.id}.csv`, toCsv(data.lines, [
       { label: 'Barkod', key: 'barcode' },
       { label: 'Ürün', key: 'product_name' },
@@ -100,24 +158,17 @@ countRoutes.get('/:id', async (ctx) => {
 /* ----------------------- Sayilan miktar girisi --------------------- */
 countRoutes.put('/:id/lines', async (ctx) => {
   requireWrite(ctx.user);
-  const countId = Number(ctx.params.id);
-  const header = get('SELECT * FROM counts WHERE id = ?', [countId]);
-  if (!header) throw notFound('Sayim bulunamadi.');
-  assertCampusAccess(ctx.user, header.campus_id);
-  if (header.status === 'KESINLESMIS') throw conflict('Kesinlesmis sayim degistirilemez.');
-
+  const header = requireDraft(ctx, 'Sayim satirlari');
   const lines = arr(ctx.body.lines, 'Satirlar', { required: true, min: 1 });
+
   let updated = 0;
   tx(() => {
     for (const [i, raw] of lines.entries()) {
       const productId = int(raw.productId, `Satir ${i + 1} urun`, { required: true });
       const countedQty = num(raw.countedQty, `Satir ${i + 1} sayilan`, { required: true, min: 0 });
-      const existing = get('SELECT * FROM count_lines WHERE count_id = ? AND product_id = ?', [countId, productId]);
-      if (existing) {
-        run('UPDATE count_lines SET counted_qty = ?, diff_qty = ? WHERE id = ?',
-          [countedQty, round2(countedQty - existing.expected_qty), existing.id]);
-      } else {
-        // Sayim acildiktan sonra eklenmis urun
+      const existing = get('SELECT * FROM count_lines WHERE count_id = ? AND product_id = ?', [header.id, productId]);
+      if (!existing) {
+        // Sayim fisi acildiktan sonra eklenen urun
         const snap = stockSnapshot(header.campus_id, { untilDate: header.count_date })
           .find((p) => p.product_id === productId);
         if (!snap) throw badRequest(`Satir ${i + 1}: urun bulunamadi.`);
@@ -125,9 +176,12 @@ countRoutes.put('/:id/lines', async (ctx) => {
           `INSERT INTO count_lines (count_id, product_id, expected_qty, counted_qty, diff_qty, sold_qty,
                                     purchase_price, sale_price, vat_rate)
            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`,
-          [countId, productId, snap.stock_qty, countedQty, round2(countedQty - snap.stock_qty),
+          [header.id, productId, snap.stock_qty, countedQty, round2(countedQty - snap.stock_qty),
            snap.purchase_price, snap.sale_price, snap.vat_rate]
         );
+      } else {
+        run('UPDATE count_lines SET counted_qty = ?, diff_qty = ? WHERE id = ?',
+          [countedQty, round2(countedQty - existing.expected_qty), existing.id]);
       }
       updated += 1;
     }
@@ -135,27 +189,94 @@ countRoutes.put('/:id/lines', async (ctx) => {
   return { ok: true, updated };
 });
 
+/* ------------------ Uretilen urun satis beyani --------------------- */
+countRoutes.put('/:id/production', async (ctx) => {
+  requireWrite(ctx.user);
+  const header = requireDraft(ctx, 'Uretim satislari');
+  if (header.count_type !== 'DONEM') throw badRequest('Uretim satisi yalnizca donem sayiminda girilir.');
+  const lines = arr(ctx.body.lines, 'Satirlar', { required: true, min: 1 });
+
+  tx(() => {
+    for (const [i, raw] of lines.entries()) {
+      const productId = int(raw.productId, `Satir ${i + 1} urun`, { required: true });
+      const quantity = num(raw.quantity, `Satir ${i + 1} adet`, { required: true, min: 0 });
+      const prices = effectivePrices(header.campus_id, productId);
+      if (!prices) throw badRequest(`Satir ${i + 1}: urun bulunamadi.`);
+      run(
+        `INSERT INTO production_sales (count_id, product_id, quantity, purchase_price, sale_price, vat_rate)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(count_id, product_id) DO UPDATE SET quantity = excluded.quantity`,
+        [header.id, productId, quantity, prices.purchase_price, prices.sale_price, prices.vat_rate]
+      );
+    }
+  });
+  return { ok: true, updated: lines.length };
+});
+
+/* --------------------- Sayimi kilitle (kor sayim) ------------------- */
+countRoutes.post('/:id/submit', async (ctx) => {
+  requireWrite(ctx.user);
+  const header = requireDraft(ctx, 'Sayim');
+  const witnessName = str(ctx.body.witnessName, 'Sayima katilan kisi', { required: true, max: 150, min: 3 });
+
+  const emptyLines = get(
+    'SELECT COUNT(*) AS c FROM count_lines WHERE count_id = ? AND counted_qty = 0', [header.id]
+  ).c;
+  const totalLines = get('SELECT COUNT(*) AS c FROM count_lines WHERE count_id = ?', [header.id]).c;
+  if (emptyLines === totalLines) throw badRequest('Hicbir urun icin miktar girilmemis.');
+
+  tx(() => {
+    // Sapmalari acmadan once satirlari kendi icinde tutarli hale getir
+    for (const line of all('SELECT * FROM count_lines WHERE count_id = ?', [header.id])) {
+      run('UPDATE count_lines SET diff_qty = ? WHERE id = ?',
+        [round2(line.counted_qty - line.expected_qty), line.id]);
+    }
+    run(
+      `UPDATE counts SET status = 'SAYILDI', witness_name = ?, submitted_by = ?, submitted_at = datetime('now')
+        WHERE id = ?`,
+      [witnessName, ctx.user.id, header.id]
+    );
+  });
+
+  logAudit({
+    user: ctx.user, action: 'SUBMIT_COUNT', entity: 'counts', entityId: header.id, campusId: header.campus_id,
+    detail: { witnessName, emptyLines, totalLines }, ip: ctx.ip,
+  });
+  return loadCount(header.id, ctx.user);
+});
+
 /* ----------------------------- Kesinlestir -------------------------- */
 countRoutes.post('/:id/finalize', async (ctx) => {
   requireRole(ctx.user, 'ADMIN', 'GENEL_MUDURLUK', 'KAMPUS_YONETICISI');
-  const countId = Number(ctx.params.id);
-  const header = get('SELECT * FROM counts WHERE id = ?', [countId]);
+  const header = get('SELECT * FROM counts WHERE id = ?', [Number(ctx.params.id)]);
   if (!header) throw notFound('Sayim bulunamadi.');
   assertCampusAccess(ctx.user, header.campus_id);
+
+  if (header.count_type === 'NOKTA') {
+    throw badRequest('Nokta sayimi kesinlestirilmez; kilitlendiginde tamamlanir.');
+  }
   if (header.status === 'KESINLESMIS') throw conflict('Sayim zaten kesinlesmis.');
+  if (header.status !== 'SAYILDI') {
+    throw conflict('Once sayimi kilitleyin ("Sayimi Kilitle"). Kesinlestirme kilitlenmis sayim uzerinde yapilir.');
+  }
+  // IKI IMZA: sayan ile onaylayan ayni kisi olamaz
+  if (header.submitted_by && header.submitted_by === ctx.user.id) {
+    throw forbidden(
+      'Sayimi kilitleyen kisi kendi sayimini kesinlestiremez. Kesinlestirmeyi baska bir yetkili yapmalidir.'
+    );
+  }
 
   const result = tx(() => {
-    const lines = all('SELECT * FROM count_lines WHERE count_id = ?', [countId]);
-    // Olmasi gereken stoklari kesinlestirme aninda yeniden hesapla
-    const snap = new Map(stockSnapshot(header.campus_id, { untilDate: header.count_date, onlyActive: false })
-      .map((p) => [p.product_id, p]));
+    const snap = new Map(
+      stockSnapshot(header.campus_id, { untilDate: header.count_date, onlyActive: false })
+        .map((p) => [p.product_id, p])
+    );
 
     let expectedRevenue = 0;
     let cogsTotal = 0;
 
-    for (const line of lines) {
-      const s = snap.get(line.product_id);
-      const expected = round2(s ? s.stock_qty : line.expected_qty);
+    for (const line of all('SELECT * FROM count_lines WHERE count_id = ?', [header.id])) {
+      const expected = round2(snap.has(line.product_id) ? snap.get(line.product_id).stock_qty : line.expected_qty);
       const counted = round2(line.counted_qty);
       const diff = round2(counted - expected);
       const sold = round2(expected - counted);
@@ -179,45 +300,101 @@ countRoutes.post('/:id/finalize', async (ctx) => {
           unitCost: line.purchase_price,
           date: header.count_date,
           refType: 'count',
-          refId: countId,
+          refId: header.id,
           note: diff < 0 ? 'Sayim ile hesaplanan donem satisi' : 'Sayimda fazla cikan',
           userId: ctx.user.id,
         });
       }
     }
 
+    // Uretilen urunler: beyan edilen adetler
+    let productionRevenue = 0;
+    for (const row of all('SELECT * FROM production_sales WHERE count_id = ?', [header.id])) {
+      const salesValue = round2(row.quantity * row.sale_price);
+      const costValue = round2(row.quantity * row.purchase_price);
+      run('UPDATE production_sales SET sales_value = ?, cost_value = ? WHERE id = ?',
+        [salesValue, costValue, row.id]);
+      productionRevenue += salesValue;
+      cogsTotal += costValue;
+    }
+    expectedRevenue += productionRevenue;
+
     const actualRevenue = periodRevenue(header.campus_id, header.period_start, header.count_date);
     run(
       `UPDATE counts SET status = 'KESINLESMIS', finalized_by = ?, finalized_at = datetime('now'),
-              expected_revenue = ?, actual_revenue = ?, cogs_total = ? WHERE id = ?`,
-      [ctx.user.id, round2(expectedRevenue), round2(actualRevenue), round2(cogsTotal), countId]
+              expected_revenue = ?, actual_revenue = ?, cogs_total = ?, production_revenue = ?
+        WHERE id = ?`,
+      [ctx.user.id, round2(expectedRevenue), round2(actualRevenue), round2(cogsTotal),
+       round2(productionRevenue), header.id]
     );
-    return { expectedRevenue: round2(expectedRevenue), actualRevenue: round2(actualRevenue), cogsTotal: round2(cogsTotal) };
+    return {
+      expectedRevenue: round2(expectedRevenue),
+      actualRevenue: round2(actualRevenue),
+      productionRevenue: round2(productionRevenue),
+    };
   });
 
-  logAudit({ user: ctx.user, action: 'FINALIZE', entity: 'counts', entityId: countId, campusId: header.campus_id, detail: result, ip: ctx.ip });
-  return loadCount(countId);
+  logAudit({
+    user: ctx.user, action: 'FINALIZE', entity: 'counts', entityId: header.id, campusId: header.campus_id,
+    detail: { ...result, submittedBy: header.submitted_by, witness: header.witness_name }, ip: ctx.ip,
+  });
+  return loadCount(header.id, ctx.user);
+});
+
+/* ----------------------- Sayimi yeniden ac -------------------------- */
+countRoutes.post('/:id/reopen', async (ctx) => {
+  requireRole(ctx.user, 'ADMIN', 'GENEL_MUDURLUK');
+  const header = get('SELECT * FROM counts WHERE id = ?', [Number(ctx.params.id)]);
+  if (!header) throw notFound('Sayim bulunamadi.');
+  if (header.status !== 'SAYILDI') throw conflict('Yalnizca kilitlenmis, henuz kesinlesmemis sayim yeniden acilabilir.');
+  const reason = str(ctx.body.reason, 'Gerekce', { required: true, max: 300, min: 5 });
+
+  run(
+    `UPDATE counts SET status = 'TASLAK', submitted_by = NULL, submitted_at = NULL,
+            reopened_count = reopened_count + 1 WHERE id = ?`,
+    [header.id]
+  );
+  logAudit({
+    user: ctx.user, action: 'REOPEN_COUNT', entity: 'counts', entityId: header.id, campusId: header.campus_id,
+    detail: { reason, previousSubmitter: header.submitted_by }, ip: ctx.ip,
+  });
+  return loadCount(header.id, ctx.user);
 });
 
 /* ------------------------------ Silme ------------------------------ */
 countRoutes.delete('/:id', async (ctx) => {
   requireWrite(ctx.user);
-  const countId = Number(ctx.params.id);
-  const header = get('SELECT * FROM counts WHERE id = ?', [countId]);
+  const header = get('SELECT * FROM counts WHERE id = ?', [Number(ctx.params.id)]);
   if (!header) throw notFound('Sayim bulunamadi.');
   assertCampusAccess(ctx.user, header.campus_id);
   if (header.status === 'KESINLESMIS') throw conflict('Kesinlesmis sayim silinemez.');
-  run('DELETE FROM counts WHERE id = ?', [countId]);
-  logAudit({ user: ctx.user, action: 'DELETE', entity: 'counts', entityId: countId, campusId: header.campus_id, ip: ctx.ip });
+  if (header.status === 'SAYILDI') {
+    throw conflict('Kilitlenmis sayim silinemez. Duzeltme gerekiyorsa genel mudurluk sayimi yeniden acabilir.');
+  }
+  run('DELETE FROM counts WHERE id = ?', [header.id]);
+  logAudit({ user: ctx.user, action: 'DELETE', entity: 'counts', entityId: header.id, campusId: header.campus_id, ip: ctx.ip });
   return { ok: true };
 });
 
 /* ------------------------- Mutabakat raporu ------------------------ */
 countRoutes.get('/:id/reconciliation', async (ctx) => {
-  const countId = Number(ctx.params.id);
-  const data = loadCount(countId);
+  const data = loadCount(Number(ctx.params.id), ctx.user);
   assertCampusAccess(ctx.user, data.campus_id);
 
+  // KOR SAYIM: kilitlenene kadar hicbir beklenen deger disari verilmez
+  if (data.blind_active) {
+    return {
+      blind: true,
+      count: {
+        id: data.id, campusId: data.campus_id, campusName: data.campus_name,
+        countDate: data.count_date, periodStart: data.period_start,
+        status: data.status, countType: data.count_type,
+      },
+      progress: data.progress,
+    };
+  }
+
+  const isSpot = data.count_type === 'NOKTA';
   const from = data.period_start || firstMovementDate(data.campus_id) || data.count_date;
   const to = data.count_date;
 
@@ -231,75 +408,87 @@ countRoutes.get('/:id/reconciliation', async (ctx) => {
        FROM daily_revenues WHERE campus_id = ? AND revenue_date BETWEEN ? AND ?`,
     [data.campus_id, from, to]
   );
-
   const purchases = get(
     `SELECT COALESCE(SUM(net_total), 0) AS net, COALESCE(SUM(gross_total), 0) AS gross, COUNT(*) AS doc_count
        FROM purchases WHERE campus_id = ? AND status <> 'IPTAL' AND document_date BETWEEN ? AND ?`,
     [data.campus_id, from, to]
   );
-
   const waste = get(
     `SELECT COALESCE(SUM(quantity * unit_cost), 0) AS cost, COUNT(*) AS record_count
        FROM waste_records WHERE campus_id = ? AND waste_date BETWEEN ? AND ?`,
     [data.campus_id, from, to]
   );
-
   const campus = get('SELECT * FROM campuses WHERE id = ?', [data.campus_id]);
 
-  const expectedRevenue = data.status === 'KESINLESMIS'
-    ? data.expected_revenue
+  const finalized = data.status === 'KESINLESMIS';
+  const countedRevenue = finalized
+    ? round2(data.expected_revenue - data.production_revenue)
     : round2(data.lines.reduce((s, l) => s + (l.expected_qty - l.counted_qty) * l.sale_price, 0));
-  const cogs = data.status === 'KESINLESMIS'
+  const productionRevenue = finalized
+    ? data.production_revenue
+    : round2(data.production.reduce((s, r) => s + r.quantity * r.sale_price, 0));
+  const expectedRevenue = round2(countedRevenue + productionRevenue);
+
+  const cogs = finalized
     ? data.cogs_total
-    : round2(data.lines.reduce((s, l) => s + (l.expected_qty - l.counted_qty) * l.purchase_price, 0));
+    : round2(data.lines.reduce((s, l) => s + (l.expected_qty - l.counted_qty) * l.purchase_price, 0)
+      + data.production.reduce((s, r) => s + r.quantity * r.purchase_price, 0));
 
   const actualRevenue = round2(revenue.total);
-  const difference = round2(actualRevenue - expectedRevenue);
+  // Nokta sayimi urunlerin yalnizca bir bolumunu kapsar; ciro ile karsilastirilamaz
+  const difference = isSpot ? null : round2(actualRevenue - expectedRevenue);
   const actualNet = round2(netFromGross(actualRevenue, weightedVat(data.lines)));
-  const grossProfit = round2(actualNet - cogs);
-
-  // En buyuk sapmaya sahip satirlar (denetim odagi)
-  const topVariances = [...data.lines]
-    .filter((l) => l.diff_qty !== 0)
-    .map((l) => ({ ...l, variance_value: round2(l.diff_qty * l.sale_price) }))
-    .sort((a, b) => Math.abs(b.variance_value) - Math.abs(a.variance_value))
-    .slice(0, 20);
+  const grossProfit = isSpot ? null : round2(actualNet - cogs);
 
   return {
-    count: { id: data.id, campusId: data.campus_id, campusName: data.campus_name, countDate: data.count_date, periodStart: data.period_start, status: data.status },
+    blind: false,
+    isSpot,
+    count: {
+      id: data.id, campusId: data.campus_id, campusName: data.campus_name,
+      countDate: data.count_date, periodStart: data.period_start,
+      status: data.status, countType: data.count_type,
+      submittedByName: data.submitted_by_name, witnessName: data.witness_name,
+      finalizedByName: data.finalized_by_name, reopenedCount: data.reopened_count,
+    },
     period: { from, to, dayCount: revenue.day_count, schoolDays: revenue.school_days },
     revenue: {
       expected: expectedRevenue,
+      counted: countedRevenue,
+      production: productionRevenue,
       actual: actualRevenue,
       difference,
-      differencePct: pctOf(difference, expectedRevenue),
-      cash: round2(revenue.cash),
-      card: round2(revenue.card),
-      credit: round2(revenue.credit),
+      differencePct: isSpot ? null : pctOf(difference, expectedRevenue),
+      cash: round2(revenue.cash), card: round2(revenue.card), credit: round2(revenue.credit),
+    },
+    production: {
+      revenue: productionRevenue,
+      cost: round2(data.production.reduce((s, r) => s + r.quantity * r.purchase_price, 0)),
+      sharePct: expectedRevenue > 0 ? pctOf(productionRevenue, expectedRevenue) : null,
+      items: data.production.filter((r) => r.quantity > 0),
     },
     profitability: {
-      cogs,
-      actualNet,
-      grossProfit,
-      grossMarginPct: pctOf(grossProfit, actualNet),
+      cogs, actualNet, grossProfit,
+      grossMarginPct: isSpot ? null : pctOf(grossProfit, actualNet),
       theoreticalProfit: round2(data.lines.reduce(
         (s, l) => s + (l.expected_qty - l.counted_qty) * (netFromGross(l.sale_price, l.vat_rate) - l.purchase_price), 0
       )),
     },
     purchases: { netTotal: round2(purchases.net), grossTotal: round2(purchases.gross), documentCount: purchases.doc_count },
     waste: { costValue: round2(waste.cost), recordCount: waste.record_count },
-    perStudent: campus.student_count > 0
-      ? {
-          studentCount: campus.student_count,
-          revenuePerStudent: round2(actualRevenue / campus.student_count),
-          dailyRevenuePerStudent: revenue.school_days > 0
-            ? round2(actualRevenue / campus.student_count / revenue.school_days) : null,
-        }
-      : null,
-    schoolShare: campus.rent_share_pct > 0
+    perStudent: campus.student_count > 0 && !isSpot ? {
+      studentCount: campus.student_count,
+      revenuePerStudent: round2(actualRevenue / campus.student_count),
+      dailyRevenuePerStudent: revenue.school_days > 0
+        ? round2(actualRevenue / campus.student_count / revenue.school_days) : null,
+    } : null,
+    schoolShare: campus.rent_share_pct > 0 && !isSpot
       ? { pct: campus.rent_share_pct, amount: round2(actualRevenue * campus.rent_share_pct / 100) }
       : null,
-    topVariances,
+    topVariances: [...data.lines]
+      .filter((l) => l.diff_qty !== 0)
+      .map((l) => ({ ...l, variance_value: round2(l.diff_qty * l.sale_price) }))
+      .sort((a, b) => Math.abs(b.variance_value) - Math.abs(a.variance_value))
+      .slice(0, 20),
     soldItems: [...data.lines]
       .filter((l) => l.expected_qty - l.counted_qty > 0)
       .map((l) => ({ ...l, sold: round2(l.expected_qty - l.counted_qty) }))
@@ -309,22 +498,88 @@ countRoutes.get('/:id/reconciliation', async (ctx) => {
 });
 
 /* ----------------------------- yardimcilar ------------------------- */
-function loadCount(countId) {
+/** Sayim taslagi mi, kullanicinin yetkisi var mi? */
+function requireDraft(ctx, what) {
+  const header = get('SELECT * FROM counts WHERE id = ?', [Number(ctx.params.id)]);
+  if (!header) throw notFound('Sayim bulunamadi.');
+  assertCampusAccess(ctx.user, header.campus_id);
+  if (header.status === 'KESINLESMIS') throw conflict('Kesinlesmis sayim degistirilemez.');
+  if (header.status === 'SAYILDI') {
+    throw conflict(`${what} kilitlenmis sayimda degistirilemez. Genel mudurluk sayimi yeniden acabilir.`);
+  }
+  return header;
+}
+
+function producedProducts(campusId) {
+  return all(
+    `SELECT p.id,
+            COALESCE(cp.purchase_price, p.purchase_price) AS purchase_price,
+            COALESCE(cp.sale_price,     p.sale_price)     AS sale_price,
+            p.vat_rate
+       FROM products p
+       LEFT JOIN campus_products cp ON cp.product_id = p.id AND cp.campus_id = ?
+      WHERE p.is_active = 1 AND p.product_type = 'URETILEN'
+      ORDER BY p.name COLLATE NOCASE`,
+    [campusId]
+  );
+}
+
+/**
+ * Sayim kaydini yukler.
+ * Kor sayim taslak halindeyken beklenen miktar ve turevleri maskelenir;
+ * bu maskeleme sunucu tarafinda yapilir, arayuzden asilamaz.
+ */
+function loadCount(countId, user) {
   const header = get(
-    `SELECT c.*, k.name AS campus_name, u.full_name AS created_by_name, fu.full_name AS finalized_by_name
+    `SELECT c.*, k.name AS campus_name,
+            u.full_name  AS created_by_name,
+            su.full_name AS submitted_by_name,
+            fu.full_name AS finalized_by_name
        FROM counts c JOIN campuses k ON k.id = c.campus_id
-       LEFT JOIN users u ON u.id = c.created_by LEFT JOIN users fu ON fu.id = c.finalized_by
+       LEFT JOIN users u  ON u.id = c.created_by
+       LEFT JOIN users su ON su.id = c.submitted_by
+       LEFT JOIN users fu ON fu.id = c.finalized_by
       WHERE c.id = ?`, [countId]
   );
   if (!header) throw notFound('Sayim bulunamadi.');
-  const lines = all(
+
+  const blindActive = !!header.is_blind && header.status === 'TASLAK';
+
+  let lines = all(
     `SELECT l.*, p.name AS product_name, p.barcode, p.unit, cat.name AS category_name
        FROM count_lines l
        JOIN products p ON p.id = l.product_id
        LEFT JOIN categories cat ON cat.id = p.category_id
       WHERE l.count_id = ? ORDER BY cat.sort_order, p.name COLLATE NOCASE`, [countId]
   );
-  return withVariance({ ...header, lines });
+
+  const filled = lines.filter((l) => l.counted_qty !== 0).length;
+  const progress = { total: lines.length, filled };
+
+  if (blindActive) {
+    lines = lines.map((l) => ({
+      ...l,
+      expected_qty: null, diff_qty: null, sold_qty: null, sales_value: null, cost_value: null,
+    }));
+  }
+
+  const production = all(
+    `SELECT ps.*, p.name AS product_name, p.unit
+       FROM production_sales ps JOIN products p ON p.id = ps.product_id
+      WHERE ps.count_id = ? ORDER BY p.name COLLATE NOCASE`, [countId]
+  );
+
+  return withVariance({
+    ...header,
+    lines,
+    production,
+    progress,
+    blind_active: blindActive,
+    can_finalize: header.status === 'SAYILDI'
+      && header.count_type === 'DONEM'
+      && header.submitted_by !== user?.id
+      && ['ADMIN', 'GENEL_MUDURLUK', 'KAMPUS_YONETICISI'].includes(user?.role),
+  });
 }
 
 function withVariance(row) {
@@ -332,9 +587,10 @@ function withVariance(row) {
   return { ...row, difference, difference_pct: pctOf(difference, row.expected_revenue || 0) };
 }
 
+/** Donem kilitleri yalnizca DONEM sayimlarina bakar; nokta sayimi donemi kapatmaz. */
 export function lastFinalizedCount(campusId, beforeDate = null) {
   const params = [campusId];
-  let sql = "SELECT * FROM counts WHERE campus_id = ? AND status = 'KESINLESMIS'";
+  let sql = "SELECT * FROM counts WHERE campus_id = ? AND status = 'KESINLESMIS' AND count_type = 'DONEM'";
   if (beforeDate) { sql += ' AND count_date < ?'; params.push(beforeDate); }
   sql += ' ORDER BY count_date DESC, id DESC LIMIT 1';
   return get(sql, params);
@@ -356,7 +612,7 @@ function weightedVat(lines) {
   let value = 0;
   let weighted = 0;
   for (const l of lines) {
-    const v = Math.abs((l.expected_qty - l.counted_qty) * l.sale_price);
+    const v = Math.abs(((l.expected_qty ?? 0) - l.counted_qty) * l.sale_price);
     value += v;
     weighted += v * l.vat_rate;
   }

@@ -19,10 +19,18 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
 
 ## Özellikler
 
+### Denetim kontrolleri
+- **Kör sayım** — miktar girilirken "olması gereken" gizlidir; sayan kişi hedef rakamı göremez
+- **İki imza** — sayıma katılan ikinci kişi kayda geçer; sayımı kilitleyen kendi sayımını kesinleştiremez
+- **Üretilen ürün ayrımı** — tost/çay gibi sayılamayan kalemler ayrı beyan edilir, beyanın payı uyarı olarak gösterilir
+- **Habersiz nokta sayımı** — seçili ürünlerde ara kontrol; stoğa dokunmaz, silinemez
+- Ayrıntılar: **[docs/DENETIM-KONTROLLERI.md](docs/DENETIM-KONTROLLERI.md)**
+
 ### Stok ve envanter
 - Kampüs bazlı stok defteri — her rakamın arkasında belge var (açılış, alım, fire, transfer, sayım)
 - Periyodik sayım fişi: barkod okuyucu destekli, tablet uyumlu hızlı giriş
-- Sayım kesinleştirme ve geriye dönük kayıt kilidi
+- Sayım akışı: taslak → kilitli → kesinleşmiş; geriye dönük kayıt kilidi
+- Kilitli sayım yalnızca gerekçeyle yeniden açılır, her açılış denetim izinde
 - Kritik stok seviyesi ve önerilen sipariş miktarı
 - Kampüsler arası transfer takibi
 - Fire/zayiat kaydı (SKT, kırılma, bozulma, ikram, personel)
@@ -116,8 +124,12 @@ docker compose up -d
 ### Testler
 
 ```bash
-npm test     # 24 uçtan uca API testi
+npm test        # 42 uçtan uca API testi
+npm run test:ui # tarayıcı regresyon testi (kör sayım → iki imza → kesinleştirme)
 ```
+
+`test:ui` Playwright gerektirir (`npm i -g playwright && playwright install chromium`)
+ve çalışan bir sunucu ile `--demo` verisi bekler.
 
 ---
 
@@ -168,9 +180,11 @@ cron yedekleme görevi).
 5. **Açılış stoğunu** girin — Excel şablonunun "Açılış Stoğu" sekmesinden ya da
    **Stok Durumu → Açılış Stoğu Gir** ekranından.
 6. Bu tarihten itibaren **her mal girişini** ve **her günün cirosunu** günü gününe işleyin.
-7. **Sayım** yapıp kesinleştirin — mutabakat raporu otomatik çıkar.
+7. **Sayım** yapın: miktarları girin → **Sayımı Kilitle** (sayıma katılan kişiyi yazın)
+   → sapmalar açılır → **başka bir yetkili** kesinleştirir. Mutabakat raporu otomatik çıkar.
    Kasa yazılımı kullanılmadığı için ilk 3 ay **haftalık** sayım önerilir;
    rakamlar oturunca 15 günde bire, sonra ayda bire düşürebilirsiniz.
+8. Ayda bir **habersiz nokta sayımı** yapın — yüksek cirolu 5-10 üründe, tarih vermeden.
 
 ---
 
@@ -211,11 +225,13 @@ public/
   js/xlsx.js        Tarayıcı içi Excel okuyucu (harici kütüphane yok)
 test/
   api.test.js       Uçtan uca API testleri
+  ui/               Tarayıcı regresyon testi
 deploy/             systemd, nginx ve cron dosyaları
 scripts/
   yedekle.sh        Veritabanı yedekleme
   sablon-olustur.py Excel şablonu üretici
 docs/
+  DENETIM-KONTROLLERI.md  Kör sayım, iki imza, üretilen ürün, nokta sayımı
   VPS-KURULUM.md    Sunucu kurulum rehberi
   YOL-HARITASI.md   Atlanan noktalar ve sonraki aşama önerileri
   sablonlar/        Excel şablonu

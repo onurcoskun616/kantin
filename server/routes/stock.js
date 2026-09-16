@@ -285,8 +285,11 @@ transferRoutes.post('/', async (ctx) => {
  * Aksi halde gecmis donem mutabakati sessizce bozulur.
  */
 export function assertNotLocked(campusId, movementDate) {
+  // Nokta sayimi donemi kapatmaz, bu yuzden kilit yalnizca DONEM sayimlarina bakar
   const locked = get(
-    "SELECT count_date FROM counts WHERE campus_id = ? AND status = 'KESINLESMIS' AND count_date >= ? ORDER BY count_date LIMIT 1",
+    `SELECT count_date FROM counts
+      WHERE campus_id = ? AND status = 'KESINLESMIS' AND count_type = 'DONEM' AND count_date >= ?
+      ORDER BY count_date LIMIT 1`,
     [campusId, movementDate]
   );
   if (locked) {

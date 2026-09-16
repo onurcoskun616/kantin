@@ -152,7 +152,8 @@ purchaseRoutes.post('/:id/cancel', async (ctx) => {
 
   // Kesinlesmis bir sayimdan once yapilan alim iptal edilemez (mutabakat bozulur)
   const laterCount = get(
-    "SELECT id, count_date FROM counts WHERE campus_id = ? AND status = 'KESINLESMIS' AND count_date >= ? LIMIT 1",
+    `SELECT id, count_date FROM counts
+      WHERE campus_id = ? AND status = 'KESINLESMIS' AND count_type = 'DONEM' AND count_date >= ? LIMIT 1`,
     [header.campus_id, header.document_date]
   );
   if (laterCount) {

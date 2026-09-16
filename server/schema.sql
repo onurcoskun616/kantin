@@ -85,6 +85,11 @@ CREATE TABLE IF NOT EXISTS products (
   name            TEXT    NOT NULL,
   category_id     INTEGER REFERENCES categories(id) ON DELETE SET NULL,
   unit            TEXT    NOT NULL DEFAULT 'ADET',
+  -- SATIN_ALINAN : tedarikciden alinir, raftan sayilir
+  -- URETILEN     : kantinde hazirlanir (tost, cay, pogaca). Stogu sayilamaz;
+  --                donem satisi sayim ekranindaki "uretim satisi" bolumunden girilir.
+  product_type    TEXT    NOT NULL DEFAULT 'SATIN_ALINAN'
+                    CHECK (product_type IN ('SATIN_ALINAN','URETILEN')),
   purchase_price  REAL    NOT NULL DEFAULT 0,
   sale_price      REAL    NOT NULL DEFAULT 0,
   vat_rate        REAL    NOT NULL DEFAULT 10,
@@ -259,13 +264,29 @@ CREATE TABLE IF NOT EXISTS counts (
   campus_id          INTEGER NOT NULL REFERENCES campuses(id) ON DELETE CASCADE,
   count_date         TEXT    NOT NULL,
   period_start       TEXT,
-  status             TEXT    NOT NULL DEFAULT 'TASLAK' CHECK (status IN ('TASLAK','KESINLESMIS')),
+  -- DONEM : donem sonu sayimi, stogu kapatir ve mutabakat uretir
+  -- NOKTA : habersiz ara sayim; secili urunlerde anlik tespit, stoga dokunmaz
+  count_type         TEXT    NOT NULL DEFAULT 'DONEM' CHECK (count_type IN ('DONEM','NOKTA')),
+  -- TASLAK   : miktarlar giriliyor (kor sayimda beklenen miktar gizlidir)
+  -- SAYILDI  : sayim kilitlendi, sapmalar aciga cikti, onay bekliyor
+  -- KESINLESMIS : yonetici onayladi, stok hareketleri yazildi
+  status             TEXT    NOT NULL DEFAULT 'TASLAK'
+                       CHECK (status IN ('TASLAK','SAYILDI','KESINLESMIS')),
+  -- Kor sayim: girerken "olmasi gereken" miktar gizlenir (bkz. docs/DENETIM-KONTROLLERI.md)
+  is_blind           INTEGER NOT NULL DEFAULT 1,
   note               TEXT,
+  -- Sayima fiilen katilan ikinci kisi (sistem kullanicisi olmayabilir)
+  witness_name       TEXT,
   -- Kesinlesme aninda donmus ozet degerler
   expected_revenue   REAL    NOT NULL DEFAULT 0,
   actual_revenue     REAL    NOT NULL DEFAULT 0,
   cogs_total         REAL    NOT NULL DEFAULT 0,
+  -- Uretilen urunlerden gelen beklenen ciro (ayri gosterilir, denetim icin)
+  production_revenue REAL    NOT NULL DEFAULT 0,
+  reopened_count     INTEGER NOT NULL DEFAULT 0,
   created_by         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  submitted_by       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  submitted_at       TEXT,
   finalized_by       INTEGER REFERENCES users(id) ON DELETE SET NULL,
   finalized_at       TEXT,
   created_at         TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -288,6 +309,22 @@ CREATE TABLE IF NOT EXISTS count_lines (
   UNIQUE (count_id, product_id)
 );
 CREATE INDEX IF NOT EXISTS idx_count_lines_count ON count_lines(count_id);
+
+-- Uretilen urunlerin (tost, cay, pogaca) donem satis adedi.
+-- Bu urunler raftan sayilamadigi icin adet beyana dayanir; mutabakatta
+-- ayri bir kalem olarak gosterilir ki sayimla dogrulanan kismi golgelemesin.
+CREATE TABLE IF NOT EXISTS production_sales (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  count_id       INTEGER NOT NULL REFERENCES counts(id) ON DELETE CASCADE,
+  product_id     INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+  quantity       REAL    NOT NULL DEFAULT 0,
+  purchase_price REAL    NOT NULL DEFAULT 0,
+  sale_price     REAL    NOT NULL DEFAULT 0,
+  vat_rate       REAL    NOT NULL DEFAULT 10,
+  sales_value    REAL    NOT NULL DEFAULT 0,
+  cost_value     REAL    NOT NULL DEFAULT 0,
+  UNIQUE (count_id, product_id)
+);
 
 -- ---------------------------------------------------------------------
 -- Gunluk ciro

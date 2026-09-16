@@ -17,6 +17,7 @@ const PRODUCT_FIELDS = {
   vatRate: ['kdv orani', 'kdv'],
   criticalStock: ['kritik stok', 'minimum stok', 'min stok', 'kritik'],
   maxPrice: ['tavan fiyat', 'tavan'],
+  productType: ['urun tipi', 'tip'],
 };
 
 const OPENING_FIELDS = {
@@ -193,6 +194,8 @@ function extractProducts({ rows, headerRow, map }) {
       vatRate: vatRate === null ? 10 : vatRate,
       criticalStock: toNumber(pick('criticalStock')) ?? 0,
       maxPrice: toNumber(pick('maxPrice')) ?? 0,
+      // "Üretilen" yazan satırlar kantinde hazırlanan ürün sayılır
+      productType: /uretilen|üretilen/i.test(toText(pick('productType'))) ? 'URETILEN' : 'SATIN_ALINAN',
     };
     // Bilgilendirme amaçlı kâr hesabı (sunucu yeniden hesaplar)
     const saleNet = item.salePrice / (1 + item.vatRate / 100);

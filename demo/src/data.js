@@ -57,7 +57,9 @@ const CATEGORIES = [
 ];
 
 // [barkod, ad, kategori, alış(KDV hariç), satış(KDV dahil), KDV%, kritik stok,
-//  günlük satış hızı (100 öğrenci başına adet)]
+//  günlük satış hızı (100 öğrenci başına adet), ürün tipi]
+// URETILEN ürünler kantinde hazırlanır: raftan sayılamaz, stok tutulmaz;
+// dönem satış adedi sayım ekranında ayrıca beyan edilir.
 const PRODUCTS = [
   ['8690000000011', 'Su 500 ml',              'Su ve İçecek',            4.00,  6.00, 10, 60, 14.0],
   ['8690000000042', 'Meyve Suyu 200 ml',      'Su ve İçecek',           10.00, 16.00, 10, 40,  6.5],
@@ -65,7 +67,7 @@ const PRODUCTS = [
   ['8690000000028', 'Ayran 200 ml',           'Süt ve Süt Ürünleri',     8.50, 13.00,  1, 48,  8.2],
   ['8690000000035', 'Süt 200 ml',             'Süt ve Süt Ürünleri',     9.00, 14.00,  1, 40,  4.1],
   ['8690000000226', 'Kefir 200 ml',           'Süt ve Süt Ürünleri',    11.00, 17.00,  1, 24,  1.3],
-  ['8690000000059', 'Tost',                   'Sandviç ve Unlu Mamul',  18.00, 35.00, 10,  0,  7.8],
+  ['8690000000059', 'Tost',                   'Sandviç ve Unlu Mamul',  18.00, 35.00, 10,  0,  7.8, 'URETILEN'],
   ['8690000000066', 'Poğaça',                 'Sandviç ve Unlu Mamul',   9.00, 16.00,  1, 30,  9.4],
   ['8690000000073', 'Simit',                  'Sandviç ve Unlu Mamul',   7.00, 12.00,  1, 40, 10.6],
   ['8690000000080', 'Sandviç (Ton Balıklı)',  'Sandviç ve Unlu Mamul',  26.00, 45.00, 10, 12,  3.2],
@@ -77,8 +79,8 @@ const PRODUCTS = [
   ['8690000000127', 'Kuru Üzüm 40 g',         'Kuruyemiş ve Kuru Meyve', 9.00, 16.00,  1, 20,  1.4],
   ['8690000000134', 'Elma (adet)',            'Taze Meyve',              6.00, 10.00,  1, 24,  2.6],
   ['8690000000141', 'Muz (adet)',             'Taze Meyve',              9.00, 15.00,  1, 24,  3.1],
-  ['8690000000158', 'Çay (bardak)',           'Sıcak İçecek',            2.50,  8.00, 10,  0,  5.4],
-  ['8690000000165', 'Salep (bardak)',         'Sıcak İçecek',            9.00, 20.00, 10,  0,  1.2],
+  ['8690000000158', 'Çay (bardak)',           'Sıcak İçecek',            2.50,  8.00, 10,  0,  5.4, 'URETILEN'],
+  ['8690000000165', 'Salep (bardak)',         'Sıcak İçecek',            9.00, 20.00, 10,  0,  1.2, 'URETILEN'],
   ['8690000000257', 'Dondurma (külah)',       'Dondurma',               12.00, 22.00, 10, 20,  2.2],
   ['8690000000172', 'Kurşun Kalem',           'Kırtasiye',               4.00,  8.00, 20, 20,  0.9],
   ['8690000000189', 'Defter A4',              'Kırtasiye',              22.00, 40.00, 20, 10,  0.4],
@@ -102,6 +104,9 @@ const USERS = [
 
 const WASTE_REASONS = ['SKT', 'KIRILMA', 'BOZULMA', 'IKRAM'];
 
+// Sayıma katılan ikinci kişiler (iki imza kuralı)
+const WITNESS_NAMES = ['Serpil Aydın', 'Murat Koç', 'Elif Yıldız'];
+
 /* --------------------------- Veri üretimi -------------------------- */
 export function buildDemoData() {
   const random = rng(20260916);
@@ -112,7 +117,8 @@ export function buildDemoData() {
     campuses: [], categories: [], suppliers: [], products: [], campus_products: [],
     movements: [], purchases: [], purchase_lines: [], supplier_payments: [],
     waste: [], transfers: [], transfer_lines: [],
-    counts: [], count_lines: [], revenues: [], users: [], audit_logs: [], price_history: [],
+    counts: [], count_lines: [], production_sales: [],
+    revenues: [], users: [], audit_logs: [], price_history: [],
   };
 
   /* Kampüsler */
@@ -145,11 +151,13 @@ export function buildDemoData() {
 
   /* Ürünler */
   const rates = new Map();
-  PRODUCTS.forEach(([barcode, name, category, purchase, sale, vat, critical, rate]) => {
+  PRODUCTS.forEach(([barcode, name, category, purchase, sale, vat, critical, rate, type = 'SATIN_ALINAN']) => {
     const row = {
       id: nextId('product'), barcode, name, category_id: categoryByName[category].id,
-      unit: 'ADET', purchase_price: purchase, sale_price: sale, vat_rate: vat,
-      critical_stock: critical, meb_approved: 1, max_price: 0, track_expiry: 0, is_active: 1,
+      unit: 'ADET', product_type: type,
+      purchase_price: purchase, sale_price: sale, vat_rate: vat,
+      critical_stock: type === 'URETILEN' ? 0 : critical,
+      meb_approved: 1, max_price: 0, track_expiry: 0, is_active: 1,
       created_at: `${iso(dayOffset(-90))} 08:00:00`, updated_at: `${iso(dayOffset(-90))} 08:00:00`,
     };
     db.products.push(row);
@@ -190,13 +198,17 @@ export function buildDemoData() {
     });
   };
 
+  // Stoğu tutulan (sayılabilir) ürünler ile kantinde hazırlananlar ayrılır
+  const stocked = db.products.filter((p) => p.product_type === 'SATIN_ALINAN');
+  const produced = db.products.filter((p) => p.product_type === 'URETILEN');
+
   for (const campus of db.campuses) {
     const conf = CAMPUSES.find((c) => c.code === campus.code);
     const scale = campus.student_count / 100;
     const stock = new Map();
 
     /* Açılış stoğu */
-    for (const p of db.products) {
+    for (const p of stocked) {
       const weekly = rates.get(p.id) * scale * 5;
       const qty = Math.max(6, Math.round(weekly * 1.4 * (0.9 + random() * 0.2)));
       stock.set(p.id, qty);
@@ -218,10 +230,12 @@ export function buildDemoData() {
         const qty = Math.round(rates.get(p.id) * scale * schoolDays.length * (0.92 + random() * 0.16));
         plannedSales.set(p.id, qty);
       }
+      // Kantinde hazırlanan ürünlerin dönem cirosu (sayımla doğrulanamayan kısım)
+      const productionRevenue = produced.reduce((s2, p) => s2 + plannedSales.get(p.id) * p.sale_price, 0);
 
       purchaseDays.forEach((day, wIndex) => {
         const supplier = db.suppliers[wIndex % db.suppliers.length];
-        const picked = db.products.filter((_, i) => (i + wIndex) % 2 === 0);
+        const picked = stocked.filter((_, i) => (i + wIndex) % 2 === 0);
         if (!picked.length) return;
 
         const purchase = {
@@ -259,7 +273,7 @@ export function buildDemoData() {
       /* Fire kayıtları */
       const wasteCount = periodIndex === 2 ? 2 : 3;
       for (let i = 0; i < wasteCount; i += 1) {
-        const p = db.products[Math.floor(random() * db.products.length)];
+        const p = stocked[Math.floor(random() * stocked.length)];
         const day = schoolDays[Math.floor(random() * schoolDays.length)];
         const qty = 1 + Math.floor(random() * 5);
         db.waste.push({
@@ -283,20 +297,31 @@ export function buildDemoData() {
         return;
       }
 
+
       /* Sayım: satılan miktar kadar stok eksilir */
       const countDate = period.to;
+      // Sayımı kampüs görevlisi kilitler, yönetim kesinleştirir (iki imza kuralı)
+      const staff = db.users.find((u) => u.campus_id === campus.id && u.role === 'KANTIN_GOREVLISI');
+      const approver = db.users.find((u) => u.role === 'GENEL_MUDURLUK') ?? { id: adminId };
+
       const count = {
         id: nextId('count'), campus_id: campus.id, count_date: countDate,
         period_start: periodIndex === 0 ? null : periods[periodIndex].from,
-        status: 'KESINLESMIS', note: periodIndex === 0 ? 'İlk dönem sayımı' : 'Dönem sonu sayımı',
-        expected_revenue: 0, actual_revenue: 0, cogs_total: 0,
-        created_by: adminId, finalized_by: adminId, finalized_at: `${countDate} 17:30:00`,
+        count_type: 'DONEM', status: 'KESINLESMIS', is_blind: 1,
+        note: periodIndex === 0 ? 'İlk dönem sayımı' : 'Dönem sonu sayımı',
+        witness_name: WITNESS_NAMES[periodIndex % WITNESS_NAMES.length],
+        expected_revenue: 0, actual_revenue: 0, cogs_total: 0, production_revenue: 0,
+        reopened_count: 0,
+        created_by: staff?.id ?? adminId,
+        submitted_by: staff?.id ?? adminId,
+        submitted_at: `${countDate} 17:10:00`,
+        finalized_by: approver.id, finalized_at: `${countDate} 17:30:00`,
         created_at: `${countDate} 16:00:00`,
       };
 
       let expectedRevenue = 0;
       let cogs = 0;
-      for (const p of db.products) {
+      for (const p of stocked) {
         const expectedQty = stock.get(p.id) || 0;
         const sold = Math.min(plannedSales.get(p.id), Math.max(0, expectedQty - 2));
         const countedQty = expectedQty - sold;
@@ -321,12 +346,27 @@ export function buildDemoData() {
         stock.set(p.id, countedQty);
       }
 
+      // Üretilen ürünler: beyan edilen dönem adetleri
+      for (const p of produced) {
+        const qty = plannedSales.get(p.id);
+        const salesValue = round2(qty * p.sale_price);
+        const costValue = round2(qty * p.purchase_price);
+        db.production_sales.push({
+          id: nextId('production_sale'), count_id: count.id, product_id: p.id, quantity: qty,
+          purchase_price: p.purchase_price, sale_price: p.sale_price, vat_rate: p.vat_rate,
+          sales_value: salesValue, cost_value: costValue,
+        });
+        expectedRevenue += salesValue;
+        cogs += costValue;
+      }
+
       const actual = distributeRevenue(
         db, nextId, campus, schoolDays, expectedRevenue * conf.ratios[periodIndex], random, adminId
       );
       count.expected_revenue = round2(expectedRevenue);
       count.actual_revenue = round2(actual);
       count.cogs_total = round2(cogs);
+      count.production_revenue = round2(productionRevenue);
       db.counts.push(count);
 
       db.audit_logs.push({
@@ -346,7 +386,7 @@ export function buildDemoData() {
     created_by: adminId, created_at: `${transferDate} 11:00:00`,
   };
   db.transfers.push(transfer);
-  const water = db.products[0];
+  const water = db.products.find((p) => p.product_type === 'SATIN_ALINAN');
   db.transfer_lines.push({
     id: nextId('transfer_line'), transfer_id: transfer.id, product_id: water.id,
     quantity: 48, unit_cost: water.purchase_price,

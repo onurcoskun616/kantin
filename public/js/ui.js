@@ -196,14 +196,22 @@ export function modal({ title, body, actions = [], wide = false, onClose = null 
 
 export function confirmDialog(message, { title = 'Onay', confirmText = 'Evet, devam et', danger = false } = {}) {
   return new Promise((resolve) => {
+    // Karar once isaretlenir: close() icindeki onClose, kullanici zaten secim
+    // yaptiysa Promise'i "iptal" ile kapatmamalidir.
+    let decided = false;
+    const decide = (value) => {
+      decided = true;
+      m.close();
+      resolve(value);
+    };
     const m = modal({
       title,
       body: [el('p', { text: message })],
       actions: [
-        el('button.btn', { text: 'Vazgeç', onclick: () => { m.close(); resolve(false); } }),
-        el(`button.btn.${danger ? 'btn-danger' : 'btn-primary'}`, { text: confirmText, onclick: () => { m.close(); resolve(true); } }),
+        el('button.btn', { text: 'Vazgeç', onclick: () => decide(false) }),
+        el(`button.btn.${danger ? 'btn-danger' : 'btn-primary'}`, { text: confirmText, onclick: () => decide(true) }),
       ],
-      onClose: () => resolve(false),
+      onClose: () => { if (!decided) resolve(false); },
     });
   });
 }

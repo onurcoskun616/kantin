@@ -75,6 +75,7 @@ export async function renderProducts(root) {
         { label: 'Birim Kâr', num: true, render: (r) => deltaCell(r.profit.unitProfit) },
         { label: 'Kâr Marjı', num: true, render: (r) => marginBadge(r.profit.marginPct) },
         { label: 'Maliyet Üzeri', num: true, value: (r) => fmt.pct(r.profit.markupPct) },
+        { label: 'Tip', render: (r) => (r.product_type === 'URETILEN' ? badge('Üretilen', 'warn') : el('span.muted', { text: 'Satın alınan' })) },
         { label: 'Kampüs Fiyatı', render: (r) => (r.campus_sale_price !== null && r.campus_sale_price !== undefined ? badge('Özel', 'info') : el('span.muted', { text: '—' })) },
         { label: 'Durum', render: (r) => (r.is_active ? badge('Aktif', 'ok') : badge('Pasif')) },
         {
@@ -109,6 +110,12 @@ function openProductForm(categories, product, onDone) {
         options: [{ value: '', label: '— seçiniz —' }, ...categories.map((c) => ({ value: c.id, label: c.name }))] },
       { name: 'unit', label: 'Birim', type: 'select', value: product?.unit ?? 'ADET',
         options: ['ADET', 'KG', 'LT', 'PAKET', 'KUTU', 'PORSIYON'].map((u) => ({ value: u, label: u })) },
+      { name: 'productType', label: 'Ürün tipi', type: 'select', value: product?.product_type ?? 'SATIN_ALINAN',
+        options: [
+          { value: 'SATIN_ALINAN', label: 'Satın alınan — raftan sayılır' },
+          { value: 'URETILEN', label: 'Üretilen — kantinde hazırlanır (tost, çay, poğaça)' },
+        ],
+        hint: 'Üretilen ürünler stoktan ve sayımdan çıkarılır; dönem satış adedi sayım ekranında ayrıca beyan edilir.' },
       { name: 'purchasePrice', label: 'Alış fiyatı (KDV hariç)', type: 'number', step: '0.01', min: '0', value: product?.purchase_price ?? '', required: true,
         hint: 'Tedarikçi faturasındaki birim fiyat.' },
       { name: 'salePrice', label: 'Satış fiyatı (KDV dahil)', type: 'number', step: '0.01', min: '0', value: product?.sale_price ?? '', required: true,

@@ -3,7 +3,7 @@ import { all, get, insert, run, tx } from '../db.js';
 import { notFound, conflict, badRequest, sendCsv, toCsv } from '../lib/http.js';
 import { requireWrite, assertCampusAccess, seesAllCampuses } from '../lib/auth.js';
 import { logAudit } from '../lib/audit.js';
-import { str, num, int, bool, date, today } from '../lib/validate.js';
+import { str, num, int, bool, date, today, oneOf } from '../lib/validate.js';
 import { productProfit } from '../lib/money.js';
 
 export const productRoutes = new Router();
@@ -104,11 +104,12 @@ productRoutes.post('/', async (ctx) => {
     throw conflict('Bu barkod baska bir urunde kayitli.');
   }
   const id = insert(
-    `INSERT INTO products (barcode, name, category_id, unit, purchase_price, sale_price, vat_rate,
+    `INSERT INTO products (barcode, name, category_id, unit, product_type, purchase_price, sale_price, vat_rate,
                            critical_stock, meb_approved, max_price, track_expiry, is_active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [data.barcode, data.name, data.categoryId, data.unit, data.purchasePrice, data.salePrice, data.vatRate,
-     data.criticalStock, data.mebApproved ? 1 : 0, data.maxPrice, data.trackExpiry ? 1 : 0, data.isActive ? 1 : 0]
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [data.barcode, data.name, data.categoryId, data.unit, data.productType, data.purchasePrice, data.salePrice,
+     data.vatRate, data.criticalStock, data.mebApproved ? 1 : 0, data.maxPrice,
+     data.trackExpiry ? 1 : 0, data.isActive ? 1 : 0]
   );
   insert(
     `INSERT INTO price_history (product_id, campus_id, old_purchase, new_purchase, old_sale, new_sale, effective_date, changed_by)
@@ -131,12 +132,13 @@ productRoutes.put('/:id', async (ctx) => {
   }
   tx(() => {
     run(
-      `UPDATE products SET barcode = ?, name = ?, category_id = ?, unit = ?, purchase_price = ?, sale_price = ?,
-              vat_rate = ?, critical_stock = ?, meb_approved = ?, max_price = ?, track_expiry = ?, is_active = ?,
-              updated_at = datetime('now')
+      `UPDATE products SET barcode = ?, name = ?, category_id = ?, unit = ?, product_type = ?,
+              purchase_price = ?, sale_price = ?, vat_rate = ?, critical_stock = ?, meb_approved = ?,
+              max_price = ?, track_expiry = ?, is_active = ?, updated_at = datetime('now')
         WHERE id = ?`,
-      [data.barcode, data.name, data.categoryId, data.unit, data.purchasePrice, data.salePrice, data.vatRate,
-       data.criticalStock, data.mebApproved ? 1 : 0, data.maxPrice, data.trackExpiry ? 1 : 0, data.isActive ? 1 : 0, id]
+      [data.barcode, data.name, data.categoryId, data.unit, data.productType, data.purchasePrice, data.salePrice,
+       data.vatRate, data.criticalStock, data.mebApproved ? 1 : 0, data.maxPrice,
+       data.trackExpiry ? 1 : 0, data.isActive ? 1 : 0, id]
     );
     if (existing.purchase_price !== data.purchasePrice || existing.sale_price !== data.salePrice) {
       insert(
@@ -230,10 +232,11 @@ productRoutes.post('/bulk-import', async (ctx) => {
 
         if (existing) {
           run(
-            `UPDATE products SET name = ?, category_id = ?, unit = ?, purchase_price = ?, sale_price = ?,
-                    vat_rate = ?, critical_stock = ?, max_price = ?, is_active = 1, updated_at = datetime('now')
+            `UPDATE products SET name = ?, category_id = ?, unit = ?, product_type = ?, purchase_price = ?,
+                    sale_price = ?, vat_rate = ?, critical_stock = ?, max_price = ?, is_active = 1,
+                    updated_at = datetime('now')
               WHERE id = ?`,
-            [data.name, data.categoryId, data.unit, data.purchasePrice, data.salePrice,
+            [data.name, data.categoryId, data.unit, data.productType, data.purchasePrice, data.salePrice,
              data.vatRate, data.criticalStock, data.maxPrice, existing.id]
           );
           if (existing.purchase_price !== data.purchasePrice || existing.sale_price !== data.salePrice) {
@@ -247,10 +250,10 @@ productRoutes.post('/bulk-import', async (ctx) => {
           result.updated += 1;
         } else {
           const id = insert(
-            `INSERT INTO products (barcode, name, category_id, unit, purchase_price, sale_price, vat_rate,
-                                   critical_stock, max_price)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [data.barcode, data.name, data.categoryId, data.unit, data.purchasePrice,
+            `INSERT INTO products (barcode, name, category_id, unit, product_type, purchase_price, sale_price,
+                                   vat_rate, critical_stock, max_price)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [data.barcode, data.name, data.categoryId, data.unit, data.productType, data.purchasePrice,
              data.salePrice, data.vatRate, data.criticalStock, data.maxPrice]
           );
           insert(
@@ -279,6 +282,7 @@ function parseProduct(body) {
     name: str(body.name, 'Urun adi', { required: true, max: 200 }),
     categoryId: int(body.categoryId, 'Kategori', { def: null }),
     unit: str(body.unit, 'Birim', { max: 20 }) || 'ADET',
+    productType: oneOf(body.productType, 'Urun tipi', ['SATIN_ALINAN', 'URETILEN'], { def: 'SATIN_ALINAN' }),
     purchasePrice: num(body.purchasePrice, 'Alis fiyati', { min: 0, max: 1e6, def: 0 }) ?? 0,
     salePrice: num(body.salePrice, 'Satis fiyati', { min: 0, max: 1e6, def: 0 }) ?? 0,
     vatRate: num(body.vatRate, 'KDV orani', { min: 0, max: 100, def: 10 }) ?? 10,

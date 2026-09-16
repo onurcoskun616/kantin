@@ -115,6 +115,10 @@ yedekler ikinci bir konuma (bulut deposu) kopyalanmalı.
 yükleyebilirsiniz. Ürün listesiyle birlikte kampüs bazlı açılış stokları da
 aynı dosyadan aktarılır.
 
+**Denetim kontrolleri**  ✅ tamamlandı
+Kör sayım, iki imza, üretilen ürün ayrımı ve habersiz nokta sayımı eklendi.
+Gerekçeleri ve kapsamadıkları yer: **[DENETIM-KONTROLLERI.md](DENETIM-KONTROLLERI.md)**
+
 ### Öncelik 2 — İlk dönem içinde
 
 **Son kullanma tarihi (SKT) takibi ve uyarı**
@@ -136,9 +140,12 @@ otomatik hesaplanabilir. Şu anda manuel işaretleniyor.
 ### Öncelik 3 — Olgunlaşma
 
 **Menü/reçete yönetimi (üretilen ürünler)**
-Tost, sandviç, çay gibi kantinde **üretilen** ürünlerin reçetesi tanımlanırsa
-(1 tost = 2 dilim ekmek + 30 g kaşar), hammadde stoğu satıştan otomatik düşer.
-Şu anda tost tek bir ürün olarak takip ediliyor; hammadde israfı görünmez.
+Üretilen ürünler artık ayrı bir kalem: stoktan çıkarıldılar ve dönem satışları
+ayrıca beyan ediliyor (bkz. DENETIM-KONTROLLERI.md § 3). Eksik kalan parça
+**reçete (BOM) tanımı**: "1 tost = 2 dilim ekmek + 30 g kaşar" tanımlanırsa
+hammadde stoktan otomatik düşer ve beyan edilen adet, ekmek/kaşar tüketimiyle
+çapraz kontrol edilebilir. Şu an bu kalem güven esasına dayanıyor — cironun
+%20-30'u buysa, sıradaki en değerli geliştirme budur.
 
 **Öğrenci kartı / bakiye sistemi**
 Veresiye alanı var ancak öğrenci bazlı bakiye takibi yok. Nakitsiz kantin
@@ -165,9 +172,11 @@ Yazılım tek başına denetim sağlamaz. Aşağıdaki kuralları yazılı hale 
 
 | Konu | Öneri |
 |---|---|
-| Sayım sıklığı | Ayda 1 zorunlu + yılda 2 habersiz sayım |
+| Sayım sıklığı | İlk 3 ay haftalık, sonra 15 günde bir, en son ayda 1 |
+| Habersiz kontrol | Ayda 1 nokta sayımı, yüksek cirolu 5-10 üründe, tarih vermeden |
 | Sayımı kim yapar | Kantin görevlisi **tek başına** saymamalı; kampüs yöneticisi veya idari personel eşlik etmeli |
-| Kesinleştirme | Sayımı giren kişi ile kesinleştiren kişi farklı olmalı (sistem bunu zorunlu kılıyor) |
+| Kesinleştirme | Sayımı kilitleyen ile kesinleştiren farklı olmalı (sistem bunu zorunlu kılar) |
+| Sayıma katılan | Rafı iki kişi saymalı; ikinci kişinin adı sisteme yazılır ve silinemez |
 | Ciro girişi | Her gün kapanışta, Z raporu ile birlikte |
 | Kabul edilebilir fark | Ciro açığı **%2'yi** geçerse yazılı açıklama istenmeli |
 | Mal kabul | İrsaliye olmadan mal kabul edilmemeli; miktar teslim alınırken sayılmalı |

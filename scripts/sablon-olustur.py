@@ -36,6 +36,7 @@ CATEGORIES = [
     "Sıcak İçecek", "Dondurma", "Kırtasiye", "Diğer",
 ]
 UNITS = ["ADET", "KG", "LT", "PAKET", "KUTU", "PORSIYON"]
+PRODUCT_TYPES = ["Satın alınan", "Üretilen"]
 VAT_RATES = [1, 10, 20]
 CAMPUSES = [
     ("IKT", "İkitelli OSB Kampüsü"),
@@ -51,6 +52,9 @@ PRODUCT_COLUMNS = [
     ("Ürün Adı *", 34, "ZORUNLU. Rafta/menüde göründüğü şekilde yazın. Gramaj varsa ekleyin: 'Ayran 200 ml'"),
     ("Kategori", 24, "Listeden seçin. Yeni kategori yazarsanız sisteme otomatik eklenir."),
     ("Birim", 12, "Listeden seçin. Çoğu kantin ürünü ADET'tir."),
+    ("Ürün Tipi", 22, "Satın alınan = tedarikçiden gelir, raftan sayılır.\n"
+                      "Üretilen = kantinde hazırlanır (tost, çay, poğaça). Üretilen ürünler stoktan "
+                      "ve sayımdan çıkarılır; dönem satış adedi sayım ekranında ayrıca girilir."),
     ("Alış Fiyatı (KDV hariç) *", 22, "ZORUNLU. Tedarikçi FATURASINDAKİ birim fiyat, KDV HARİÇ."),
     ("Satış Fiyatı (KDV dahil) *", 22, "ZORUNLU. Öğrenciden tahsil ettiğiniz RAF fiyatı, KDV DAHİL."),
     ("KDV Oranı (%)", 14, "Tedarikçi faturasındaki KDV oranını yazın. Emin değilseniz faturaya bakın."),
@@ -61,9 +65,9 @@ PRODUCT_COLUMNS = [
 ]
 
 EXAMPLE_ROWS = [
-    ["8690000000028", "Ayran 200 ml", "Süt ve Süt Ürünleri", "ADET", 8.50, 13.00, 1, 24, 0],
-    ["8690000000011", "Su 500 ml", "Su ve İçecek", "ADET", 4.00, 6.00, 10, 48, 0],
-    ["", "Tost", "Sandviç ve Unlu Mamul", "ADET", 18.00, 35.00, 10, 0, 0],
+    ["8690000000028", "Ayran 200 ml", "Süt ve Süt Ürünleri", "ADET", "Satın alınan", 8.50, 13.00, 1, 24, 0],
+    ["8690000000011", "Su 500 ml", "Su ve İçecek", "ADET", "Satın alınan", 4.00, 6.00, 10, 48, 0],
+    ["", "Tost", "Sandviç ve Unlu Mamul", "ADET", "Üretilen", 18.00, 35.00, 10, 0, 0],
 ]
 
 
@@ -93,27 +97,27 @@ def build_products(ws):
             cell.fill = EXAMPLE_FILL
 
     for r in range(2, ROWS + 2):
-        # Birim kar: satis(KDV haric) - alis
-        ws.cell(row=r, column=10).value = (
-            f'=IF(OR($B{r}="",$E{r}="",$F{r}=""),"",ROUND($F{r}/(1+$G{r}/100)-$E{r},2))'
+        # Birim kar: satis(KDV haric) - alis   [F=alis, G=satis, H=KDV]
+        ws.cell(row=r, column=11).value = (
+            f'=IF(OR($B{r}="",$F{r}="",$G{r}=""),"",ROUND($G{r}/(1+$H{r}/100)-$F{r},2))'
         )
         # Kar marji: birim kar / satis(KDV haric)
-        ws.cell(row=r, column=11).value = (
-            f'=IF(OR($J{r}="",$F{r}=""),"",IF($F{r}=0,"",ROUND($J{r}/($F{r}/(1+$G{r}/100)),4)))'
+        ws.cell(row=r, column=12).value = (
+            f'=IF(OR($K{r}="",$G{r}=""),"",IF($G{r}=0,"",ROUND($K{r}/($G{r}/(1+$H{r}/100)),4)))'
         )
-        for c in range(1, 12):
+        for c in range(1, 13):
             cell = ws.cell(row=r, column=c)
             cell.font = Font(name=FONT, size=10)
             cell.border = BORDER
-            if c in (10, 11):
+            if c in (11, 12):
                 cell.fill = CALC_FILL
             elif r > 1 + len(EXAMPLE_ROWS):
                 cell.fill = INPUT_FILL
-            if c in (5, 6, 9, 10):
+            if c in (6, 7, 10, 11):
                 cell.number_format = "#,##0.00"
-            elif c in (7, 8):
+            elif c in (8, 9):
                 cell.number_format = "#,##0"
-            elif c == 11:
+            elif c == 12:
                 cell.number_format = "0.0%"
             if c == 1:
                 cell.number_format = "@"  # barkodu metin olarak tut, bilimsel gosterime dusmesin
@@ -122,17 +126,19 @@ def build_products(ws):
     add_list_validation(ws, CATEGORIES, f"C2:C{last}", "Kategori",
                         "Listeden seçin veya yeni bir kategori adı yazın.", allow_custom=True)
     add_list_validation(ws, UNITS, f"D2:D{last}", "Birim", "Listeden bir birim seçin.")
-    add_list_validation(ws, [str(v) for v in VAT_RATES], f"G2:G{last}", "KDV Oranı",
+    add_list_validation(ws, PRODUCT_TYPES, f"E2:E{last}", "Ürün Tipi",
+                        "Kantinde hazırlanan ürünler için 'Üretilen' seçin.")
+    add_list_validation(ws, [str(v) for v in VAT_RATES], f"H2:H{last}", "KDV Oranı",
                         "Tedarikçi faturasındaki KDV oranı.", allow_custom=True)
 
     # Zarara satis ve dusuk marj uyarisi
     red = PatternFill("solid", fgColor="FFCDD2")
     amber = PatternFill("solid", fgColor="FFF3CD")
     ws.conditional_formatting.add(
-        f"J2:K{last}", CellIsRule(operator="lessThan", formula=["0"], fill=red,
+        f"K2:L{last}", CellIsRule(operator="lessThan", formula=["0"], fill=red,
                                   font=Font(name=FONT, size=10, color="B71C1C", bold=True)))
     ws.conditional_formatting.add(
-        f"K2:K{last}", CellIsRule(operator="between", formula=["0", "0.2"], fill=amber))
+        f"L2:L{last}", CellIsRule(operator="between", formula=["0", "0.2"], fill=amber))
 
 
 def add_list_validation(ws, values, ref, title, prompt, allow_custom=False):
@@ -224,10 +230,13 @@ def build_instructions(ws):
                             "gri hücreler otomatik hesaplanır, onlara yazmayın."),
         ("2. Örnek satırlar", "İlk 3 satır yeşil renkli örnektir. Üzerine yazabilir veya satırları silebilirsiniz."),
         ("3. Zorunlu alanlar", "Başlığında * olan üç alan zorunludur: Ürün Adı, Alış Fiyatı, Satış Fiyatı."),
-        ("4. Açılış Stoğu", "İsteğe bağlıdır. Sisteme geçiş günü her kampüsteki mevcut miktarları girmek "
+        ("4. Ürün tipi", "Tost, çay, poğaça gibi kantinde HAZIRLANAN ürünler için \"Üretilen\" seçin. "
+                         "Bunlar raftan sayılamadığı için stok ve sayım dışında tutulur; dönem satış "
+                         "adetleri sayım ekranında ayrıca girilir."),
+        ("5. Açılış Stoğu", "İsteğe bağlıdır. Sisteme geçiş günü her kampüsteki mevcut miktarları girmek "
                             "isterseniz \"Açılış Stoğu\" sekmesini doldurun. Boş bırakırsanız stokları "
                             "uygulamadan da girebilirsiniz."),
-        ("5. Yükleme", "Dosyayı kaydedin ve uygulamada Ürünler ekranındaki \"Excel'den Aktar\" düğmesiyle yükleyin. "
+        ("6. Yükleme", "Dosyayı kaydedin ve uygulamada Ürünler ekranındaki \"Excel'den Aktar\" düğmesiyle yükleyin. "
                        "Sistem yüklemeden önce size bir önizleme gösterir."),
     ]:
         line(r, label, text)

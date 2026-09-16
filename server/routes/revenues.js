@@ -205,7 +205,8 @@ function parseRevenue(user, body) {
 /** Kesinlesmis sayim donemine ait ciro yalnizca yonetici tarafindan degistirilebilir. */
 function assertRevenueEditable(campusId, revenueDate, user) {
   const locked = get(
-    "SELECT id, count_date FROM counts WHERE campus_id = ? AND status = 'KESINLESMIS' AND count_date >= ? LIMIT 1",
+    `SELECT id, count_date FROM counts
+      WHERE campus_id = ? AND status = 'KESINLESMIS' AND count_type = 'DONEM' AND count_date >= ? LIMIT 1`,
     [campusId, revenueDate]
   );
   if (locked && !['ADMIN', 'GENEL_MUDURLUK'].includes(user.role)) {

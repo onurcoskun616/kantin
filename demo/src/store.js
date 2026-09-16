@@ -10,7 +10,7 @@
 import { buildDemoData, iso, dayOffset, eachDay, isWeekday, round2 } from './data.js';
 import { productProfit, netFromGross, pctOf, purchaseLineTotals } from './money.js';
 
-const STORAGE_KEY = 'kantin_demo_db_v1';
+const STORAGE_KEY = 'kantin_demo_db_v2';
 
 /* ---------------------------- Hata türü ---------------------------- */
 export class DemoError extends Error {
@@ -116,7 +116,7 @@ function stockOf(campusId, productId, untilDate = null) {
     .reduce((s, m) => s + m.quantity, 0);
 }
 
-function stockSnapshot(campusId, { untilDate = null, onlyActive = true } = {}) {
+function stockSnapshot(campusId, { untilDate = null, onlyActive = true, includeProduced = false } = {}) {
   const totals = new Map();
   for (const m of db.movements) {
     if (m.campus_id !== campusId) continue;
@@ -125,11 +125,13 @@ function stockSnapshot(campusId, { untilDate = null, onlyActive = true } = {}) {
   }
   return db.products
     .filter((p) => (onlyActive ? p.is_active : true))
+    .filter((p) => includeProduced || p.product_type !== 'URETILEN')
     .map((p) => {
       const prices = effectivePrices(campusId, p.id);
       return {
         product_id: p.id, barcode: p.barcode, name: p.name, unit: p.unit,
         vat_rate: p.vat_rate, max_price: p.max_price, meb_approved: p.meb_approved,
+        product_type: p.product_type,
         category_name: byId(db.categories, p.category_id)?.name ?? null,
         purchase_price: prices.purchase_price,
         sale_price: prices.sale_price,
@@ -154,14 +156,15 @@ function stockValue(campusId, untilDate = null) {
 
 function lastFinalizedCount(campusId) {
   return db.counts
-    .filter((c) => c.campus_id === campusId && c.status === 'KESINLESMIS')
+    .filter((c) => c.campus_id === campusId && c.status === 'KESINLESMIS' && c.count_type === 'DONEM')
     .sort((a, b) => (a.count_date < b.count_date ? 1 : -1))[0] ?? null;
 }
 
 /** Kesinleşmiş sayım dönemine geriye dönük kayıt engeli. */
 function assertNotLocked(campusId, date) {
   const locked = db.counts
-    .filter((c) => c.campus_id === campusId && c.status === 'KESINLESMIS' && c.count_date >= date)
+    .filter((c) => c.campus_id === campusId && c.status === 'KESINLESMIS'
+      && c.count_type === 'DONEM' && c.count_date >= date)
     .sort((a, b) => (a.count_date < b.count_date ? -1 : 1))[0];
   if (locked) {
     throw conflict(`${locked.count_date} tarihli kesinleşmiş sayım var. Bu tarihten önceye kayıt giremezsiniz.`);
@@ -442,6 +445,7 @@ function parseProduct(body) {
     name: text(body.name, 'Ürün adı', { required: true }),
     category_id: body.categoryId ? Number(body.categoryId) : null,
     unit: text(body.unit, 'Birim') || 'ADET',
+    product_type: body.productType === 'URETILEN' ? 'URETILEN' : 'SATIN_ALINAN',
     purchase_price: num(body.purchasePrice, 'Alış fiyatı', { min: 0, def: 0 }) ?? 0,
     sale_price: num(body.salePrice, 'Satış fiyatı', { min: 0, def: 0 }) ?? 0,
     vat_rate: num(body.vatRate, 'KDV oranı', { min: 0, def: 10 }) ?? 10,
@@ -689,8 +693,8 @@ route('POST', '/api/purchases/:id/cancel', ({ params }) => {
   if (!header) throw notFound('Alım belgesi bulunamadı.');
   campusAccess(header.campus_id);
   if (header.status === 'IPTAL') throw conflict('Belge zaten iptal edilmiş.');
-  const later = db.counts.find((c) => c.campus_id === header.campus_id
-    && c.status === 'KESINLESMIS' && c.count_date >= header.document_date);
+  const later = db.counts.find((c) => c.campus_id === header.campus_id && c.status === 'KESINLESMIS'
+    && c.count_type === 'DONEM' && c.count_date >= header.document_date);
   if (later) {
     throw conflict(`Bu belge ${later.count_date} tarihli kesinleşmiş sayıma dahil olduğu için iptal edilemez. Düzeltme kaydı giriniz.`);
   }
@@ -934,10 +938,24 @@ function withVariance(row) {
   return { ...row, difference, difference_pct: pctOf(difference, row.expected_revenue || 0) };
 }
 
+function producedProducts(campusId) {
+  return db.products
+    .filter((p) => p.is_active && p.product_type === 'URETILEN')
+    .map((p) => ({ id: p.id, ...effectivePrices(campusId, p.id) }))
+    .sort((a, b) => (productById(a.id)?.name ?? '').localeCompare(productById(b.id)?.name ?? '', 'tr'));
+}
+
+/**
+ * Sayım kaydını yükler.
+ * KÖR SAYIM: taslak halindeyken beklenen miktar ve türevleri maskelenir.
+ * Maskeleme burada (veri katmanında) yapılır; arayüzden aşılamaz.
+ */
 function loadCount(countId) {
   const header = byId(db.counts, countId);
   if (!header) throw notFound('Sayım bulunamadı.');
-  const lines = db.count_lines
+  const blindActive = !!header.is_blind && header.status === 'TASLAK';
+
+  let lines = db.count_lines
     .filter((l) => l.count_id === header.id)
     .map((l) => {
       const p = productById(l.product_id);
@@ -948,11 +966,32 @@ function loadCount(countId) {
     })
     .sort((a, b) => (a.category_name || '').localeCompare(b.category_name || '', 'tr')
       || a.product_name.localeCompare(b.product_name, 'tr'));
+
+  const progress = { total: lines.length, filled: lines.filter((l) => l.counted_qty !== 0).length };
+  if (blindActive) {
+    lines = lines.map((l) => ({
+      ...l, expected_qty: null, diff_qty: null, sold_qty: null, sales_value: null, cost_value: null,
+    }));
+  }
+
+  const production = db.production_sales
+    .filter((r) => r.count_id === header.id)
+    .map((r) => {
+      const p = productById(r.product_id);
+      return { ...r, product_name: p?.name ?? '—', unit: p?.unit ?? 'ADET' };
+    })
+    .sort((a, b) => a.product_name.localeCompare(b.product_name, 'tr'));
+
   return withVariance({
-    ...header, lines,
+    ...header, lines, production, progress,
+    blind_active: blindActive,
     campus_name: campusName(header.campus_id),
     created_by_name: userName(header.created_by),
+    submitted_by_name: userName(header.submitted_by),
     finalized_by_name: userName(header.finalized_by),
+    can_finalize: header.status === 'SAYILDI' && header.count_type === 'DONEM'
+      && header.submitted_by !== session?.id
+      && ['ADMIN', 'GENEL_MUDURLUK', 'KAMPUS_YONETICISI'].includes(session?.role),
   });
 }
 
@@ -960,12 +999,14 @@ route('GET', '/api/counts', ({ query }) => {
   const allowed = visibleCampusIds(query.campusId);
   const items = db.counts
     .filter((c) => allowed.includes(c.campus_id))
+    .filter((c) => !query.type || c.count_type === query.type)
     .sort((a, b) => (a.count_date < b.count_date ? 1 : a.count_date > b.count_date ? -1 : b.id - a.id))
     .slice(0, Number(query.limit || 100))
     .map((c) => withVariance({
       ...c,
       campus_name: campusName(c.campus_id),
       created_by_name: userName(c.created_by),
+      submitted_by_name: userName(c.submitted_by),
       finalized_by_name: userName(c.finalized_by),
       line_count: db.count_lines.filter((l) => l.count_id === c.id).length,
     }));
@@ -975,27 +1016,51 @@ route('GET', '/api/counts', ({ query }) => {
 route('POST', '/api/counts', ({ body }) => {
   requireWrite();
   const campusId = campusAccess(body.campusId);
+  const countType = body.countType === 'NOKTA' ? 'NOKTA' : 'DONEM';
   const countDate = body.countDate || today();
   if (countDate > today()) throw bad('Gelecek tarihli sayım oluşturulamaz.');
 
-  const openDraft = db.counts.find((c) => c.campus_id === campusId && c.status === 'TASLAK');
-  if (openDraft) throw conflict(`Bu kampüste açık bir sayım taslağı var (#${openDraft.id}). Önce onu tamamlayın veya silin.`);
+  // Kör sayım varsayılandır; kapatmak yalnızca genel müdürlüğün kararı olabilir
+  let isBlind = 1;
+  if (body.isBlind === false) { requireRole('ADMIN', 'GENEL_MUDURLUK'); isBlind = 0; }
 
-  const last = lastFinalizedCount(campusId);
-  if (last && countDate <= last.count_date) {
-    throw bad(`Son kesinleşmiş sayım ${last.count_date} tarihli. Sayım tarihi bundan sonra olmalıdır.`);
+  const open = db.counts.find((c) => c.campus_id === campusId && c.count_type === countType
+    && ['TASLAK', 'SAYILDI'].includes(c.status));
+  if (open) {
+    throw conflict(`Bu kampüste tamamlanmamış bir ${countType === 'NOKTA' ? 'nokta' : 'dönem'} sayımı var (#${open.id}). Önce onu tamamlayın veya silin.`);
   }
-  const periodStart = last ? iso(new Date(new Date(`${last.count_date}T00:00:00Z`).getTime() + 86400000)) : null;
+
+  let periodStart = null;
+  if (countType === 'DONEM') {
+    const last = lastFinalizedCount(campusId);
+    if (last && countDate <= last.count_date) {
+      throw bad(`Son kesinleşmiş sayım ${last.count_date} tarihli. Sayım tarihi bundan sonra olmalıdır.`);
+    }
+    periodStart = last
+      ? iso(new Date(new Date(`${last.count_date}T00:00:00Z`).getTime() + 86400000))
+      : null;
+  }
+
+  const selectedIds = countType === 'NOKTA'
+    ? (Array.isArray(body.productIds) ? body.productIds.map(Number) : [])
+    : null;
+  if (countType === 'NOKTA' && !selectedIds.length) throw bad('Nokta sayımı için en az bir ürün seçin.');
 
   const count = {
     id: nextId('count'), campus_id: campusId, count_date: countDate, period_start: periodStart,
-    status: 'TASLAK', note: text(body.note, 'Açıklama'),
-    expected_revenue: 0, actual_revenue: 0, cogs_total: 0,
-    created_by: session.id, finalized_by: null, finalized_at: null, created_at: now(),
+    count_type: countType, status: 'TASLAK', is_blind: isBlind,
+    note: text(body.note, 'Açıklama'), witness_name: null,
+    expected_revenue: 0, actual_revenue: 0, cogs_total: 0, production_revenue: 0, reopened_count: 0,
+    created_by: session.id, submitted_by: null, submitted_at: null,
+    finalized_by: null, finalized_at: null, created_at: now(),
   };
   db.counts.push(count);
 
-  for (const snap of stockSnapshot(campusId, { untilDate: countDate })) {
+  const snapshot = stockSnapshot(campusId, { untilDate: countDate })
+    .filter((p) => !selectedIds || selectedIds.includes(p.product_id));
+  if (!snapshot.length) throw bad('Sayılacak ürün bulunamadı.');
+
+  for (const snap of snapshot) {
     db.count_lines.push({
       id: nextId('count_line'), count_id: count.id, product_id: snap.product_id,
       expected_qty: snap.stock_qty, counted_qty: 0, diff_qty: 0, sold_qty: 0,
@@ -1003,7 +1068,18 @@ route('POST', '/api/counts', ({ body }) => {
       sales_value: 0, cost_value: 0,
     });
   }
-  logAudit('CREATE', 'counts', count.id, campusId, { countDate });
+
+  if (countType === 'DONEM') {
+    for (const p of producedProducts(campusId)) {
+      db.production_sales.push({
+        id: nextId('production_sale'), count_id: count.id, product_id: p.id, quantity: 0,
+        purchase_price: p.purchase_price, sale_price: p.sale_price, vat_rate: p.vat_rate,
+        sales_value: 0, cost_value: 0,
+      });
+    }
+  }
+
+  logAudit('CREATE', 'counts', count.id, campusId, { countDate, countType, isBlind: !!isBlind });
   return loadCount(count.id);
 });
 
@@ -1013,16 +1089,24 @@ route('GET', '/api/counts/:id', ({ params }) => {
   return data;
 });
 
-route('PUT', '/api/counts/:id/lines', ({ params, body }) => {
-  requireWrite();
-  const header = byId(db.counts, params.id);
+/** Sayım taslak mı? Kilitli/kesinleşmiş sayımda değişiklik engellenir. */
+function requireDraft(id, what) {
+  const header = byId(db.counts, id);
   if (!header) throw notFound('Sayım bulunamadı.');
   campusAccess(header.campus_id);
   if (header.status === 'KESINLESMIS') throw conflict('Kesinleşmiş sayım değiştirilemez.');
+  if (header.status === 'SAYILDI') {
+    throw conflict(`${what} kilitlenmiş sayımda değiştirilemez. Genel müdürlük sayımı yeniden açabilir.`);
+  }
+  return header;
+}
 
+route('PUT', '/api/counts/:id/lines', ({ params, body }) => {
+  requireWrite();
+  const header = requireDraft(Number(params.id), 'Sayım satırları');
   const lines = Array.isArray(body.lines) ? body.lines : [];
   if (!lines.length) throw bad('En az bir satır gönderilmelidir.');
-  let updated = 0;
+
   for (const raw of lines) {
     const productId = Number(raw.productId);
     const countedQty = num(raw.countedQty, 'Sayılan', { required: true, min: 0 });
@@ -1042,18 +1126,72 @@ route('PUT', '/api/counts/:id/lines', ({ params, body }) => {
         sales_value: 0, cost_value: 0,
       });
     }
-    updated += 1;
   }
   persist();
-  return { ok: true, updated };
+  return { ok: true, updated: lines.length };
 });
 
+route('PUT', '/api/counts/:id/production', ({ params, body }) => {
+  requireWrite();
+  const header = requireDraft(Number(params.id), 'Üretim satışları');
+  if (header.count_type !== 'DONEM') throw bad('Üretim satışı yalnızca dönem sayımında girilir.');
+  const lines = Array.isArray(body.lines) ? body.lines : [];
+  if (!lines.length) throw bad('En az bir satır gönderilmelidir.');
+
+  for (const raw of lines) {
+    const productId = Number(raw.productId);
+    const quantity = num(raw.quantity, 'Adet', { required: true, min: 0 });
+    const prices = effectivePrices(header.campus_id, productId);
+    if (!prices) throw bad('Ürün bulunamadı.');
+    let row = db.production_sales.find((r) => r.count_id === header.id && r.product_id === productId);
+    if (!row) {
+      row = {
+        id: nextId('production_sale'), count_id: header.id, product_id: productId, quantity: 0,
+        purchase_price: prices.purchase_price, sale_price: prices.sale_price, vat_rate: prices.vat_rate,
+        sales_value: 0, cost_value: 0,
+      };
+      db.production_sales.push(row);
+    }
+    row.quantity = quantity;
+  }
+  persist();
+  return { ok: true, updated: lines.length };
+});
+
+/* --------------------- Sayımı kilitle (kör sayım) ------------------- */
+route('POST', '/api/counts/:id/submit', ({ params, body }) => {
+  requireWrite();
+  const header = requireDraft(Number(params.id), 'Sayım');
+  const witnessName = text(body.witnessName, 'Sayıma katılan kişi', { required: true });
+  if (witnessName.length < 3) throw bad('"Sayıma katılan kişi" en az 3 karakter olmalıdır.');
+
+  const lines = db.count_lines.filter((l) => l.count_id === header.id);
+  if (lines.every((l) => l.counted_qty === 0)) throw bad('Hiçbir ürün için miktar girilmemiş.');
+
+  for (const l of lines) l.diff_qty = round2(l.counted_qty - l.expected_qty);
+  Object.assign(header, {
+    status: 'SAYILDI', witness_name: witnessName, submitted_by: session.id, submitted_at: now(),
+  });
+  logAudit('SUBMIT_COUNT', 'counts', header.id, header.campus_id, { witnessName });
+  return loadCount(header.id);
+});
+
+/* ----------------------------- Kesinleştir -------------------------- */
 route('POST', '/api/counts/:id/finalize', ({ params }) => {
   requireRole('ADMIN', 'GENEL_MUDURLUK', 'KAMPUS_YONETICISI');
   const header = byId(db.counts, params.id);
   if (!header) throw notFound('Sayım bulunamadı.');
   campusAccess(header.campus_id);
+
+  if (header.count_type === 'NOKTA') throw bad('Nokta sayımı kesinleştirilmez; kilitlendiğinde tamamlanır.');
   if (header.status === 'KESINLESMIS') throw conflict('Sayım zaten kesinleşmiş.');
+  if (header.status !== 'SAYILDI') {
+    throw conflict('Önce sayımı kilitleyin ("Sayımı Kilitle"). Kesinleştirme kilitlenmiş sayım üzerinde yapılır.');
+  }
+  // İKİ İMZA: sayan ile onaylayan aynı kişi olamaz
+  if (header.submitted_by && header.submitted_by === session.id) {
+    throw forbidden('Sayımı kilitleyen kişi kendi sayımını kesinleştiremez. Kesinleştirmeyi başka bir yetkili yapmalıdır.');
+  }
 
   const snap = new Map(
     stockSnapshot(header.campus_id, { untilDate: header.count_date, onlyActive: false })
@@ -1087,19 +1225,45 @@ route('POST', '/api/counts/:id/finalize', ({ params }) => {
     }
   }
 
+  let productionRevenue = 0;
+  for (const row of db.production_sales.filter((r) => r.count_id === header.id)) {
+    row.sales_value = round2(row.quantity * row.sale_price);
+    row.cost_value = round2(row.quantity * row.purchase_price);
+    productionRevenue += row.sales_value;
+    cogsTotal += row.cost_value;
+  }
+  expectedRevenue += productionRevenue;
+
   const actualRevenue = db.revenues
     .filter((r) => r.campus_id === header.campus_id && r.revenue_date <= header.count_date
       && (!header.period_start || r.revenue_date >= header.period_start))
-    .reduce((s, r) => s + r.total_amount, 0);
+    .reduce((s2, r) => s2 + r.total_amount, 0);
 
   Object.assign(header, {
     status: 'KESINLESMIS', finalized_by: session.id, finalized_at: now(),
     expected_revenue: round2(expectedRevenue), actual_revenue: round2(actualRevenue),
-    cogs_total: round2(cogsTotal),
+    cogs_total: round2(cogsTotal), production_revenue: round2(productionRevenue),
   });
   logAudit('FINALIZE', 'counts', header.id, header.campus_id, {
     expectedRevenue: header.expected_revenue, actualRevenue: header.actual_revenue,
   });
+  return loadCount(header.id);
+});
+
+/* ----------------------- Sayımı yeniden aç -------------------------- */
+route('POST', '/api/counts/:id/reopen', ({ params, body }) => {
+  requireRole('ADMIN', 'GENEL_MUDURLUK');
+  const header = byId(db.counts, params.id);
+  if (!header) throw notFound('Sayım bulunamadı.');
+  if (header.status !== 'SAYILDI') throw conflict('Yalnızca kilitlenmiş, henüz kesinleşmemiş sayım yeniden açılabilir.');
+  const reason = text(body.reason, 'Gerekçe', { required: true });
+  if (reason.length < 5) throw bad('Gerekçe en az 5 karakter olmalıdır.');
+
+  Object.assign(header, {
+    status: 'TASLAK', submitted_by: null, submitted_at: null,
+    reopened_count: (header.reopened_count || 0) + 1,
+  });
+  logAudit('REOPEN_COUNT', 'counts', header.id, header.campus_id, { reason });
   return loadCount(header.id);
 });
 
@@ -1109,16 +1273,35 @@ route('DELETE', '/api/counts/:id', ({ params }) => {
   if (!header) throw notFound('Sayım bulunamadı.');
   campusAccess(header.campus_id);
   if (header.status === 'KESINLESMIS') throw conflict('Kesinleşmiş sayım silinemez.');
+  if (header.status === 'SAYILDI') {
+    throw conflict('Kilitlenmiş sayım silinemez. Düzeltme gerekiyorsa genel müdürlük sayımı yeniden açabilir.');
+  }
   db.counts = db.counts.filter((c) => c.id !== header.id);
   db.count_lines = db.count_lines.filter((l) => l.count_id !== header.id);
+  db.production_sales = db.production_sales.filter((r) => r.count_id !== header.id);
   logAudit('DELETE', 'counts', header.id, header.campus_id);
   return { ok: true };
 });
 
+/* ------------------------- Mutabakat raporu ------------------------ */
 route('GET', '/api/counts/:id/reconciliation', ({ params }) => {
   const data = loadCount(Number(params.id));
   campusAccess(data.campus_id);
 
+  // KÖR SAYIM: kilitlenene kadar hiçbir beklenen değer dışarı verilmez
+  if (data.blind_active) {
+    return {
+      blind: true,
+      count: {
+        id: data.id, campusId: data.campus_id, campusName: data.campus_name,
+        countDate: data.count_date, periodStart: data.period_start,
+        status: data.status, countType: data.count_type,
+      },
+      progress: data.progress,
+    };
+  }
+
+  const isSpot = data.count_type === 'NOKTA';
   const firstMovement = db.movements
     .filter((m) => m.campus_id === data.campus_id)
     .reduce((min, m) => (min === null || m.movement_date < min ? m.movement_date : min), null);
@@ -1127,7 +1310,7 @@ route('GET', '/api/counts/:id/reconciliation', ({ params }) => {
 
   const periodRevenues = db.revenues.filter((r) => r.campus_id === data.campus_id
     && r.revenue_date >= from && r.revenue_date <= to);
-  const sum = (key) => round2(periodRevenues.reduce((s, r) => s + r[key], 0));
+  const sum = (key) => round2(periodRevenues.reduce((s2, r) => s2 + r[key], 0));
 
   const purchases = db.purchases.filter((p) => p.campus_id === data.campus_id
     && p.status !== 'IPTAL' && p.document_date >= from && p.document_date <= to);
@@ -1135,59 +1318,77 @@ route('GET', '/api/counts/:id/reconciliation', ({ params }) => {
     && w.waste_date >= from && w.waste_date <= to);
   const campus = byId(db.campuses, data.campus_id);
 
-  const expectedRevenue = data.status === 'KESINLESMIS'
-    ? data.expected_revenue
-    : round2(data.lines.reduce((s, l) => s + (l.expected_qty - l.counted_qty) * l.sale_price, 0));
-  const cogs = data.status === 'KESINLESMIS'
+  const finalized = data.status === 'KESINLESMIS';
+  const countedRevenue = finalized
+    ? round2(data.expected_revenue - data.production_revenue)
+    : round2(data.lines.reduce((s2, l) => s2 + (l.expected_qty - l.counted_qty) * l.sale_price, 0));
+  const productionRevenue = finalized
+    ? data.production_revenue
+    : round2(data.production.reduce((s2, r) => s2 + r.quantity * r.sale_price, 0));
+  const expectedRevenue = round2(countedRevenue + productionRevenue);
+  const productionCost = round2(data.production.reduce((s2, r) => s2 + r.quantity * r.purchase_price, 0));
+
+  const cogs = finalized
     ? data.cogs_total
-    : round2(data.lines.reduce((s, l) => s + (l.expected_qty - l.counted_qty) * l.purchase_price, 0));
+    : round2(data.lines.reduce((s2, l) => s2 + (l.expected_qty - l.counted_qty) * l.purchase_price, 0) + productionCost);
 
   const actualRevenue = sum('total_amount');
-  const difference = round2(actualRevenue - expectedRevenue);
+  const difference = isSpot ? null : round2(actualRevenue - expectedRevenue);
 
-  // Satış tutarına göre ağırlıklı ortalama KDV oranı
   let value = 0; let weighted = 0;
   for (const l of data.lines) {
-    const v = Math.abs((l.expected_qty - l.counted_qty) * l.sale_price);
+    const v = Math.abs(((l.expected_qty ?? 0) - l.counted_qty) * l.sale_price);
     value += v; weighted += v * l.vat_rate;
   }
   const avgVat = value > 0 ? weighted / value : 10;
   const actualNet = round2(netFromGross(actualRevenue, avgVat));
-  const grossProfit = round2(actualNet - cogs);
+  const grossProfit = isSpot ? null : round2(actualNet - cogs);
   const schoolDays = periodRevenues.filter((r) => r.is_school_day).length;
 
   return {
+    blind: false,
+    isSpot,
     count: {
       id: data.id, campusId: data.campus_id, campusName: data.campus_name,
-      countDate: data.count_date, periodStart: data.period_start, status: data.status,
+      countDate: data.count_date, periodStart: data.period_start,
+      status: data.status, countType: data.count_type,
+      submittedByName: data.submitted_by_name, witnessName: data.witness_name,
+      finalizedByName: data.finalized_by_name, reopenedCount: data.reopened_count,
     },
     period: { from, to, dayCount: periodRevenues.length, schoolDays },
     revenue: {
-      expected: expectedRevenue, actual: actualRevenue, difference,
-      differencePct: pctOf(difference, expectedRevenue),
+      expected: expectedRevenue, counted: countedRevenue, production: productionRevenue,
+      actual: actualRevenue, difference,
+      differencePct: isSpot ? null : pctOf(difference, expectedRevenue),
       cash: sum('cash_amount'), card: sum('card_amount'), credit: sum('credit_amount'),
     },
+    production: {
+      revenue: productionRevenue, cost: productionCost,
+      sharePct: expectedRevenue > 0 ? pctOf(productionRevenue, expectedRevenue) : null,
+      items: data.production.filter((r) => r.quantity > 0),
+    },
     profitability: {
-      cogs, actualNet, grossProfit, grossMarginPct: pctOf(grossProfit, actualNet),
+      cogs, actualNet, grossProfit,
+      grossMarginPct: isSpot ? null : pctOf(grossProfit, actualNet),
       theoreticalProfit: round2(data.lines.reduce(
-        (s, l) => s + (l.expected_qty - l.counted_qty) * (netFromGross(l.sale_price, l.vat_rate) - l.purchase_price), 0
+        (s2, l) => s2 + ((l.expected_qty ?? 0) - l.counted_qty) * (netFromGross(l.sale_price, l.vat_rate) - l.purchase_price), 0
       )),
     },
     purchases: {
-      netTotal: round2(purchases.reduce((s, p) => s + p.net_total, 0)),
-      grossTotal: round2(purchases.reduce((s, p) => s + p.gross_total, 0)),
+      netTotal: round2(purchases.reduce((s2, p) => s2 + p.net_total, 0)),
+      grossTotal: round2(purchases.reduce((s2, p) => s2 + p.gross_total, 0)),
       documentCount: purchases.length,
     },
     waste: {
-      costValue: round2(waste.reduce((s, w) => s + w.quantity * w.unit_cost, 0)),
+      costValue: round2(waste.reduce((s2, w) => s2 + w.quantity * w.unit_cost, 0)),
       recordCount: waste.length,
     },
-    perStudent: campus.student_count > 0 ? {
+    perStudent: campus.student_count > 0 && !isSpot ? {
       studentCount: campus.student_count,
       revenuePerStudent: round2(actualRevenue / campus.student_count),
       dailyRevenuePerStudent: schoolDays > 0 ? round2(actualRevenue / campus.student_count / schoolDays) : null,
     } : null,
-    schoolShare: campus.rent_share_pct > 0
+    schoolShare: campus.rent_share_pct > 0 && !isSpot
       ? { pct: campus.rent_share_pct, amount: round2(actualRevenue * campus.rent_share_pct / 100) }
       : null,
     topVariances: data.lines
@@ -1196,7 +1397,7 @@ route('GET', '/api/counts/:id/reconciliation', ({ params }) => {
       .sort((a, b) => Math.abs(b.variance_value) - Math.abs(a.variance_value))
       .slice(0, 20),
     soldItems: data.lines
-      .filter((l) => l.expected_qty - l.counted_qty > 0)
+      .filter((l) => (l.expected_qty ?? 0) - l.counted_qty > 0)
       .map((l) => ({ ...l, sold: round2(l.expected_qty - l.counted_qty) }))
       .sort((a, b) => b.sold * b.sale_price - a.sold * a.sale_price)
       .slice(0, 30),
@@ -1346,8 +1547,8 @@ function parseRevenue(body) {
 
 function assertRevenueEditable(campusId, revenueDate) {
   const u = requireUser();
-  const locked = db.counts.find((c) => c.campus_id === campusId
-    && c.status === 'KESINLESMIS' && c.count_date >= revenueDate);
+  const locked = db.counts.find((c) => c.campus_id === campusId && c.status === 'KESINLESMIS'
+    && c.count_type === 'DONEM' && c.count_date >= revenueDate);
   if (locked && !['ADMIN', 'GENEL_MUDURLUK'].includes(u.role)) {
     throw conflict(`${locked.count_date} tarihli kesinleşmiş sayım bu günü kapsıyor. Değişiklik için genel müdürlüğe başvurun.`);
   }
@@ -1376,7 +1577,7 @@ route('GET', '/api/reports/dashboard', ({ query }) => {
       .reduce((s, w) => s + w.quantity * w.unit_cost, 0));
 
     const last = db.counts
-      .filter((c) => c.campus_id === campus.id)
+      .filter((c) => c.campus_id === campus.id && c.count_type === 'DONEM')
       .sort((a, b) => (a.count_date < b.count_date ? 1 : a.count_date > b.count_date ? -1 : b.id - a.id))[0] ?? null;
     const openDraft = db.counts.find((c) => c.campus_id === campus.id && c.status === 'TASLAK');
     const difference = last && last.status === 'KESINLESMIS'
@@ -1422,7 +1623,7 @@ function missingRevenueDays(campusId, from, to) {
 route('GET', '/api/reports/product-sales', ({ query }) => {
   const allowed = visibleCampusIds(query.campusId);
   const { from, to } = dateRange(query);
-  const counts = db.counts.filter((c) => c.status === 'KESINLESMIS'
+  const counts = db.counts.filter((c) => c.status === 'KESINLESMIS' && c.count_type === 'DONEM'
     && allowed.includes(c.campus_id) && c.count_date >= from && c.count_date <= to);
   const countIds = new Set(counts.map((c) => c.id));
 
@@ -1496,7 +1697,7 @@ route('GET', '/api/reports/monthly', ({ query }) => {
 
   const countMap = new Map();
   for (const c of db.counts) {
-    if (c.status !== 'KESINLESMIS' || !allowed.includes(c.campus_id)
+    if (c.status !== 'KESINLESMIS' || c.count_type !== 'DONEM' || !allowed.includes(c.campus_id)
       || c.count_date < from || c.count_date > to) continue;
     const key = `${c.count_date.slice(0, 7)}|${c.campus_id}`;
     const lines = db.count_lines.filter((l) => l.count_id === c.id);
@@ -1553,7 +1754,7 @@ route('GET', '/api/reports/campus-comparison', ({ query }) => {
     const schoolDays = revenues.filter((r) => r.is_school_day).length;
 
     const counts = db.counts.filter((c) => c.campus_id === k.id && c.status === 'KESINLESMIS'
-      && c.count_date >= from && c.count_date <= to);
+      && c.count_type === 'DONEM' && c.count_date >= from && c.count_date <= to);
     const countIds = new Set(counts.map((c) => c.id));
     const lines = db.count_lines.filter((l) => countIds.has(l.count_id));
     const soldQty = round2(lines.reduce((s, l) => s + l.sold_qty, 0));

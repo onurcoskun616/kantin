@@ -13,7 +13,8 @@
     "seed": "node server/seed.js",
     "reset": "node server/seed.js --reset",
     "test": "node --test test/*.test.js",
-    "demo:build": "node demo/build.mjs"
+    "demo:build": "node demo/build.mjs",
+    "test:ui": "node test/ui/sayim-akisi.mjs"
   },
   "dependencies": {},
   "license": "UNLICENSED"

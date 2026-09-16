@@ -28,12 +28,14 @@ const CATEGORIES = [
 
 // KDV oranlari Turkiye gida perakendesine gore ornek degerlerdir; kendi
 // muhasebenizle dogrulayip guncelleyiniz.
+// Son sutun urun tipidir: URETILEN urunler kantinde hazirlanir, raftan
+// sayilamaz; donem satis adedi sayim ekranindan beyan edilir.
 const PRODUCTS = [
   ['8690000000011', 'Su 500 ml',              'Su ve İçecek',              4.00,  6.00, 10],
   ['8690000000028', 'Ayran 200 ml',           'Süt ve Süt Ürünleri',       8.50, 13.00,  1],
   ['8690000000035', 'Süt 200 ml',             'Süt ve Süt Ürünleri',       9.00, 14.00,  1],
   ['8690000000042', 'Meyve Suyu 200 ml',      'Su ve İçecek',             10.00, 16.00, 10],
-  ['8690000000059', 'Tost',                   'Sandviç ve Unlu Mamul',    18.00, 35.00, 10],
+  ['8690000000059', 'Tost',                   'Sandviç ve Unlu Mamul',    18.00, 35.00, 10, 'URETILEN'],
   ['8690000000066', 'Poğaça',                 'Sandviç ve Unlu Mamul',     9.00, 16.00,  1],
   ['8690000000073', 'Simit',                  'Sandviç ve Unlu Mamul',     7.00, 12.00,  1],
   ['8690000000080', 'Sandviç (Ton Balıklı)',  'Sandviç ve Unlu Mamul',    26.00, 45.00, 10],
@@ -43,8 +45,8 @@ const PRODUCTS = [
   ['8690000000127', 'Kuru Üzüm 40 g',         'Kuruyemiş ve Kuru Meyve',   9.00, 16.00,  1],
   ['8690000000134', 'Elma (adet)',            'Taze Meyve',                6.00, 10.00,  1],
   ['8690000000141', 'Muz (adet)',             'Taze Meyve',                9.00, 15.00,  1],
-  ['8690000000158', 'Çay (bardak)',           'Sıcak İçecek',              2.50,  8.00, 10],
-  ['8690000000165', 'Salep (bardak)',         'Sıcak İçecek',              9.00, 20.00, 10],
+  ['8690000000158', 'Çay (bardak)',           'Sıcak İçecek',              2.50,  8.00, 10, 'URETILEN'],
+  ['8690000000165', 'Salep (bardak)',         'Sıcak İçecek',              9.00, 20.00, 10, 'URETILEN'],
   ['8690000000172', 'Kurşun Kalem',           'Kırtasiye',                 4.00,  8.00, 20],
   ['8690000000189', 'Defter A4',              'Kırtasiye',                22.00, 40.00, 20],
 ];
@@ -90,11 +92,12 @@ export function ensureSeedData({ withExamples = true } = {}) {
 
   if (get('SELECT COUNT(*) AS c FROM products').c === 0) {
     const catMap = new Map(all('SELECT id, name FROM categories').map((c) => [c.name, c.id]));
-    for (const [barcode, name, category, purchase, sale, vat] of PRODUCTS) {
+    for (const [barcode, name, category, purchase, sale, vat, type = 'SATIN_ALINAN'] of PRODUCTS) {
       insert(
-        `INSERT INTO products (barcode, name, category_id, unit, purchase_price, sale_price, vat_rate, critical_stock)
-         VALUES (?, ?, ?, 'ADET', ?, ?, ?, ?)`,
-        [barcode, name, catMap.get(category) ?? null, purchase, sale, vat, 20]
+        `INSERT INTO products (barcode, name, category_id, unit, product_type, purchase_price, sale_price,
+                               vat_rate, critical_stock)
+         VALUES (?, ?, ?, 'ADET', ?, ?, ?, ?, ?)`,
+        [barcode, name, catMap.get(category) ?? null, type, purchase, sale, vat, type === 'URETILEN' ? 0 : 20]
       );
     }
     console.log(`[KURULUM] ${PRODUCTS.length} ornek urun eklendi.`);
@@ -108,7 +111,8 @@ export function ensureSeedData({ withExamples = true } = {}) {
 /* --------------------------- Demo verisi --------------------------- */
 function generateDemo() {
   const campuses = all('SELECT * FROM campuses');
-  const products = all('SELECT * FROM products WHERE is_active = 1');
+  // Uretilen urunlerin stogu tutulmaz; demo hareketlerine dahil edilmez
+  const products = all("SELECT * FROM products WHERE is_active = 1 AND product_type = 'SATIN_ALINAN'");
   const suppliers = all('SELECT * FROM suppliers');
   const admin = get("SELECT * FROM users WHERE role = 'ADMIN' LIMIT 1");
   if (!campuses.length || !products.length) return;
@@ -169,7 +173,10 @@ function generateDemo() {
       }
 
       // Gunluk ciro (hafta ici)
-      const base = campus.student_count * 22;
+      // Kampusler ogrenci sayisi 0 ile kurulur (okul kendi rakamini girer);
+      // demo verisi uretirken temsili bir sayi kullanilir.
+      const students = campus.student_count || 500;
+      const base = students * 22;
       for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
         const wd = d.getUTCDay();
         if (wd === 0 || wd === 6) continue;

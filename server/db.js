@@ -21,6 +21,70 @@ db.exec('PRAGMA busy_timeout = 5000');
 export function migrate() {
   const sql = fs.readFileSync(path.join(ROOT, 'server', 'schema.sql'), 'utf8');
   db.exec(sql);
+  upgradeExistingSchema();
+}
+
+/* ------------------------- Sema yukseltmeleri ----------------------- */
+/**
+ * schema.sql yalnizca eksik tablolari olusturur; zaten var olan tablolara
+ * dokunmaz. Bu yuzden onceki surumlerden gelen veritabanlari icin sutun
+ * eklemeleri burada, tekrar calistirilabilir bicimde yapilir.
+ */
+function upgradeExistingSchema() {
+  addColumn('products', 'product_type', "TEXT NOT NULL DEFAULT 'SATIN_ALINAN'");
+  addColumn('counts', 'count_type', "TEXT NOT NULL DEFAULT 'DONEM'");
+  addColumn('counts', 'is_blind', 'INTEGER NOT NULL DEFAULT 1');
+  addColumn('counts', 'witness_name', 'TEXT');
+  addColumn('counts', 'production_revenue', 'REAL NOT NULL DEFAULT 0');
+  addColumn('counts', 'reopened_count', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn('counts', 'submitted_by', 'INTEGER');
+  addColumn('counts', 'submitted_at', 'TEXT');
+
+  // Eski surumde counts.status yalnizca TASLAK/KESINLESMIS kabul ediyordu.
+  // SQLite CHECK kisitini degistiremedigi icin tablo yeniden kurulur.
+  relaxCountStatusCheck();
+}
+
+function columnExists(table, column) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+}
+
+function addColumn(table, column, definition) {
+  if (!tableExists(table) || columnExists(table, column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  console.log(`[SEMA] ${table}.${column} sutunu eklendi.`);
+}
+
+function tableExists(table) {
+  return !!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+}
+
+function relaxCountStatusCheck() {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'counts'").get();
+  if (!row || String(row.sql).includes("'SAYILDI'")) return;
+
+  console.log('[SEMA] counts tablosu yeni durum degerleri icin yeniden kuruluyor...');
+  const columns = db.prepare('PRAGMA table_info(counts)').all().map((c) => c.name);
+  const shared = columns.join(', ');
+
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    db.exec('ALTER TABLE counts RENAME TO counts_eski');
+    const schema = fs.readFileSync(path.join(ROOT, 'server', 'schema.sql'), 'utf8');
+    const createSql = /CREATE TABLE IF NOT EXISTS counts \([\s\S]*?\n\);/.exec(schema);
+    if (!createSql) throw new Error('schema.sql icinde counts tablosu bulunamadi.');
+    db.exec(createSql[0]);
+    db.exec(`INSERT INTO counts (${shared}) SELECT ${shared} FROM counts_eski`);
+    db.exec('DROP TABLE counts_eski');
+    db.exec('COMMIT');
+    console.log('[SEMA] counts tablosu yukseltildi.');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
 }
 
 /** Tek satir dondurur (duz nesne olarak) veya null. */

@@ -31,7 +31,16 @@ export function stockOf(campusId, productId, untilDate = null) {
  * Kampustaki tum urunlerin stok durumu + fiyat/kar bilgisi.
  * campus_products tablosundaki kampus ozel fiyatlari onceliklidir.
  */
-export function stockSnapshot(campusId, { untilDate = null, onlyActive = true, search = null, categoryId = null } = {}) {
+/**
+ * Kampustaki urunlerin stok durumu.
+ *
+ * URETILEN urunler (tost, cay, pogaca) varsayilan olarak haric tutulur:
+ * bunlar raftan sayilamadigi icin defter miktarlari anlamsizdir. Donem
+ * satislari sayim ekranindaki "uretim satisi" bolumunden girilir.
+ */
+export function stockSnapshot(campusId, {
+  untilDate = null, onlyActive = true, search = null, categoryId = null, includeProduced = false,
+} = {}) {
   const params = [campusId];
   let movFilter = '';
   if (untilDate) { movFilter = 'AND m.movement_date <= ?'; params.push(untilDate); }
@@ -39,6 +48,7 @@ export function stockSnapshot(campusId, { untilDate = null, onlyActive = true, s
   const where = ['1 = 1'];
   const tail = [];
   if (onlyActive) where.push('p.is_active = 1');
+  if (!includeProduced) where.push("p.product_type = 'SATIN_ALINAN'");
   if (search) { where.push('(p.name LIKE ? OR p.barcode LIKE ?)'); tail.push(`%${search}%`, `%${search}%`); }
   if (categoryId) { where.push('p.category_id = ?'); tail.push(Number(categoryId)); }
 
@@ -51,6 +61,7 @@ export function stockSnapshot(campusId, { untilDate = null, onlyActive = true, s
         p.vat_rate,
         p.max_price,
         p.meb_approved,
+        p.product_type,
         c.name                                    AS category_name,
         COALESCE(cp.purchase_price, p.purchase_price) AS purchase_price,
         COALESCE(cp.sale_price,     p.sale_price)     AS sale_price,

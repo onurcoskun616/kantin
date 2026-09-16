@@ -100,7 +100,7 @@ describe('Kimlik dogrulama', () => {
 
 /* --------------------------- Is akisi ------------------------------ */
 describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
-  let campusId; let productId; let supplierId;
+  let campusId; let productId; let supplierId; let producedId; let countId; let managerToken;
 
   test('kampus, urun ve tedarikci hazirlanir', async () => {
     campusId = (await ok('GET', '/api/campuses')).items[0].id;
@@ -110,6 +110,13 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
     });
     productId = product.id;
     assert.ok(productId);
+
+    // Kantinde hazirlanan urun: raftan sayilamaz, ayri beyan edilir
+    const produced = await ok('POST', '/api/products', {
+      name: 'Test Tost', productType: 'URETILEN', purchasePrice: 15, salePrice: 30, vatRate: 10,
+    });
+    producedId = produced.id;
+    assert.equal(produced.product_type, 'URETILEN');
   });
 
   test('mal girisi stogu artirir', async () => {
@@ -172,29 +179,106 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
     assert.equal(r.status, 400);
   });
 
-  test('sayim ornek satisi dogru hesaplar ve mutabakat saglanir', async () => {
+  test('kor sayim: olmasi gereken miktar taslakta gizlenir', async () => {
     // Ilk sayim dun yapilmis olsun; ikinci sayim bugun yapilacak
     const count = await ok('POST', '/api/counts', { campusId, countDate: daysAgo(1) });
-    const line = count.lines.find((l) => l.product_id === productId);
-    assert.equal(line.expected_qty, 90, 'olmasi gereken stok 100 alim - 10 fire = 90');
+    countId = count.id;
+    assert.equal(count.is_blind, 1);
+    assert.equal(count.blind_active, true);
 
-    // Fiilen 30 adet sayildi -> donem satisi 60 adet -> beklenen ciro 60 x 22 = 1320
-    await ok('PUT', `/api/counts/${count.id}/lines`, { lines: [{ productId, countedQty: 30 }] });
-    const finalized = await ok('POST', `/api/counts/${count.id}/finalize`);
+    const line = count.lines.find((l) => l.product_id === productId);
+    assert.equal(line.expected_qty, null, 'kor sayimda olmasi gereken miktar gizlenmeli');
+    assert.equal(line.diff_qty, null);
+    assert.equal(line.sold_qty, null);
+
+    // Mutabakat ucu da kilitlenene kadar hicbir beklenen deger sizdirmamali
+    const rec = await ok('GET', `/api/counts/${countId}/reconciliation`);
+    assert.equal(rec.blind, true);
+    assert.equal(rec.revenue, undefined, 'kor sayimda ciro beklentisi verilmemeli');
+  });
+
+  test('uretilen urun sayim fisine girmez, ayri beyan edilir', async () => {
+    const count = await ok('GET', `/api/counts/${countId}`);
+    assert.ok(!count.lines.some((l) => l.product_id === producedId), 'uretilen urun sayilmamali');
+    assert.ok(count.production.some((r) => r.product_id === producedId), 'uretilen urun beyan listesinde olmali');
+
+    await ok('PUT', `/api/counts/${countId}/production`, {
+      lines: [{ productId: producedId, quantity: 40 }],
+    });
+  });
+
+  test('sayim kilitlenmeden kesinlestirilemez', async () => {
+    await ok('PUT', `/api/counts/${countId}/lines`, { lines: [{ productId, countedQty: 30 }] });
+    const r = await api('POST', `/api/counts/${countId}/finalize`);
+    assert.equal(r.status, 409);
+  });
+
+  test('kilitleme sayima katilan kisiyi zorunlu tutar', async () => {
+    const r = await api('POST', `/api/counts/${countId}/submit`, {});
+    assert.equal(r.status, 400);
+  });
+
+  test('kilitlendikten sonra sapmalar acilir ve satirlar donar', async () => {
+    const submitted = await ok('POST', `/api/counts/${countId}/submit`, { witnessName: 'Ayse Demir' });
+    assert.equal(submitted.status, 'SAYILDI');
+    assert.equal(submitted.witness_name, 'Ayse Demir');
+    assert.equal(submitted.blind_active, false);
+
+    const line = submitted.lines.find((l) => l.product_id === productId);
+    assert.equal(line.expected_qty, 90, 'olmasi gereken stok 100 alim - 10 fire = 90');
+    assert.equal(line.counted_qty, 30);
+
+    // Kilitli sayimda miktar degistirilemez
+    const r = await api('PUT', `/api/counts/${countId}/lines`, { lines: [{ productId, countedQty: 99 }] });
+    assert.equal(r.status, 409);
+  });
+
+  test('IKI IMZA: sayimi kilitleyen kendi sayimini kesinlestiremez', async () => {
+    const r = await api('POST', `/api/counts/${countId}/finalize`);
+    assert.equal(r.status, 403, 'ayni kisi hem sayip hem onaylayamamali');
+  });
+
+  test('baska bir yetkili kesinlestirebilir ve mutabakat dogru cikar', async () => {
+    // Ikinci yonetici olustur
+    await ok('POST', '/api/users', {
+      email: 'ikinci.mudur@topkapiokullari.com', fullName: 'Ikinci Mudur',
+      role: 'GENEL_MUDURLUK', password: 'Mudur123456',
+    });
+    const login = await api('POST', '/api/auth/login',
+      { email: 'ikinci.mudur@topkapiokullari.com', password: 'Mudur123456' }, false);
+    managerToken = login.data.token;
+
+    const res = await fetch(`${BASE}/api/counts/${countId}/finalize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${managerToken}` },
+      body: '{}',
+    });
+    assert.equal(res.status, 200);
+    const finalized = await res.json();
 
     assert.equal(finalized.status, 'KESINLESMIS');
-    assert.equal(finalized.expected_revenue, 1320);
+    // Sayimdan: 60 adet x 22 TL = 1320 · Uretimden: 40 adet x 30 TL = 1200
+    assert.equal(finalized.production_revenue, 1200);
+    assert.equal(finalized.expected_revenue, 2520);
     assert.equal(finalized.actual_revenue, 1320);
-    assert.equal(finalized.difference, 0, 'ciro ile sayim ortusmelidir');
+    assert.equal(finalized.difference, -1200, 'beyan edilen uretim satisi karsiligi ciro girilmemis');
+  });
 
-    const rec = await ok('GET', `/api/counts/${count.id}/reconciliation`);
-    assert.equal(rec.profitability.cogs, 600, '60 adet x 10 TL maliyet');
-    assert.equal(rec.profitability.theoreticalProfit, 600, '60 adet x 10 TL birim kar');
+  test('mutabakat sayimdan geleni beyandan ayirir', async () => {
+    const rec = await ok('GET', `/api/counts/${countId}/reconciliation`);
+    assert.equal(rec.revenue.counted, 1320);
+    assert.equal(rec.revenue.production, 1200);
+    assert.equal(rec.production.items.length, 1);
+    assert.equal(rec.count.witnessName, 'Ayse Demir');
+    assert.ok(rec.count.submittedByName);
+    assert.ok(rec.count.finalizedByName);
+    assert.notEqual(rec.count.submittedByName, rec.count.finalizedByName);
   });
 
   test('sayim sonrasi stok defteri sayilan miktara esitlenir', async () => {
     const stock = await ok('GET', `/api/stock?campusId=${campusId}`);
     assert.equal(stock.items.find((i) => i.product_id === productId).stock_qty, 30);
+    assert.ok(!stock.items.some((i) => i.product_id === producedId), 'uretilen urun stokta gorunmemeli');
   });
 
   test('kesinlesmis sayimdan onceye kayit girilemez', async () => {
@@ -205,10 +289,8 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
   });
 
   test('kesinlesmis sayim degistirilemez ve silinemez', async () => {
-    const counts = await ok('GET', `/api/counts?campusId=${campusId}`);
-    const id = counts.items[0].id;
-    assert.equal((await api('PUT', `/api/counts/${id}/lines`, { lines: [{ productId, countedQty: 5 }] })).status, 409);
-    assert.equal((await api('DELETE', `/api/counts/${id}`)).status, 409);
+    assert.equal((await api('PUT', `/api/counts/${countId}/lines`, { lines: [{ productId, countedQty: 5 }] })).status, 409);
+    assert.equal((await api('DELETE', `/api/counts/${countId}`)).status, 409);
   });
 
   test('urun satis raporu sayim verisinden uretilir', async () => {
@@ -225,18 +307,95 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
     assert.equal(r.status, 400);
   });
 
-  test('ciro acigi tespit edilir', async () => {
-    // Yeni donem: 50 adet alim, hic ciro girilmeden 20 adet eksilme
+});
+
+/* --------------------- Nokta sayimi (habersiz) --------------------- */
+describe('Nokta sayimi', () => {
+  let campusId; let productId; let spotId;
+
+  test('hazirlik: ayri bir kampuste stok olustur', async () => {
+    campusId = (await ok('GET', '/api/campuses')).items[3].id;
+    const supplierId = (await ok('GET', '/api/suppliers')).items[0].id;
+    productId = (await ok('POST', '/api/products', {
+      name: 'Nokta Test Ürünü', barcode: 'SPOT-0001', purchasePrice: 5, salePrice: 11, vatRate: 10,
+    })).id;
     await ok('POST', '/api/purchases', {
-      campusId, supplierId, documentNo: 'IRS-002', documentDate: iso(new Date()),
-      lines: [{ productId, quantity: 50, unitPrice: 10, vatRate: 10 }],
+      campusId, supplierId, documentNo: 'SPOT-IRS-1', documentDate: daysAgo(10),
+      lines: [{ productId, quantity: 200, unitPrice: 5, vatRate: 10 }],
     });
+  });
+
+  test('yalnizca secilen urunleri kapsar ve kor baslar', async () => {
+    const spot = await ok('POST', '/api/counts', {
+      campusId, countType: 'NOKTA', countDate: iso(new Date()), productIds: [productId],
+      note: 'Habersiz ara kontrol',
+    });
+    spotId = spot.id;
+    assert.equal(spot.count_type, 'NOKTA');
+    assert.equal(spot.lines.length, 1, 'yalnizca secilen urun sayilmali');
+    assert.equal(spot.lines[0].expected_qty, null, 'nokta sayimi da kor baslar');
+    assert.equal(spot.period_start, null);
+  });
+
+  test('kilitlendiginde sapma acilir ama stoga dokunmaz', async () => {
+    await ok('PUT', `/api/counts/${spotId}/lines`, { lines: [{ productId, countedQty: 150 }] });
+    const submitted = await ok('POST', `/api/counts/${spotId}/submit`, { witnessName: 'Denetim Ekibi' });
+    assert.equal(submitted.status, 'SAYILDI');
+    assert.equal(submitted.lines[0].expected_qty, 200);
+    assert.equal(submitted.lines[0].diff_qty, -50);
+
+    // Stok defteri degismemis olmali
+    const stock = await ok('GET', `/api/stock?campusId=${campusId}`);
+    assert.equal(stock.items.find((i) => i.product_id === productId).stock_qty, 200,
+      'nokta sayimi stok hareketi yazmamali');
+  });
+
+  test('kesinlestirilemez ve silinemez', async () => {
+    assert.equal((await api('POST', `/api/counts/${spotId}/finalize`)).status, 400);
+    assert.equal((await api('DELETE', `/api/counts/${spotId}`)).status, 409);
+  });
+
+  test('donemi kilitlemez - gecmise kayit hala girilebilir', async () => {
+    const r = await api('POST', '/api/waste', {
+      campusId, productId, quantity: 2, reason: 'KIRILMA', wasteDate: daysAgo(5),
+    });
+    assert.equal(r.status, 200, 'nokta sayimi donem kilidi olusturmamali');
+  });
+
+  test('mutabakatta fark hesaplanmaz, tespit olarak sunulur', async () => {
+    const rec = await ok('GET', `/api/counts/${spotId}/reconciliation`);
+    assert.equal(rec.isSpot, true);
+    assert.equal(rec.revenue.difference, null, 'alt kume oldugu icin fark hesaplanmamali');
+    assert.equal(rec.topVariances.length, 1);
+  });
+});
+
+/* ------------------------ Sayimi yeniden acma ---------------------- */
+describe('Sayimi yeniden acma', () => {
+  test('kilitli sayim gerekce ile yeniden acilir ve denetim izine yazilir', async () => {
+    const campusId = (await ok('GET', '/api/campuses')).items[4].id;
+    const productId = (await ok('POST', '/api/products', {
+      name: 'Yeniden Ac Test', barcode: 'REOPEN-1', purchasePrice: 2, salePrice: 5,
+    })).id;
+    await ok('POST', '/api/stock/opening', {
+      campusId, date: daysAgo(15), lines: [{ productId, quantity: 50 }],
+    });
+
     const count = await ok('POST', '/api/counts', { campusId, countDate: iso(new Date()) });
-    await ok('PUT', `/api/counts/${count.id}/lines`, { lines: [{ productId, countedQty: 60 }] });
-    const finalized = await ok('POST', `/api/counts/${count.id}/finalize`);
-    // 30 + 50 = 80 olmali, 60 sayildi -> 20 adet satis -> beklenen 440 TL, girilen ciro 0
-    assert.equal(finalized.expected_revenue, 440);
-    assert.ok(finalized.difference < 0, 'ciro acigi negatif fark olarak raporlanmali');
+    await ok('PUT', `/api/counts/${count.id}/lines`, { lines: [{ productId, countedQty: 20 }] });
+    await ok('POST', `/api/counts/${count.id}/submit`, { witnessName: 'Tanik Kisi' });
+
+    // Gerekce zorunlu
+    assert.equal((await api('POST', `/api/counts/${count.id}/reopen`, {})).status, 400);
+
+    const reopened = await ok('POST', `/api/counts/${count.id}/reopen`, { reason: 'Sayimda iki raf atlanmis' });
+    assert.equal(reopened.status, 'TASLAK');
+    assert.equal(reopened.reopened_count, 1);
+    assert.equal(reopened.blind_active, true, 'yeniden acilan sayim tekrar korlesir');
+    assert.equal(reopened.lines[0].expected_qty, null);
+
+    const audit = await ok('GET', '/api/audit?limit=50');
+    assert.ok(audit.items.some((a) => a.action === 'REOPEN_COUNT'), 'yeniden acma denetim izine yazilmali');
   });
 });
 
