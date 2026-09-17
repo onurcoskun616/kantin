@@ -26,6 +26,8 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
 - **Reçete (BOM)** — "1 tost = 2 dilim ekmek + 30 g kaşar": maliyet tahmin değil hammadde toplamı olur,
   beyan edilen üretim adedi hammadde tüketimiyle çapraz kontrol edilir
 - **Habersiz nokta sayımı** — seçili ürünlerde ara kontrol; stoğa dokunmaz, silinemez
+- **Ciro teslim fişi** — günlük ciro beyanı imzayla sabitlenir: fiş kesildiği an tutar
+  dondurulur, o günler görevliye kapanır, yönetim düzeltirse fiş "FARKLI" olarak işaretlenir
 - Ayrıntılar: **[docs/DENETIM-KONTROLLERI.md](docs/DENETIM-KONTROLLERI.md)**
 
 ### Stok ve envanter
@@ -44,6 +46,11 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
 - Z rapor no eşleştirme alanı
 - Ciro takvimi — girilmemiş iş günlerini kırmızı gösterir
 - Toplu ciro girişi (haftalık/aylık tek ekranda)
+- **Ciro teslim fişi** — ön muhasebeye imza karşılığı teslim için A4'e iki nüsha çıktı
+  (kantin / ön muhasebe), günlük döküm, tutarın yazıyla karşılığı, iki imza satırı,
+  belge numarası ve 6 haneli doğrulama kodu
+- Teslim edilmemiş ciro takibi — 3 günden uzun bekleyen ciro panelde uyarı olur
+- Belge doğrulama ekranı — eldeki kâğıdın sistemdeki kayıtla aynı olup olmadığını gösterir
 - Sayım bazlı mutabakat raporu ve kalem bazlı sapma listesi
 
 ### Reçete ve üretim
@@ -74,7 +81,8 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
 - Tüm raporlar Excel (CSV) olarak indirilebilir
 
 ### Güvenlik ve yönetim
-- 5 rol: Sistem Yöneticisi, Genel Müdürlük, Kampüs Yöneticisi, Kantin Görevlisi, Denetçi (salt okunur)
+- 6 rol: Sistem Yöneticisi, Genel Müdürlük, Kampüs Yöneticisi, Kantin Görevlisi,
+  Ön Muhasebe (salt okunur — yalnızca teslim fişi onayı), Denetçi (salt okunur)
 - Kampüs bazlı veri izolasyonu — görevli yalnızca kendi kampüsünü görür
 - Parolalar `scrypt` ile saklanır, oturumlar HMAC imzalı
 - Silinemez denetim izi: kim, ne zaman, neyi değiştirdi
@@ -135,8 +143,10 @@ docker compose up -d
 ### Testler
 
 ```bash
-npm test        # 42 uçtan uca API testi
-npm run test:ui # tarayıcı regresyon testi (kör sayım → iki imza → kesinleştirme)
+npm test        # 75 uçtan uca API testi
+npm run test:ui # tarayıcı regresyon testleri:
+                #   sayim-akisi  — kör sayım → iki imza → kesinleştirme
+                #   ciro-teslim  — teslim fişi → tutar dondurma → kod ile onay
 ```
 
 `test:ui` Playwright gerektirir (`npm i -g playwright && playwright install chromium`)
@@ -242,7 +252,7 @@ scripts/
   yedekle.sh        Veritabanı yedekleme
   sablon-olustur.py Excel şablonu üretici
 docs/
-  DENETIM-KONTROLLERI.md  Kör sayım, iki imza, üretilen ürün, nokta sayımı
+  DENETIM-KONTROLLERI.md  Kör sayım, iki imza, üretilen ürün, nokta sayımı, ciro teslim fişi
   VPS-KURULUM.md    Sunucu kurulum rehberi
   YOL-HARITASI.md   Atlanan noktalar ve sonraki aşama önerileri
   sablonlar/        Excel şablonu

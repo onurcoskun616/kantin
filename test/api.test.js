@@ -855,6 +855,165 @@ describe('Toplu ice aktarma', () => {
   });
 });
 
+/* ----------------------- Ciro teslim fisi -------------------------- */
+describe('Ciro teslim fisi', () => {
+  let campusId; let handover; let staffToken; let accountingToken;
+
+  const asUser = async (tok, method, pathname, body) => {
+    const res = await fetch(BASE + pathname, {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { status: res.status, data: await res.json().catch(() => ({})) };
+  };
+
+  test('hazirlik: kampus, gorevli ve on muhasebe kullanicisi', async () => {
+    campusId = (await ok('POST', '/api/campuses', {
+      code: 'TSL', name: 'Teslim Test Kampüsü', studentCount: 50,
+    })).id;
+
+    await ok('POST', '/api/users', {
+      email: 'teslim-gorevli@topkapiokullari.com', fullName: 'Teslim Görevlisi',
+      role: 'KANTIN_GOREVLISI', campusId, password: 'Gorevli12345',
+    });
+    staffToken = (await api('POST', '/api/auth/login',
+      { email: 'teslim-gorevli@topkapiokullari.com', password: 'Gorevli12345' }, false)).data.token;
+
+    await ok('POST', '/api/users', {
+      email: 'muhasebe@topkapiokullari.com', fullName: 'Ön Muhasebe Görevlisi',
+      role: 'MUHASEBE', password: 'Muhasebe12345',
+    });
+    accountingToken = (await api('POST', '/api/auth/login',
+      { email: 'muhasebe@topkapiokullari.com', password: 'Muhasebe12345' }, false)).data.token;
+    assert.ok(accountingToken, 'on muhasebe giris yapabilmeli');
+
+    for (const [i, amount] of [1000, 1200, 800].entries()) {
+      await ok('POST', '/api/revenues', {
+        campusId, revenueDate: daysAgo(5 - i), cashAmount: amount, overwrite: true,
+      });
+    }
+  });
+
+  test('teslim edilmemis ciro bekleyenler listesinde gorunur', async () => {
+    const pending = await ok('GET', `/api/handovers/pending?campusId=${campusId}`);
+    const mine = pending.items.find((p) => p.campusId === campusId);
+    assert.equal(mine.dayCount, 3);
+    assert.equal(mine.total, 3000);
+  });
+
+  test('fis olusturulunca tutar dondurulur', async () => {
+    handover = await ok('POST', '/api/handovers', {
+      campusId, from: daysAgo(5), to: daysAgo(3),
+      receivedByName: 'Ayşe Muhasebe',
+    });
+    assert.equal(handover.total_amount, 3000);
+    assert.equal(handover.cash_amount, 3000);
+    assert.equal(handover.day_count, 3);
+    assert.equal(handover.status, 'TESLIM_EDILDI');
+    assert.equal(handover.has_mismatch, false);
+    assert.match(handover.document_no, /^TSL-\d{4}-0001$/);
+    assert.equal(handover.verification_code.length, 6);
+    assert.ok(handover.amountInWords.includes('TL'), 'tutar yaziyla yazilmali');
+
+    const pending = await ok('GET', `/api/handovers/pending?campusId=${campusId}`);
+    assert.equal(pending.items.find((p) => p.campusId === campusId), undefined,
+      'fise dahil gunler artik bekleyenler listesinde olmamali');
+  });
+
+  test('ayni gun ikinci kez teslim edilemez', async () => {
+    const r = await api('POST', '/api/handovers', {
+      campusId, from: daysAgo(4), to: daysAgo(3), receivedByName: 'Ayşe Muhasebe',
+    });
+    assert.equal(r.status, 409);
+    assert.match(r.data.error, /zaten/i);
+  });
+
+  test('ciro kaydi olmayan aralik reddedilir', async () => {
+    const r = await api('POST', '/api/handovers', {
+      campusId, from: daysAgo(60), to: daysAgo(59), receivedByName: 'Ayşe Muhasebe',
+    });
+    assert.equal(r.status, 400);
+  });
+
+  test('gorevli fise dahil ciroyu degistiremez', async () => {
+    const r = await asUser(staffToken, 'POST', '/api/revenues', {
+      campusId, revenueDate: daysAgo(5), cashAmount: 9999, overwrite: true,
+    });
+    assert.equal(r.status, 409, 'imzali fise dahil gun gorevli tarafindan degistirilememeli');
+    assert.match(r.data.error, /teslim fisine dahil/i);
+
+    const del = await asUser(staffToken, 'DELETE',
+      `/api/revenues/${(await ok('GET', `/api/revenues?campusId=${campusId}`)).items[0].id}`);
+    assert.equal(del.status, 409, 'imzali fise dahil gun gorevli tarafindan silinememeli');
+  });
+
+  test('dogrulama kodu tutmazsa onay reddedilir', async () => {
+    const r = await asUser(accountingToken, 'POST', `/api/handovers/${handover.id}/confirm`,
+      { verificationCode: 'XXXXXX' });
+    assert.equal(r.status, 400);
+    assert.match(r.data.error, /eslesmiyor/i);
+  });
+
+  test('on muhasebe kodu dogru girerse onaylar, baska yere yazamaz', async () => {
+    const write = await asUser(accountingToken, 'POST', '/api/revenues', {
+      campusId, revenueDate: daysAgo(1), cashAmount: 500,
+    });
+    assert.equal(write.status, 403, 'on muhasebe ciro giremez');
+
+    const r = await asUser(accountingToken, 'POST', `/api/handovers/${handover.id}/confirm`,
+      { verificationCode: handover.verification_code });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.status, 'ONAYLANDI');
+    assert.equal(r.data.confirmed_by_name, 'Ön Muhasebe Görevlisi');
+
+    const again = await asUser(accountingToken, 'POST', `/api/handovers/${handover.id}/confirm`,
+      { verificationCode: handover.verification_code });
+    assert.equal(again.status, 409, 'ayni fis iki kez onaylanamaz');
+  });
+
+  test('yonetim degistirirse fis FARKLI olarak isaretlenir', async () => {
+    await ok('POST', '/api/revenues', {
+      campusId, revenueDate: daysAgo(5), cashAmount: 700, overwrite: true,
+    });
+    const detail = await ok('GET', `/api/handovers/${handover.id}`);
+    assert.equal(detail.status, 'FARKLI');
+    assert.equal(detail.total_amount, 3000, 'kagittaki tutar degismemeli');
+    assert.equal(detail.current_total, 2700, 'sistemdeki guncel tutar yeni degeri gostermeli');
+    assert.equal(detail.difference, -300);
+    assert.equal(detail.has_mismatch, true);
+
+    const audit = await ok('GET', '/api/audit?limit=100');
+    assert.ok(audit.items.some((i) => i.action === 'HANDOVER_MISMATCH'),
+      'teslim sonrasi degisiklik denetim izine yazilmali');
+  });
+
+  test('belge dogrulama ekrani farki gosterir', async () => {
+    const good = await ok('GET',
+      `/api/handovers/verify/${handover.document_no}?code=${handover.verification_code}`);
+    assert.equal(good.codeMatches, true);
+    assert.equal(good.paperTotal, 3000);
+    assert.equal(good.systemTotal, 2700);
+    assert.equal(good.changedAfterHandover, true);
+
+    const bad = await ok('GET', `/api/handovers/verify/${handover.document_no}?code=ZZZZZZ`);
+    assert.equal(bad.codeMatches, false);
+
+    assert.equal((await api('GET', '/api/handovers/verify/YOK-2026-0001?code=ABC')).status, 404);
+  });
+
+  test('belge numarasi kampus ve yil bazinda sirali ilerler', async () => {
+    await ok('POST', '/api/revenues', { campusId, revenueDate: daysAgo(2), cashAmount: 400, overwrite: true });
+    const second = await ok('POST', '/api/handovers', {
+      campusId, from: daysAgo(2), to: daysAgo(2), receivedByName: 'Ayşe Muhasebe',
+    });
+    assert.match(second.document_no, /^TSL-\d{4}-0002$/);
+    assert.notEqual(second.verification_code, handover.verification_code,
+      'her belgenin dogrulama kodu farkli olmali');
+  });
+});
+
+
 /* --------------------------- Denetim izi --------------------------- */
 describe('Denetim izi', () => {
   test('islemler kayit altina alinir', async () => {

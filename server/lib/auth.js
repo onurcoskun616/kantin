@@ -90,10 +90,15 @@ export function purgeExpiredSessions() {
 }
 
 /* ---------------------------- Yetki ------------------------------- */
-export const ROLES = ['ADMIN', 'GENEL_MUDURLUK', 'KAMPUS_YONETICISI', 'KANTIN_GOREVLISI', 'DENETCI'];
+export const ROLES = [
+  'ADMIN', 'GENEL_MUDURLUK', 'KAMPUS_YONETICISI', 'KANTIN_GOREVLISI', 'MUHASEBE', 'DENETCI',
+];
 
-const ALL_CAMPUS_ROLES = ['ADMIN', 'GENEL_MUDURLUK', 'DENETCI'];
-const READ_ONLY_ROLES = ['DENETCI'];
+const ALL_CAMPUS_ROLES = ['ADMIN', 'GENEL_MUDURLUK', 'MUHASEBE', 'DENETCI'];
+// Bu roller genel yazma yetkisine sahip degildir. MUHASEBE'nin yapabildigi
+// iki istisna (teslim fisi onayi, tedarikci odemesi) ilgili uclarda
+// requireRole ile ACIKCA verilir; burada varsayilan kapalidir.
+const READ_ONLY_ROLES = ['DENETCI', 'MUHASEBE'];
 
 /** Kullanici tum kampusleri gorebiliyor mu? */
 export function seesAllCampuses(user) {
@@ -115,7 +120,9 @@ export function requireRole(user, ...roles) {
 export function requireWrite(user) {
   requireAuth(user);
   if (READ_ONLY_ROLES.includes(user.role)) {
-    throw forbidden('Denetci rolu salt okunurdur, kayit degistiremez.');
+    throw forbidden(user.role === 'MUHASEBE'
+      ? 'On muhasebe rolu bu kaydi degistiremez; yalnizca teslim fisi onayi ve tedarikci odemesi girebilir.'
+      : 'Denetci rolu salt okunurdur, kayit degistiremez.');
   }
   return user;
 }

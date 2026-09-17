@@ -52,6 +52,7 @@ export const ROLE_LABELS = {
   GENEL_MUDURLUK: 'Genel Müdürlük',
   KAMPUS_YONETICISI: 'Kampüs Yöneticisi',
   KANTIN_GOREVLISI: 'Kantin Görevlisi',
+  MUHASEBE: 'Ön Muhasebe',
   DENETCI: 'Denetçi (salt okunur)',
 };
 

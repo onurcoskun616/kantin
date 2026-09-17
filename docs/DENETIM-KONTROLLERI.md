@@ -1,7 +1,7 @@
 # Denetim Kontrolleri
 
 Bu sistemin amacı kayıt tutmak değil, **kantini denetlemektir**. Kayıt tutan her
-yazılım, kaydı giren kişi kötü niyetliyse kandırılabilir. Aşağıdaki dört kontrol
+yazılım, kaydı giren kişi kötü niyetliyse kandırılabilir. Aşağıdaki beş kontrol
 bunu zorlaştırmak için vardır.
 
 Kontrollerin hepsi **sunucu tarafında** uygulanır: arayüzü değiştirerek,
@@ -148,6 +148,64 @@ demektir.
 
 ---
 
+## 5. Ciro teslim fişi — beyanı imzayla sabitlemek
+
+Günlük ciro beyanı sistemden çıktı alınır ve kantin görevlisi tarafından ön
+muhasebeye **imza karşılığı** teslim edilir. Yazılımın buradaki işi kâğıt
+üretmek değil, **kâğıttaki rakam ile sistemdeki rakamı her zaman
+karşılaştırılabilir tutmaktır.**
+
+Çünkü asıl risk şu: imzalanan kâğıtta 12.400 TL yazar, aylar sonra sistemde
+o günlerin toplamı 11.900 TL görünür. İmza, karşılığı değişebilen bir rakamın
+altındaysa hiçbir şey ifade etmez.
+
+### Fiş nasıl çalışır?
+
+1. **Tutar dondurulur.** Fiş oluşturulduğu anda o günlerin cirosu (nakit / kart
+   / veresiye / diğer kırılımıyla) belgenin üzerine yazılır ve saklanır. Ciro
+   kayıtları sonradan değişse bile fişin üzerindeki tutar değişmez.
+2. **O günler kilitlenir.** Fişe dahil günlerin cirosunu kantin görevlisi artık
+   değiştiremez, silemez. Denemesi 409 ile reddedilir ve ekranda gün "🔒 imzalı"
+   olarak görünür.
+3. **Yönetim değiştirirse iz kalır.** Genel müdürlük düzeltme yapabilir; ancak
+   fiş otomatik olarak **"FARKLI"** durumuna geçer, denetim izine
+   `HANDOVER_MISMATCH` kaydı düşer ve fiş ekranında kâğıttaki tutar ile
+   sistemdeki tutar **yan yana** gösterilir.
+4. **Fiş silinemez.** İmzalanmış bir belgenin sistemdeki karşılığı kaldırılamaz.
+
+### Doğrulama kodu
+
+Her fişin üzerine belge içeriğinden (belge no + kampüs + dönem + tutar)
+türetilmiş 6 haneli bir kod basılır. Ön muhasebe teslim alırken bu kodu sisteme
+girer; kod tutmazsa **elindeki kâğıt o belgenin kendisi değildir** ve onay
+reddedilir. Kâğıt üzerinde rakam oynanmışsa kod tutmaz.
+
+Kod, sunucunun `SESSION_SECRET` anahtarıyla HMAC-SHA256 üretilir; belgeye
+bakarak yeniden hesaplanamaz.
+
+### Çıktı
+
+Yazdırma tek A4'e **iki nüsha** basar: üst yarı *kantin nüshası*, alt yarı
+*ön muhasebe nüshası*. Her iki nüshada da aynı belge numarası, aynı doğrulama
+kodu, günlük döküm, toplam, **tutarın yazıyla karşılığı** ve iki ayrı imza
+satırı (teslim eden / teslim alan) bulunur. Böylece her taraf kendi imzalı
+nüshasını saklar.
+
+### Ön Muhasebe rolü
+
+Bu akış için `MUHASEBE` rolü eklendi. Bu rol **tüm kampüsleri görür ama salt
+okunurdur**: tek yazma yetkisi teslim fişini onaylamaktır. Ciro giremez, stok
+oynayamaz, sayım değiştiremez. Yetki sunucuda `requireWrite` tarafından
+kapatılır, onay ucu ise `requireRole` ile ayrıca açılır.
+
+### Teslim edilmemiş ciro
+
+Panel ve Günlük Ciro ekranı, fişi kesilmemiş günleri ayrıca gösterir. 3 günden
+uzun süredir teslim edilmemiş ciro uyarı olarak çıkar — çünkü **kasada bekleyen
+nakit, sayımla denetlenemeyen tek kalemdir.**
+
+---
+
 ## Ek: fire ile iadeyi ayırmak
 
 Stok açısından ikisi de aynı yönde düşer, ama **maliyeti kimin taşıdığı** farklıdır
@@ -177,30 +235,39 @@ gibi göstermenin bir yoludur — ikisi de bakılmayı hak eder.
 
 ## Kontrollerin kapsamadığı yer
 
-Dürüst olmak gerekirse bu dört kontrol denetimi **zorlaştırır, imkânsız
-kılmaz**. Açıkta kalan iki nokta:
+Dürüst olmak gerekirse bu kontroller denetimi **zorlaştırır, imkânsız kılmaz**.
+Açıkta kalan nokta:
 
-1. **Ciro beyanı.** Yazar kasa olmadığı için günlük ciro, birinin kasadan sayıp
-   yazdığı rakamdır. Sayım bunu çapraz kontrol eder ama bağımsız bir kaynak yoktur.
+1. **Ciro beyanının kaynağı.** Yazar kasa olmadığı için günlük ciro, hâlâ birinin
+   kasadan sayıp yazdığı rakamdır. Teslim fişi (§ 5) bu rakamı **imzayla
+   sabitler** — yani beyan edildikten sonra sessizce değiştirilemez, kâğıt ile
+   sistem her zaman karşılaştırılabilir kalır. Ama ilk anda *eksik beyan
+   edilmesini* engellemez; onu sayım mutabakatı (dönem satışı ile beyan edilen
+   ciro farkı) yakalar.
 2. **Üretilen ürün adedi.** Reçete tanımlıysa hammadde tüketimiyle çapraz kontrol
    edilir (§ 3.1) — bağımsız bir doğrulamadır ama mutlak değildir: reçete miktarları
    da elle girilir. Reçetesi olmayan üretilen ürünlerde beyan hâlâ denetimsizdir;
    Reçeteler ekranı bunları "Reçete tanımsız" olarak işaretler.
 
-İkisi de yazılımla değil, süreçle ve (ileride) yazar kasa ile kapanır. Süreç
-önerileri için `docs/YOL-HARITASI.md` dosyasının son bölümüne bakın.
+İkisi de tam olarak yazılımla değil, süreçle ve (ileride) yazar kasa ile kapanır.
+Süreç önerileri için `docs/YOL-HARITASI.md` dosyasının son bölümüne bakın.
 
 ---
 
 ## Özet: hangi işlemi kim yapabilir?
 
-| İşlem | Kantin Görevlisi | Kampüs Yöneticisi | Genel Müdürlük / Admin | Denetçi |
-|---|:---:|:---:|:---:|:---:|
-| Sayım açma, miktar girme | ✓ | ✓ | ✓ | — |
-| Sayımı kilitleme | ✓ | ✓ | ✓ | — |
-| Kesinleştirme | — | ✓ | ✓ | — |
-| Kendi sayımını kesinleştirme | — | — | — | — |
-| Kilitli sayımı yeniden açma | — | — | ✓ (gerekçeli) | — |
-| Kör sayımı kapatma | — | — | ✓ | — |
-| Kesinleşmiş sayımı silme | — | — | — | — |
-| Denetim izini okuma | — | — | ✓ | ✓ |
+| İşlem | Kantin Görevlisi | Kampüs Yöneticisi | Genel Müdürlük / Admin | Ön Muhasebe | Denetçi |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Sayım açma, miktar girme | ✓ | ✓ | ✓ | — | — |
+| Sayımı kilitleme | ✓ | ✓ | ✓ | — | — |
+| Kesinleştirme | — | ✓ | ✓ | — | — |
+| Kendi sayımını kesinleştirme | — | — | — | — | — |
+| Kilitli sayımı yeniden açma | — | — | ✓ (gerekçeli) | — | — |
+| Kör sayımı kapatma | — | — | ✓ | — | — |
+| Kesinleşmiş sayımı silme | — | — | — | — | — |
+| Ciro girme / düzeltme | ✓ | ✓ | ✓ | — | — |
+| Teslim fişi oluşturma (çıktı) | ✓ | ✓ | ✓ | — | — |
+| Teslim fişini onaylama (kodla) | — | — | ✓ | ✓ | — |
+| Fişe dahil günün cirosunu değiştirme | — | — | ✓ (fiş "FARKLI" olur) | — | — |
+| Teslim fişini silme | — | — | — | — | — |
+| Denetim izini okuma | — | — | ✓ | — | ✓ |

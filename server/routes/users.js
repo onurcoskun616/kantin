@@ -71,7 +71,7 @@ function parse(body) {
     email: str(body.email, 'E-posta', { required: true, max: 160 }).toLowerCase(),
     fullName: str(body.fullName, 'Ad soyad', { required: true, max: 150 }),
     role,
-    campusId: ['ADMIN', 'GENEL_MUDURLUK', 'DENETCI'].includes(role) ? null : campusId,
+    campusId: ['ADMIN', 'GENEL_MUDURLUK', 'MUHASEBE', 'DENETCI'].includes(role) ? null : campusId,
     isActive: bool(body.isActive, true),
   };
 }

@@ -14,7 +14,7 @@
     "reset": "node server/seed.js --reset",
     "test": "node --test test/*.test.js",
     "demo:build": "node demo/build.mjs",
-    "test:ui": "node test/ui/sayim-akisi.mjs"
+    "test:ui": "node test/ui/sayim-akisi.mjs && node test/ui/ciro-teslim.mjs"
   },
   "dependencies": {},
   "license": "UNLICENSED"

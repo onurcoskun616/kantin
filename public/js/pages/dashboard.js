@@ -6,7 +6,11 @@ export async function render(root) {
   const monthInput = el('input', { type: 'month', value: state.month, style: 'width:170px' });
   monthInput.addEventListener('change', () => { state.month = monthInput.value; render(root); });
 
-  const data = await api.get('/api/reports/dashboard', { month: state.month });
+  const [data, pendingHandovers] = await Promise.all([
+    api.get('/api/reports/dashboard', { month: state.month }),
+    // Teslim edilmemis ciro, sayimla denetlenemeyen tek kalemdir: kasada bekleyen nakit
+    api.get('/api/handovers/pending').catch(() => ({ items: [], totalPending: 0 })),
+  ]);
   root.replaceChildren();
 
   root.append(el('div.row', { style: 'justify-content:space-between' }, [
@@ -35,6 +39,12 @@ export async function render(root) {
       warnings.push(`${shortName(c.campusName)}: son sayımda ${fmt.money(Math.abs(c.lastCount.difference))} ciro açığı tespit edildi.`);
     }
     if (!c.lastCount) warnings.push(`${shortName(c.campusName)}: henüz hiç sayım yapılmamış. Denetim için ilk sayımı girin.`);
+  }
+  for (const p of pendingHandovers.items) {
+    if (p.waitingDays >= 3) {
+      warnings.push(`${shortName(p.campusName)}: ${p.dayCount} günün cirosu (${fmt.money(p.total)}) `
+        + `${p.waitingDays} gündür ön muhasebeye teslim edilmemiş.`);
+    }
   }
   if (warnings.length) {
     root.append(card('Dikkat Edilmesi Gerekenler', [

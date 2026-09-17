@@ -16,6 +16,7 @@ import { returnRoutes } from './routes/returns.js';
 import { recipeRoutes } from './routes/recipes.js';
 import { countRoutes } from './routes/counts.js';
 import { revenueRoutes } from './routes/revenues.js';
+import { handoverRoutes } from './routes/handovers.js';
 import { reportRoutes } from './routes/reports.js';
 import { userRoutes, auditRoutes } from './routes/users.js';
 
@@ -37,6 +38,7 @@ router.use('/api/returns', returnRoutes);
 router.use('/api/recipes', recipeRoutes);
 router.use('/api/counts', countRoutes);
 router.use('/api/revenues', revenueRoutes);
+router.use('/api/handovers', handoverRoutes);
 router.use('/api/reports', reportRoutes);
 router.use('/api/users', userRoutes);
 router.use('/api/audit', auditRoutes);

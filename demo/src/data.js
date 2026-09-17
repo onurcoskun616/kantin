@@ -113,6 +113,7 @@ const USERS = [
   ['ikitelli.kantin@topkapiokullari.com', 'Zeynep Kaya', 'KANTIN_GOREVLISI', 'IKT'],
   ['esenyurt.yonetici@topkapiokullari.com', 'Fatma Şahin', 'KAMPUS_YONETICISI', 'ESN'],
   ['esenyurt.kantin@topkapiokullari.com', 'Ali Çelik', 'KANTIN_GOREVLISI', 'ESN'],
+  ['muhasebe@topkapiokullari.com', 'Sevgi Arslan', 'MUHASEBE', null],
   ['denetci@topkapiokullari.com', 'Hasan Aydın', 'DENETCI', null],
 ];
 
@@ -133,7 +134,7 @@ export function buildDemoData() {
     supplier_returns: [], supplier_return_lines: [],
     waste: [], transfers: [], transfer_lines: [],
     counts: [], count_lines: [], production_sales: [], recipes: [], recipe_items: [],
-    revenues: [], users: [], audit_logs: [], price_history: [],
+    revenues: [], revenue_handovers: [], users: [], audit_logs: [], price_history: [],
   };
 
   /* Kampüsler */
@@ -542,6 +543,10 @@ export function buildDemoData() {
     });
   }
 
+  /* Ciro teslim fişleri — haftalık, son birkaç gün bilerek teslim edilmemiş
+     bırakılır ki "teslim edilmemiş ciro" uyarısı demoda görülebilsin. */
+  seedHandovers(db, nextId, random);
+
   /* Tedarikçi ödemeleri */
   for (const supplier of db.suppliers) {
     const total = db.purchases
@@ -575,6 +580,79 @@ export function buildDemoData() {
   return db;
 }
 
+/**
+ * Geçmiş ciroyu haftalık teslim fişlerine bağlar.
+ * Son 4 gün bilerek fişsiz bırakılır: "teslim edilmemiş ciro" uyarısı ve
+ * teslim fişi oluşturma akışı demoda denenebilsin diye.
+ */
+function seedHandovers(db, nextId, random) {
+  const cutoff = iso(dayOffset(-4));
+  const counters = {};
+
+  for (const campus of db.campuses) {
+    const rows = db.revenues
+      .filter((r) => r.campus_id === campus.id && r.revenue_date < cutoff)
+      .sort((a, b) => (a.revenue_date < b.revenue_date ? -1 : 1));
+    if (!rows.length) continue;
+
+    // Haftalara böl (ISO hafta yerine basitçe 5'erli okul günü grupları)
+    for (let i = 0; i < rows.length; i += 5) {
+      const group = rows.slice(i, i + 5);
+      if (!group.length) continue;
+      const from = group[0].revenue_date;
+      const to = group[group.length - 1].revenue_date;
+      const year = to.slice(0, 4);
+      const key = `${campus.code}-${year}`;
+      counters[key] = (counters[key] || 0) + 1;
+      const documentNo = `${key}-${String(counters[key]).padStart(4, '0')}`;
+
+      const sum = (k) => round2(group.reduce((s, r) => s + r[k], 0));
+      const total = sum('total_amount');
+      const id = nextId('handover');
+      // Demoda kod HMAC ile değil, belgeden türetilen sabit bir dizilimle üretilir
+      const code = demoCode(`${documentNo}|${campus.id}|${from}|${to}|${total.toFixed(2)}`);
+
+      db.revenue_handovers.push({
+        id, campus_id: campus.id, document_no: documentNo,
+        period_from: from, period_to: to, day_count: group.length,
+        cash_amount: sum('cash_amount'), card_amount: sum('card_amount'),
+        credit_amount: sum('credit_amount'), other_amount: sum('other_amount'),
+        total_amount: total, verification_code: code,
+        delivered_by: null,
+        delivered_by_name: kantinStaffName(db, campus.id),
+        received_by_name: 'Sevgi Arslan',
+        received_by_user: null, received_at: `${to} 17:45:00`,
+        status: random() < 0.8 ? 'ONAYLANDI' : 'TESLIM_EDILDI',
+        note: null, created_at: `${to} 17:40:00`,
+      });
+      for (const r of group) r.handover_id = id;
+    }
+  }
+}
+
+/** Demo doğrulama kodu: belge içeriğinden türeyen, karışmayan 6 karakter. */
+function demoCode(payload) {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < payload.length; i += 1) {
+    h1 = Math.imul(h1 ^ payload.charCodeAt(i), 0x01000193) >>> 0;
+    h2 = Math.imul(h2 + payload.charCodeAt(i) * (i + 7), 0x85ebca6b) >>> 0;
+  }
+  let out = '';
+  for (let i = 0; i < 6; i += 1) {
+    const bits = i < 3 ? (h1 >>> (i * 5)) : (h2 >>> ((i - 3) * 5));
+    out += alphabet[bits % alphabet.length];
+  }
+  return out;
+}
+
+function kantinStaffName(db, campusId) {
+  return db.users.find((u) => u.role === 'KANTIN_GOREVLISI' && u.campus_id === campusId)?.full_name
+    ?? db.users.find((u) => u.role === 'KAMPUS_YONETICISI' && u.campus_id === campusId)?.full_name
+    ?? 'Kantin Görevlisi';
+}
+
 /** Beklenen ciroyu okul günlerine dağıtır ve günlük ciro kayıtları üretir. */
 function distributeRevenue(db, nextId, campus, schoolDays, target, random, adminId) {
   if (!schoolDays.length || target <= 0) return 0;
@@ -600,4 +678,4 @@ function distributeRevenue(db, nextId, campus, schoolDays, target, random, admin
   return total;
 }
 
-export { iso, dayOffset, eachDay, isWeekday, round2 };
+export { iso, dayOffset, eachDay, isWeekday, round2, demoCode };

@@ -40,11 +40,13 @@ function upgradeExistingSchema() {
   addColumn('counts', 'submitted_by', 'INTEGER');
   addColumn('counts', 'submitted_at', 'TEXT');
   addColumn('count_lines', 'recipe_qty', 'REAL NOT NULL DEFAULT 0');
+  addColumn('daily_revenues', 'handover_id', 'INTEGER');
 
   // SQLite CHECK kisitlarini ALTER ile degistiremedigi icin ilgili tablolar
   // yeniden kurulur. Veri korunur; islem tek transaction icindedir.
   rebuildIfMissing('counts', "'SAYILDI'");      // TASLAK/KESINLESMIS -> + SAYILDI
   rebuildIfMissing('products', "'HAMMADDE'");   // SATIN_ALINAN/URETILEN -> + HAMMADDE
+  rebuildIfMissing('users', "'MUHASEBE'");      // roller -> + MUHASEBE (on muhasebe)
 }
 
 function columnExists(table, column) {

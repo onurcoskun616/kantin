@@ -32,8 +32,10 @@ CREATE TABLE IF NOT EXISTS users (
   email         TEXT    NOT NULL UNIQUE,
   full_name     TEXT    NOT NULL,
   password_hash TEXT    NOT NULL,
+  -- MUHASEBE : on muhasebe. Tum kampusleri gorur; yalnizca ciro teslim fisini
+  --            onaylayabilir ve tedarikci odemesi girebilir, baska kayit degistiremez.
   role          TEXT    NOT NULL CHECK (role IN
-                  ('ADMIN','GENEL_MUDURLUK','KAMPUS_YONETICISI','KANTIN_GOREVLISI','DENETCI')),
+                  ('ADMIN','GENEL_MUDURLUK','KAMPUS_YONETICISI','KANTIN_GOREVLISI','MUHASEBE','DENETCI')),
   campus_id     INTEGER REFERENCES campuses(id) ON DELETE SET NULL,
   is_active     INTEGER NOT NULL DEFAULT 1,
   last_login_at TEXT,
@@ -420,6 +422,8 @@ CREATE TABLE IF NOT EXISTS daily_revenues (
   other_amount  REAL    NOT NULL DEFAULT 0,
   total_amount  REAL    NOT NULL DEFAULT 0,
   z_report_no   TEXT,
+  -- Bagli oldugu teslim fisi (imzalandiktan sonra degisiklik kisitlanir)
+  handover_id   INTEGER REFERENCES revenue_handovers(id) ON DELETE SET NULL,
   is_school_day INTEGER NOT NULL DEFAULT 1,
   note          TEXT,
   created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -429,6 +433,47 @@ CREATE TABLE IF NOT EXISTS daily_revenues (
   UNIQUE (campus_id, revenue_date)
 );
 CREATE INDEX IF NOT EXISTS idx_revenue_date ON daily_revenues(revenue_date);
+
+-- ---------------------------------------------------------------------
+-- Ciro teslim fisi
+--
+-- Gunluk ciro, sistemden ciktisi alinip kantin gorevlisi tarafindan on
+-- muhasebeye IMZA KARSILIGI teslim edilir. Fis o gunun cirosunu DONDURUR:
+-- tutarlar belge uzerine yazildigi anki haliyle saklanir.
+--
+-- Imzalanan kagit ile sistemdeki rakam sonradan ayrisirsa imza anlamini
+-- yitirir. Bu yuzden:
+--   - Fise dahil gunlerin cirosu gorevli tarafindan degistirilemez
+--   - Genel mudurluk degistirirse fis 'FARKLI' olarak isaretlenir ve
+--     kagittaki tutar ile sistemdeki tutar yan yana gorunur
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS revenue_handovers (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  campus_id         INTEGER NOT NULL REFERENCES campuses(id) ON DELETE CASCADE,
+  document_no       TEXT    NOT NULL UNIQUE,
+  period_from       TEXT    NOT NULL,
+  period_to         TEXT    NOT NULL,
+  day_count         INTEGER NOT NULL DEFAULT 0,
+  -- Belge uzerine yazilan (donmus) tutarlar
+  cash_amount       REAL    NOT NULL DEFAULT 0,
+  card_amount       REAL    NOT NULL DEFAULT 0,
+  credit_amount     REAL    NOT NULL DEFAULT 0,
+  other_amount      REAL    NOT NULL DEFAULT 0,
+  total_amount      REAL    NOT NULL DEFAULT 0,
+  -- Kagidin sonradan degistirilmedigini dogrulamak icin kisa kod
+  verification_code TEXT    NOT NULL,
+  delivered_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  delivered_by_name TEXT    NOT NULL,
+  received_by_name  TEXT    NOT NULL,
+  -- On muhasebe sistemde de onaylarsa doldurulur
+  received_by_user  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  received_at       TEXT,
+  status            TEXT    NOT NULL DEFAULT 'TESLIM_EDILDI'
+                      CHECK (status IN ('TESLIM_EDILDI','ONAYLANDI','FARKLI')),
+  note              TEXT,
+  created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_handover_campus ON revenue_handovers(campus_id, period_from);
 
 -- ---------------------------------------------------------------------
 -- Denetim izi

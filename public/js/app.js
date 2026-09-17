@@ -16,6 +16,7 @@ const NAV = [
   { id: 'dashboard', label: 'Panel', icon: '📊' },
   { group: 'Günlük İşlemler' },
   { id: 'revenues', label: 'Günlük Ciro', icon: '💰' },
+  { id: 'handovers', label: 'Ciro Teslim Fişi', icon: '🧾' },
   { id: 'purchases', label: 'Mal Girişi (Alım)', icon: '🚚' },
   { id: 'returns', label: 'Tedarikçiye İade', icon: '↩️' },
   { id: 'waste', label: 'Fire / Zayiat', icon: '🗑️' },
@@ -35,9 +36,17 @@ const NAV = [
   { id: 'audit', label: 'Denetim İzi', icon: '🔍', roles: ['ADMIN', 'GENEL_MUDURLUK', 'DENETCI'] },
 ];
 
+/** Menude yer almayan detay sayfalarinin baslik karsiliklari. */
+const DETAIL_TITLES = {
+  countDetail: 'Sayım Detayı',
+  handoverDetail: 'Teslim Fişi',
+};
+
 const PAGE_LOADERS = {
   dashboard: () => import('./pages/dashboard.js'),
   revenues: () => import('./pages/revenues.js'),
+  handovers: () => import('./pages/handovers.js'),
+  handoverDetail: () => import('./pages/handovers.js').then((m) => ({ render: m.renderDetail })),
   purchases: () => import('./pages/purchases.js'),
   returns: () => import('./pages/returns.js'),
   waste: () => import('./pages/movements.js').then((m) => ({ render: m.renderWaste })),
@@ -198,22 +207,30 @@ export function navigate(page, params = [], fromHash = false) {
   }
 
   document.querySelectorAll('.nav-item').forEach((n) => {
-    n.classList.toggle('active', n.dataset.page === page || (page === 'countDetail' && n.dataset.page === 'counts'));
+    n.classList.toggle('active', n.dataset.page === page
+      || (page === 'countDetail' && n.dataset.page === 'counts')
+      || (page === 'handoverDetail' && n.dataset.page === 'handovers'));
   });
   const navLabel = NAV.find((n) => n.id === page)?.label;
-  document.getElementById('pageTitle').textContent = navLabel || 'Sayım Detayı';
+  document.getElementById('pageTitle').textContent = navLabel || DETAIL_TITLES[page] || 'Detay';
 
   const content = clear(document.getElementById('pageContent'));
   content.append(loading());
 
+  // Hizli gecislerde yavas biten onceki sayfanin render'i yenisini ezmemeli
+  const token = (renderToken += 1);
   PAGE_LOADERS[page]()
-    .then((mod) => mod.render(clear(content), { params }))
+    .then((mod) => { if (token === renderToken) return mod.render(clear(content), { params }); })
     .catch((err) => {
+      if (token !== renderToken) return;
       console.error(err);
       clear(content).append(el('div.alert.alert-danger', { text: err.message || 'Sayfa yüklenemedi.' }));
       if (!(err instanceof ApiError)) toast('Sayfa yüklenirken hata oluştu.', 'error');
     });
 }
+
+/** Her gezinme bir sira numarasi alir; yalnizca en sonuncusu ekrani boyar. */
+let renderToken = 0;
 
 /* ------------------------- Parola degistirme ----------------------- */
 function openChangePassword() {
@@ -241,7 +258,13 @@ export function campusName(id = state.campusId) {
 
 /** Kullanici yazma yetkisine sahip mi? */
 export function canWrite() {
-  return state.user && state.user.role !== 'DENETCI';
+  // ON MUHASEBE de salt okunurdur; tek istisnasi teslim fisini onaylamaktir.
+  return state.user && !['DENETCI', 'MUHASEBE'].includes(state.user.role);
+}
+
+/** Teslim fisini sistemde onaylayabilen roller. */
+export function canConfirmHandover() {
+  return state.user && ['ADMIN', 'GENEL_MUDURLUK', 'MUHASEBE'].includes(state.user.role);
 }
 
 export function isManager() {

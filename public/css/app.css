@@ -192,6 +192,7 @@ html[data-theme="dark"] .nav-item.active { color: #93c5fd; }
 .grid-2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
 .grid-3 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
 .grid-4 { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.grid-5 { grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); }
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
 
 .stat {
@@ -376,4 +377,55 @@ input:disabled, select:disabled { background: var(--surface-2); color: var(--tex
   .content { padding: 0; }
   .card { box-shadow: none; border: 1px solid #ccc; break-inside: avoid; }
   body { background: #fff; }
+}
+
+/* ===================== CIRO TESLIM FISI (ciktI) =====================
+   Ekranda gizlidir; yalnizca yazdirmada gorunur. A4'e iki nusha sigar:
+   ust yari kantin, alt yari on muhasebe nushasi. */
+#printRoot { display: none; }
+.link { color: var(--brand-500); text-decoration: none; cursor: pointer; }
+.link:hover { text-decoration: underline; }
+
+@media print {
+  /* Fis basiliyorsa uygulamanin geri kalani kagida cikmaz */
+  body:has(#printRoot .slip) > *:not(#printRoot) { display: none !important; }
+  #printRoot { display: block; }
+
+  @page { size: A4 portrait; margin: 10mm; }
+
+  .slip {
+    font-family: Arial, Helvetica, sans-serif; color: #000; font-size: 10.5px;
+    border: 1px solid #000; padding: 8mm; break-inside: avoid;
+  }
+  .slip-head { display: flex; justify-content: space-between; align-items: flex-start;
+    border-bottom: 2px solid #000; padding-bottom: 4mm; margin-bottom: 4mm; }
+  .slip-org { font-size: 13px; font-weight: 700; letter-spacing: .5px; }
+  .slip-title { font-size: 15px; font-weight: 700; margin-top: 1mm; }
+  .slip-copy { font-size: 10px; margin-top: 1mm; letter-spacing: 1px; }
+  .slip-doc { text-align: right; font-size: 11px; }
+  .slip-code { font-family: "Courier New", monospace; font-size: 13px; font-weight: 700;
+    letter-spacing: 2px; border: 1px solid #000; padding: 1mm 2mm; margin-top: 1mm; display: inline-block; }
+  .slip-small { font-size: 9px; margin-top: 1mm; }
+
+  .slip-meta { width: 100%; border-collapse: collapse; margin-bottom: 3mm; font-size: 10.5px; }
+  .slip-meta th { text-align: left; font-weight: 700; padding: 1mm 2mm 1mm 0; width: 18%; }
+  .slip-meta td { padding: 1mm 4mm 1mm 0; }
+
+  .slip-days { width: 100%; border-collapse: collapse; font-size: 10px; }
+  .slip-days th, .slip-days td { border: 1px solid #000; padding: 1mm 1.5mm; }
+  .slip-days thead th { background: #eee; }
+  .slip-days .num, .slip-days th.num { text-align: right; }
+  .slip-days tfoot th { background: #eee; font-weight: 700; }
+
+  .slip-words { margin-top: 3mm; border: 1px solid #000; padding: 2mm; font-size: 11px; }
+
+  .slip-sign { display: flex; gap: 10mm; margin-top: 6mm; }
+  .slip-sign-box { flex: 1; }
+  .slip-sign-role { font-size: 9px; font-weight: 700; letter-spacing: .5px; }
+  .slip-sign-name { font-size: 11px; margin-top: 1mm; }
+  .slip-sign-line { border-top: 1px solid #000; margin-top: 12mm; padding-top: 1mm;
+    font-size: 9px; text-align: center; }
+
+  .slip-foot { margin-top: 4mm; font-size: 8.5px; line-height: 1.4; border-top: 1px solid #999; padding-top: 2mm; }
+  .slip-cut { text-align: center; font-size: 9px; color: #666; margin: 4mm 0; letter-spacing: -1px; }
 }

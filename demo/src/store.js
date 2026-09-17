@@ -7,10 +7,12 @@
  *
  * Veriler tarayıcıda tutulur: başkalarına ulaşmaz, sunucuya gitmez.
  */
-import { buildDemoData, iso, dayOffset, eachDay, isWeekday, round2 } from './data.js';
-import { productProfit, netFromGross, pctOf, purchaseLineTotals, round4 } from './money.js';
+import { buildDemoData, iso, dayOffset, eachDay, isWeekday, round2, demoCode } from './data.js';
+import { productProfit, netFromGross, pctOf, purchaseLineTotals, round4, amountInWords } from './money.js';
 
-const STORAGE_KEY = 'kantin_demo_db_v3';
+// Sürüm eki: demo veri şeması değiştiğinde eski kayıt kullanılmasın diye
+// artırılır (v4 = ciro teslim fişleri eklendi).
+const STORAGE_KEY = 'kantin_demo_db_v4';
 
 /* ---------------------------- Hata türü ---------------------------- */
 export class DemoError extends Error {
@@ -56,7 +58,7 @@ const now = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 const today = () => iso(dayOffset(0));
 
 /* ----------------------------- Yetki ------------------------------- */
-const ALL_CAMPUS_ROLES = ['ADMIN', 'GENEL_MUDURLUK', 'DENETCI'];
+const ALL_CAMPUS_ROLES = ['ADMIN', 'GENEL_MUDURLUK', 'MUHASEBE', 'DENETCI'];
 const seesAll = (u) => ALL_CAMPUS_ROLES.includes(u.role);
 
 function requireUser() {
@@ -66,6 +68,11 @@ function requireUser() {
 function requireWrite() {
   const u = requireUser();
   if (u.role === 'DENETCI') throw forbidden('Denetçi rolü salt okunurdur, kayıt değiştiremez.');
+  // Ön muhasebe de salt okunurdur; tek istisnası teslim fişini onaylamaktır
+  // ve o uç requireRole ile ayrıca açılır.
+  if (u.role === 'MUHASEBE') {
+    throw forbidden('Ön muhasebe rolü yalnızca ciro teslim fişini onaylayabilir, başka kayıt değiştiremez.');
+  }
   return u;
 }
 function requireRole(...roles) {
@@ -1827,6 +1834,215 @@ route('GET', '/api/counts/:id/reconciliation', ({ params }) => {
   };
 });
 
+/* ------------------------- Ciro teslim fişi ------------------------ */
+/**
+ * Teslim fişi tutarı DONDURUR: imzalanan kâğıttaki rakam ile sistemdeki rakam
+ * sonradan ayrışırsa fiş "FARKLI" olarak işaretlenir ve ikisi yan yana görünür.
+ */
+function decorateHandover(h) {
+  const currentTotal = round2(db.revenues
+    .filter((r) => r.handover_id === h.id)
+    .reduce((s, r) => s + r.total_amount, 0));
+  const difference = round2(currentTotal - h.total_amount);
+  return {
+    ...h,
+    campus_name: campusName(h.campus_id),
+    campus_code: byId(db.campuses, h.campus_id)?.code ?? '',
+    confirmed_by_name: userName(h.received_by_user),
+    current_total: currentTotal,
+    difference,
+    has_mismatch: difference !== 0,
+  };
+}
+
+function handoverDetail(id) {
+  const h = byId(db.revenue_handovers, id);
+  const days = db.revenues
+    .filter((r) => r.handover_id === h.id)
+    .sort((a, b) => (a.revenue_date < b.revenue_date ? -1 : 1))
+    .map((r) => ({
+      revenue_date: r.revenue_date, cash_amount: r.cash_amount, card_amount: r.card_amount,
+      credit_amount: r.credit_amount, other_amount: r.other_amount,
+      total_amount: r.total_amount, z_report_no: r.z_report_no, note: r.note,
+    }));
+  return { ...decorateHandover(h), days, amountInWords: amountInWords(h.total_amount) };
+}
+
+/** Fişe dahil bir ciro değiştirilebilir mi? */
+function handoverGuard(revenueRow) {
+  if (!revenueRow?.handover_id) return null;
+  const h = byId(db.revenue_handovers, revenueRow.handover_id);
+  if (!h) return null;
+  if (!['ADMIN', 'GENEL_MUDURLUK'].includes(session.role)) {
+    throw conflict(`${revenueRow.revenue_date} tarihli ciro, ${h.document_no} numaralı imzalı teslim fişine dahil. `
+      + 'Değişiklik için genel müdürlüğe başvurun.');
+  }
+  return h;
+}
+
+function markHandoverMismatch(h, detail) {
+  if (!h) return;
+  if (h.status !== 'FARKLI') h.status = 'FARKLI';
+  logAudit('HANDOVER_MISMATCH', 'revenue_handovers', h.id, h.campus_id,
+    { documentNo: h.document_no, paperTotal: h.total_amount, ...detail });
+}
+
+route('GET', '/api/handovers', ({ query }) => {
+  const allowed = visibleCampusIds(query.campusId);
+  const items = db.revenue_handovers
+    .filter((h) => allowed.includes(h.campus_id))
+    .filter((h) => !query.from || h.period_to >= query.from)
+    .filter((h) => !query.to || h.period_from <= query.to)
+    .filter((h) => !query.status || h.status === query.status)
+    .sort((a, b) => (a.period_from === b.period_from ? b.id - a.id : (a.period_from < b.period_from ? 1 : -1)))
+    .slice(0, Number(query.limit || 200))
+    .map(decorateHandover);
+
+  return {
+    items,
+    summary: {
+      documentCount: items.length,
+      totalAmount: round2(items.reduce((s, h) => s + h.total_amount, 0)),
+      pendingConfirm: items.filter((h) => h.status === 'TESLIM_EDILDI').length,
+      mismatched: items.filter((h) => h.status === 'FARKLI').length,
+    },
+  };
+});
+
+route('GET', '/api/handovers/pending', ({ query }) => {
+  const allowed = visibleCampusIds(query.campusId);
+  const rows = db.revenues
+    .filter((r) => allowed.includes(r.campus_id) && !r.handover_id)
+    .sort((a, b) => (a.revenue_date < b.revenue_date ? -1 : 1));
+
+  const byCampus = new Map();
+  for (const row of rows) {
+    const g = byCampus.get(row.campus_id)
+      || { campusId: row.campus_id, campusName: campusName(row.campus_id), days: [], total: 0 };
+    g.days.push({ date: row.revenue_date, amount: row.total_amount });
+    g.total += row.total_amount;
+    byCampus.set(row.campus_id, g);
+  }
+
+  return {
+    items: [...byCampus.values()].map((g) => ({
+      ...g,
+      total: round2(g.total),
+      dayCount: g.days.length,
+      oldestDate: g.days[0]?.date ?? null,
+      waitingDays: g.days[0] ? daysBetween(g.days[0].date, today()) : 0,
+    })),
+    totalPending: round2(rows.reduce((s, r) => s + r.total_amount, 0)),
+  };
+});
+
+route('GET', '/api/handovers/verify/:documentNo', ({ params, query }) => {
+  const h = db.revenue_handovers.find((x) => x.document_no === String(params.documentNo).toUpperCase());
+  if (!h) throw notFound('Bu belge numarası sistemde kayıtlı değil.');
+  campusAccess(h.campus_id);
+  const currentTotal = round2(db.revenues
+    .filter((r) => r.handover_id === h.id).reduce((s, r) => s + r.total_amount, 0));
+  return {
+    documentNo: h.document_no,
+    campusName: campusName(h.campus_id),
+    period: { from: h.period_from, to: h.period_to },
+    paperTotal: h.total_amount,
+    systemTotal: currentTotal,
+    codeMatches: String(query.code || '').toUpperCase() === h.verification_code,
+    changedAfterHandover: round2(currentTotal - h.total_amount) !== 0,
+    status: h.status,
+    amountInWords: amountInWords(h.total_amount),
+  };
+});
+
+route('GET', '/api/handovers/:id', ({ params }) => {
+  const h = byId(db.revenue_handovers, params.id);
+  if (!h) throw notFound('Teslim fişi bulunamadı.');
+  campusAccess(h.campus_id);
+  return handoverDetail(h.id);
+});
+
+route('POST', '/api/handovers', ({ body }) => {
+  requireWrite();
+  const campusId = campusAccess(body.campusId);
+  const campus = byId(db.campuses, campusId);
+
+  const from = String(body.from || '').slice(0, 10);
+  const to = String(body.to || from).slice(0, 10) || from;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) throw bad('"Başlangıç tarihi" YYYY-AA-GG biçiminde olmalıdır.');
+  if (to < from) throw bad('Bitiş tarihi başlangıçtan önce olamaz.');
+  if (to > today()) throw bad('Gelecek tarihli teslim fişi oluşturulamaz.');
+
+  const receivedByName = String(body.receivedByName || '').trim();
+  if (receivedByName.length < 3) throw bad('"Teslim alan kişi" en az 3 karakter olmalıdır.');
+
+  const rows = db.revenues
+    .filter((r) => r.campus_id === campusId && r.revenue_date >= from && r.revenue_date <= to)
+    .sort((a, b) => (a.revenue_date < b.revenue_date ? -1 : 1));
+  if (!rows.length) throw bad('Bu tarih aralığında ciro kaydı yok.');
+
+  const already = rows.find((r) => r.handover_id);
+  if (already) {
+    const doc = byId(db.revenue_handovers, already.handover_id);
+    throw conflict(`${already.revenue_date} tarihli ciro zaten ${doc?.document_no ?? '#' + already.handover_id} `
+      + 'numaralı fişe dahil. Aynı gün iki kez teslim edilemez.');
+  }
+
+  const sum = (k) => round2(rows.reduce((s, r) => s + r[k], 0));
+  const total = sum('total_amount');
+  const year = to.slice(0, 4);
+  const prefix = `${campus.code}-${year}-`;
+  const last = db.revenue_handovers
+    .filter((h) => h.document_no.startsWith(prefix))
+    .map((h) => Number(h.document_no.slice(prefix.length)))
+    .sort((a, b) => b - a)[0] || 0;
+  const documentNo = `${prefix}${String(last + 1).padStart(4, '0')}`;
+
+  const row = {
+    id: nextId('handover'), campus_id: campusId, document_no: documentNo,
+    period_from: from, period_to: to, day_count: rows.length,
+    cash_amount: sum('cash_amount'), card_amount: sum('card_amount'),
+    credit_amount: sum('credit_amount'), other_amount: sum('other_amount'),
+    total_amount: total,
+    verification_code: demoCode(`${documentNo}|${campusId}|${from}|${to}|${total.toFixed(2)}`),
+    delivered_by: session.id, delivered_by_name: session.full_name,
+    received_by_name: receivedByName, received_by_user: null, received_at: null,
+    status: 'TESLIM_EDILDI', note: String(body.note || '').trim() || null,
+    created_at: now(),
+  };
+  db.revenue_handovers.push(row);
+  for (const r of rows) r.handover_id = row.id;
+
+  logAudit('CREATE', 'revenue_handovers', row.id, campusId,
+    { from, to, total, dayCount: rows.length, receivedByName });
+  return handoverDetail(row.id);
+});
+
+route('POST', '/api/handovers/:id/confirm', ({ params, body }) => {
+  // Ön muhasebe genel yazma yetkisine sahip değildir; bu uç ona AÇIKÇA açılır
+  requireRole('ADMIN', 'GENEL_MUDURLUK', 'MUHASEBE');
+  const h = byId(db.revenue_handovers, params.id);
+  if (!h) throw notFound('Teslim fişi bulunamadı.');
+  if (h.status === 'ONAYLANDI') throw conflict('Bu fiş zaten onaylanmış.');
+
+  const code = String(body.verificationCode || '').toUpperCase();
+  if (code !== h.verification_code) {
+    throw bad('Doğrulama kodu belgeyle eşleşmiyor. Elinizdeki kâğıt sistemdeki kayıtla aynı belge değil.');
+  }
+  h.status = 'ONAYLANDI';
+  h.received_by_user = session.id;
+  h.received_at = now();
+  logAudit('CONFIRM_HANDOVER', 'revenue_handovers', h.id, h.campus_id,
+    { documentNo: h.document_no, total: h.total_amount });
+  return handoverDetail(h.id);
+});
+
+function daysBetween(fromStr, toStr) {
+  const a = new Date(`${fromStr}T00:00:00Z`);
+  const b = new Date(`${toStr}T00:00:00Z`);
+  return Math.max(0, Math.round((b - a) / 86400000));
+}
+
 /* ---------------------------- Günlük ciro -------------------------- */
 route('GET', '/api/revenues', ({ query }) => {
   const allowed = visibleCampusIds(query.campusId);
@@ -1839,18 +2055,24 @@ route('GET', '/api/revenues', ({ query }) => {
     .filter((r) => !to || r.revenue_date <= to)
     .sort((a, b) => (a.revenue_date < b.revenue_date ? 1 : -1))
     .slice(0, Number(query.limit || 400))
-    .map((r) => ({
-      ...r, campus_name: campusName(r.campus_id),
-      created_by_name: userName(r.created_by), updated_by_name: userName(r.updated_by),
-    }));
+    .map((r) => {
+      const h = r.handover_id ? byId(db.revenue_handovers, r.handover_id) : null;
+      return {
+        ...r, campus_name: campusName(r.campus_id),
+        created_by_name: userName(r.created_by), updated_by_name: userName(r.updated_by),
+        handover_no: h?.document_no ?? null, handover_status: h?.status ?? null,
+      };
+    });
 
   const summary = items.reduce((acc, r) => {
     acc.total += r.total_amount; acc.cash += r.cash_amount;
     acc.card += r.card_amount; acc.credit += r.credit_amount;
     acc.schoolDays += r.is_school_day ? 1 : 0;
+    acc.undelivered += r.handover_id ? 0 : r.total_amount;
+    acc.undeliveredDays += r.handover_id ? 0 : 1;
     return acc;
-  }, { total: 0, cash: 0, card: 0, credit: 0, schoolDays: 0, dayCount: items.length });
-  for (const k of ['total', 'cash', 'card', 'credit']) summary[k] = round2(summary[k]);
+  }, { total: 0, cash: 0, card: 0, credit: 0, schoolDays: 0, undelivered: 0, undeliveredDays: 0, dayCount: items.length });
+  for (const k of ['total', 'cash', 'card', 'credit', 'undelivered']) summary[k] = round2(summary[k]);
   summary.dailyAverage = summary.schoolDays > 0 ? round2(summary.total / summary.schoolDays) : 0;
   return { items, summary };
 });
@@ -1897,8 +2119,14 @@ route('POST', '/api/revenues', ({ body }) => {
   assertRevenueEditable(data.campus_id, data.revenue_date);
 
   if (existing) {
+    // İmzalı teslim fişine dahil gün: görevli değiştiremez, yönetim değiştirirse fiş FARKLI olur
+    const handover = handoverGuard(existing);
+    const oldTotal = existing.total_amount;
     Object.assign(existing, data, { updated_by: session.id, updated_at: now() });
     logAudit('UPDATE', 'daily_revenues', existing.id, data.campus_id, { date: data.revenue_date, total: data.total_amount });
+    if (handover && round2(data.total_amount) !== round2(oldTotal)) {
+      markHandoverMismatch(handover, { date: data.revenue_date, oldTotal, newTotal: data.total_amount, reason: 'CIRO_GUNCELLENDI' });
+    }
     return existing;
   }
   const row = {
@@ -1920,8 +2148,14 @@ route('POST', '/api/revenues/bulk', ({ body }) => {
       const data = parseRevenue({ ...raw, campusId: raw.campusId ?? body.campusId });
       assertRevenueEditable(data.campus_id, data.revenue_date);
       const existing = db.revenues.find((r) => r.campus_id === data.campus_id && r.revenue_date === data.revenue_date);
-      if (existing) Object.assign(existing, data, { updated_by: session.id, updated_at: now() });
-      else {
+      if (existing) {
+        const handover = handoverGuard(existing);
+        const oldTotal = existing.total_amount;
+        Object.assign(existing, data, { updated_by: session.id, updated_at: now() });
+        if (handover && round2(data.total_amount) !== round2(oldTotal)) {
+          markHandoverMismatch(handover, { date: data.revenue_date, oldTotal, newTotal: data.total_amount, reason: 'TOPLU_GUNCELLEME' });
+        }
+      } else {
         db.revenues.push({
           id: nextId('revenue'), ...data, created_by: session.id, updated_by: session.id,
           created_at: now(), updated_at: now(),
@@ -1942,8 +2176,12 @@ route('DELETE', '/api/revenues/:id', ({ params }) => {
   if (!row) throw notFound('Ciro kaydı bulunamadı.');
   campusAccess(row.campus_id);
   assertRevenueEditable(row.campus_id, row.revenue_date);
+  const handover = handoverGuard(row);
   db.revenues = db.revenues.filter((r) => r.id !== row.id);
   logAudit('DELETE', 'daily_revenues', row.id, row.campus_id, { date: row.revenue_date, total: row.total_amount });
+  if (handover) {
+    markHandoverMismatch(handover, { date: row.revenue_date, oldTotal: row.total_amount, newTotal: 0, reason: 'CIRO_SILINDI' });
+  }
   return { ok: true };
 });
 
@@ -2355,7 +2593,7 @@ route('GET', '/api/reports/purchases-by-supplier', ({ query }) => {
 });
 
 /* -------------------------- Kullanıcılar --------------------------- */
-const ROLES = ['ADMIN', 'GENEL_MUDURLUK', 'KAMPUS_YONETICISI', 'KANTIN_GOREVLISI', 'DENETCI'];
+const ROLES = ['ADMIN', 'GENEL_MUDURLUK', 'KAMPUS_YONETICISI', 'KANTIN_GOREVLISI', 'MUHASEBE', 'DENETCI'];
 
 route('GET', '/api/users', () => {
   requireRole('ADMIN', 'GENEL_MUDURLUK');
@@ -2419,7 +2657,7 @@ function parseUser(body) {
     email: (text(body.email, 'E-posta', { required: true }) || '').toLowerCase(),
     full_name: text(body.fullName, 'Ad soyad', { required: true }),
     role,
-    campus_id: ['ADMIN', 'GENEL_MUDURLUK', 'DENETCI'].includes(role) ? null : campusId,
+    campus_id: ['ADMIN', 'GENEL_MUDURLUK', 'MUHASEBE', 'DENETCI'].includes(role) ? null : campusId,
     is_active: body.isActive === false ? 0 : 1,
   };
 }

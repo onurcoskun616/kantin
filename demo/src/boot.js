@@ -9,7 +9,7 @@ import { toast, el, ROLE_LABELS } from './ui.js';
 import './app.js';
 
 /* ------------------------ Demo hesap seçici ------------------------ */
-const ACCOUNT_ORDER = ['ADMIN', 'GENEL_MUDURLUK', 'KAMPUS_YONETICISI', 'KANTIN_GOREVLISI', 'DENETCI'];
+const ACCOUNT_ORDER = ['ADMIN', 'GENEL_MUDURLUK', 'KAMPUS_YONETICISI', 'KANTIN_GOREVLISI', 'MUHASEBE', 'DENETCI'];
 
 function mountAccountPicker() {
   const form = document.getElementById('loginForm');

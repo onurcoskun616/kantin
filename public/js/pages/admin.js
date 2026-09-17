@@ -78,6 +78,7 @@ export async function renderUsers(root) {
         el('dt', { text: 'Genel Müdürlük' }), el('dd', { text: 'Tüm kampüsleri görür ve yönetir', style: 'text-align:left;font-weight:400' }),
         el('dt', { text: 'Kampüs Yöneticisi' }), el('dd', { text: 'Kendi kampüsü — sayım kesinleştirebilir', style: 'text-align:left;font-weight:400' }),
         el('dt', { text: 'Kantin Görevlisi' }), el('dd', { text: 'Kendi kampüsü — veri girer, sayım kesinleştiremez', style: 'text-align:left;font-weight:400' }),
+        el('dt', { text: 'Ön Muhasebe' }), el('dd', { text: 'Tüm kampüsler, salt okunur — yalnızca ciro teslim fişini onaylayabilir', style: 'text-align:left;font-weight:400' }),
         el('dt', { text: 'Denetçi' }), el('dd', { text: 'Tüm kampüsler, salt okunur', style: 'text-align:left;font-weight:400' }),
       ]),
     ]));
@@ -86,7 +87,7 @@ export async function renderUsers(root) {
       table([
         { label: 'Ad Soyad', value: (r) => r.fullName },
         { label: 'E-posta', value: (r) => r.email },
-        { label: 'Rol', render: (r) => badge(ROLE_LABELS[r.role] || r.role, r.role === 'DENETCI' ? 'info' : '') },
+        { label: 'Rol', render: (r) => badge(ROLE_LABELS[r.role] || r.role, ['DENETCI', 'MUHASEBE'].includes(r.role) ? 'info' : '') },
         { label: 'Kampüs', value: (r) => (r.campusName ? shortName(r.campusName) : 'Tüm kampüsler') },
         { label: 'Son Giriş', value: (r) => fmt.dateTime(r.lastLoginAt) },
         { label: 'Durum', render: (r) => (r.isActive ? badge('Aktif', 'ok') : badge('Pasif', 'bad')) },

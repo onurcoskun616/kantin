@@ -76,3 +76,54 @@ export function pctOf(part, whole) {
   if (w === 0) return null;
   return round2((Number(part) / w) * 100);
 }
+
+/* ------------------------- Tutarin yaziyla yazimi ------------------- */
+const BIRLER = ['', 'Bir', 'İki', 'Üç', 'Dört', 'Beş', 'Altı', 'Yedi', 'Sekiz', 'Dokuz'];
+const ONLAR = ['', 'On', 'Yirmi', 'Otuz', 'Kırk', 'Elli', 'Altmış', 'Yetmiş', 'Seksen', 'Doksan'];
+const BASAMAK = ['', 'Bin', 'Milyon', 'Milyar'];
+
+function ucBasamak(n) {
+  const yuz = Math.floor(n / 100);
+  const on = Math.floor((n % 100) / 10);
+  const bir = n % 10;
+  let out = '';
+  if (yuz > 0) out += (yuz === 1 ? 'Yüz' : `${BIRLER[yuz]}Yüz`);
+  if (on > 0) out += ONLAR[on];
+  if (bir > 0) out += BIRLER[bir];
+  return out;
+}
+
+/**
+ * Tutari Turkce yaziyla dondurur: 1234.56 -> "BinİkiYüzOtuzDörtTLElliAltıKr"
+ *
+ * Mali belgelerde tutarin yaziyla da yazilmasi, rakamin sonradan
+ * degistirilmesini zorlastirir. Teslim fisinde bu yuzden kullanilir.
+ */
+export function amountInWords(amount) {
+  const value = Math.abs(Math.round((Number(amount) || 0) * 100));
+  const lira = Math.floor(value / 100);
+  const kurus = value % 100;
+
+  let out = '';
+  if (lira === 0) {
+    out = 'Sıfır';
+  } else {
+    const gruplar = [];
+    let kalan = lira;
+    while (kalan > 0) {
+      gruplar.push(kalan % 1000);
+      kalan = Math.floor(kalan / 1000);
+    }
+    for (let i = gruplar.length - 1; i >= 0; i -= 1) {
+      const grup = gruplar[i];
+      if (grup === 0) continue;
+      // "BirBin" degil "Bin" denir
+      if (i === 1 && grup === 1) out += 'Bin';
+      else out += ucBasamak(grup) + BASAMAK[i];
+    }
+  }
+
+  out += ' TL';
+  if (kurus > 0) out += ` ${ucBasamak(kurus)} Kr`;
+  return out;
+}

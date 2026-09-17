@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { state, canWrite } from '../app.js';
+import { state, canWrite, navigate } from '../app.js';
 import { el, card, stat, table, fmt, badge, toast, formModal, confirmDialog, dateUtil, empty, alertBox } from '../ui.js';
 
 export async function render(root) {
@@ -23,7 +23,7 @@ export async function render(root) {
   ]));
 
   const s = list.summary;
-  root.append(el('div.grid.grid-4', {}, [
+  root.append(el('div.grid.grid-5', {}, [
     stat('Aylık Ciro', fmt.money(s.total)),
     stat('Günlük Ortalama', fmt.money(s.dailyAverage), { sub: `${s.schoolDays} okul günü` }),
     stat('Nakit / Kart', `${pct(s.cash, s.total)} / ${pct(s.card, s.total)}`, { sub: `${fmt.money(s.cash)} · ${fmt.money(s.card)}` }),
@@ -31,11 +31,25 @@ export async function render(root) {
       tone: calendar.summary.missingCount > 0 ? 'bad' : 'ok',
       sub: 'Hafta içi ciro girilmemiş gün',
     }),
+    stat('Ön Muhasebeye Teslim Edilmemiş', fmt.money(s.undelivered), {
+      tone: s.undelivered > 0 ? 'bad' : 'ok',
+      sub: s.undelivered > 0 ? `${s.undeliveredDays} gün · teslim fişi kesilmemiş` : 'Tüm günler teslim edildi',
+    }),
   ]));
 
   if (calendar.summary.missingCount > 0) {
     root.append(alertBox('warning', 'Eksik ciro girişi var',
       'Aşağıdaki takvimde kırmızı görünen günlerde ciro girilmemiş. Sayım mutabakatının doğru çalışması için tüm okul günlerinin girilmesi gerekir.'));
+  }
+
+  if (s.undelivered > 0) {
+    const box = alertBox('warning', 'Teslim edilmemiş ciro var',
+      `Bu dönemde ${s.undeliveredDays} günün cirosu (${fmt.money(s.undelivered)}) henüz ön muhasebeye `
+      + 'imza karşılığı teslim edilmemiş. Teslim fişi kesilene kadar bu tutar kasada bekliyor sayılır.');
+    box.append(el('div', { style: 'margin-top:8px' }, [
+      el('button.btn.btn-sm', { text: 'Teslim Fişi Ekranına Git', onclick: () => navigate('handovers') }),
+    ]));
+    root.append(box);
   }
 
   /* ----------------------------- Takvim ----------------------------- */
@@ -57,10 +71,21 @@ export async function render(root) {
       { label: 'Z No', value: (r) => r.z_report_no || '—' },
       { label: 'Kaydeden', value: (r) => r.updated_by_name || r.created_by_name || '—' },
       {
-        label: '', render: (r) => (canWrite() ? el('div.btn-row', {}, [
-          el('button.btn.btn-sm', { text: 'Düzenle', onclick: () => openForm(root, r.revenue_date, r) }),
-          el('button.btn.btn-sm.btn-ghost', { text: 'Sil', onclick: () => remove(root, r) }),
-        ]) : '—'),
+        label: 'Teslim', render: (r) => (r.handover_no
+          ? el('a.link', { text: r.handover_no, href: `#/handovers`, title: 'İmzalı teslim fişine dahil' })
+          : badge('teslim edilmedi', 'warn')),
+      },
+      {
+        label: '', render: (r) => {
+          if (!canWrite()) return '—';
+          // Imzali fise dahil gunu yalnizca genel mudurluk degistirebilir
+          const locked = !!r.handover_no && !['ADMIN', 'GENEL_MUDURLUK'].includes(state.user.role);
+          if (locked) return el('span.muted', { text: '🔒 imzalı', title: `${r.handover_no} numaralı teslim fişine dahil` });
+          return el('div.btn-row', {}, [
+            el('button.btn.btn-sm', { text: 'Düzenle', onclick: () => openForm(root, r.revenue_date, r) }),
+            el('button.btn.btn-sm.btn-ghost', { text: 'Sil', onclick: () => remove(root, r) }),
+          ]);
+        },
       },
     ], list.items, { emptyText: 'Bu dönemde ciro kaydı yok.' }),
   ], { tight: true }));

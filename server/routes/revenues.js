@@ -9,6 +9,7 @@ import { requireWrite, assertCampusAccess, campusFilter } from '../lib/auth.js';
 import { logAudit } from '../lib/audit.js';
 import { str, num, date, bool, today, monthRange, arr } from '../lib/validate.js';
 import { round2 } from '../lib/money.js';
+import { handoverGuard, markHandoverMismatch } from './handovers.js';
 
 export const revenueRoutes = new Router();
 
@@ -26,11 +27,13 @@ revenueRoutes.get('/', async (ctx) => {
   }
 
   const items = all(
-    `SELECT r.*, k.name AS campus_name, u.full_name AS created_by_name, uu.full_name AS updated_by_name
+    `SELECT r.*, k.name AS campus_name, u.full_name AS created_by_name, uu.full_name AS updated_by_name,
+            h.document_no AS handover_no, h.status AS handover_status
        FROM daily_revenues r
        JOIN campuses k ON k.id = r.campus_id
        LEFT JOIN users u  ON u.id = r.created_by
        LEFT JOIN users uu ON uu.id = r.updated_by
+       LEFT JOIN revenue_handovers h ON h.id = r.handover_id
       WHERE 1 = 1 ${f.clause} ${extra}
       ORDER BY r.revenue_date DESC, k.name LIMIT ?`,
     [...params, Number(ctx.query.limit || 400)]
@@ -42,9 +45,11 @@ revenueRoutes.get('/', async (ctx) => {
     acc.card += r.card_amount;
     acc.credit += r.credit_amount;
     acc.schoolDays += r.is_school_day ? 1 : 0;
+    acc.undelivered += r.handover_id ? 0 : r.total_amount;
+    acc.undeliveredDays += r.handover_id ? 0 : 1;
     return acc;
-  }, { total: 0, cash: 0, card: 0, credit: 0, schoolDays: 0, dayCount: items.length });
-  for (const k of ['total', 'cash', 'card', 'credit']) summary[k] = round2(summary[k]);
+  }, { total: 0, cash: 0, card: 0, credit: 0, schoolDays: 0, undelivered: 0, undeliveredDays: 0, dayCount: items.length });
+  for (const k of ['total', 'cash', 'card', 'credit', 'undelivered']) summary[k] = round2(summary[k]);
   summary.dailyAverage = summary.schoolDays > 0 ? round2(summary.total / summary.schoolDays) : 0;
 
   if (ctx.query.format === 'csv') {
@@ -58,6 +63,7 @@ revenueRoutes.get('/', async (ctx) => {
       { label: 'Toplam', value: (r) => tr(r.total_amount) },
       { label: 'Z No', key: 'z_report_no' },
       { label: 'Okul Günü', value: (r) => (r.is_school_day ? 'Evet' : 'Hayir') },
+      { label: 'Teslim Fişi', value: (r) => r.handover_no || '' },
       { label: 'Not', key: 'note' },
     ]));
   }
@@ -117,6 +123,9 @@ revenueRoutes.post('/', async (ctx) => {
 
   let id;
   if (existing) {
+    // Imzali teslim fisine dahil bir gun degistiriliyorsa: gorevli degistiremez,
+    // genel mudurluk degistirirse fis 'FARKLI' olarak isaretlenir.
+    const handover = handoverGuard(existing, ctx.user);
     run(
       `UPDATE daily_revenues SET cash_amount = ?, card_amount = ?, credit_amount = ?, other_amount = ?,
               total_amount = ?, z_report_no = ?, is_school_day = ?, note = ?, updated_by = ?, updated_at = datetime('now')
@@ -126,6 +135,11 @@ revenueRoutes.post('/', async (ctx) => {
     id = existing.id;
     logAudit({ user: ctx.user, action: 'UPDATE', entity: 'daily_revenues', entityId: id, campusId: d.campusId,
       detail: { date: d.revenueDate, oldTotal: existing.total_amount, newTotal: d.total }, ip: ctx.ip });
+    if (handover && round2(d.total) !== round2(existing.total_amount)) {
+      markHandoverMismatch(handover, ctx.user, {
+        date: d.revenueDate, oldTotal: existing.total_amount, newTotal: d.total, reason: 'CIRO_GUNCELLENDI',
+      });
+    }
   } else {
     id = insert(
       `INSERT INTO daily_revenues (campus_id, revenue_date, cash_amount, card_amount, credit_amount, other_amount,
@@ -149,6 +163,8 @@ revenueRoutes.post('/bulk', async (ctx) => {
     try {
       const d = parseRevenue(ctx.user, { ...raw, campusId: raw.campusId ?? ctx.body.campusId });
       assertRevenueEditable(d.campusId, d.revenueDate, ctx.user);
+      const prev = get('SELECT * FROM daily_revenues WHERE campus_id = ? AND revenue_date = ?', [d.campusId, d.revenueDate]);
+      const handover = handoverGuard(prev, ctx.user);
       run(
         `INSERT INTO daily_revenues (campus_id, revenue_date, cash_amount, card_amount, credit_amount, other_amount,
                                      total_amount, z_report_no, is_school_day, note, created_by, updated_by)
@@ -162,6 +178,11 @@ revenueRoutes.post('/bulk', async (ctx) => {
         [d.campusId, d.revenueDate, d.cash, d.card, d.credit, d.other, d.total, d.zReportNo,
          d.isSchoolDay ? 1 : 0, d.note, ctx.user.id, ctx.user.id]
       );
+      if (handover && round2(d.total) !== round2(prev.total_amount)) {
+        markHandoverMismatch(handover, ctx.user, {
+          date: d.revenueDate, oldTotal: prev.total_amount, newTotal: d.total, reason: 'TOPLU_GUNCELLEME',
+        });
+      }
       result.saved += 1;
     } catch (err) {
       result.errors.push({ row: i + 1, message: err.message });
@@ -178,9 +199,15 @@ revenueRoutes.delete('/:id', async (ctx) => {
   if (!row) throw notFound('Ciro kaydi bulunamadi.');
   assertCampusAccess(ctx.user, row.campus_id);
   assertRevenueEditable(row.campus_id, row.revenue_date, ctx.user);
+  const handover = handoverGuard(row, ctx.user);
   run('DELETE FROM daily_revenues WHERE id = ?', [id]);
   logAudit({ user: ctx.user, action: 'DELETE', entity: 'daily_revenues', entityId: id, campusId: row.campus_id,
     detail: { date: row.revenue_date, total: row.total_amount }, ip: ctx.ip });
+  if (handover) {
+    markHandoverMismatch(handover, ctx.user, {
+      date: row.revenue_date, oldTotal: row.total_amount, newTotal: 0, reason: 'CIRO_SILINDI',
+    });
+  }
   return { ok: true };
 });
 
