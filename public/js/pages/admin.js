@@ -148,6 +148,7 @@ const ACTION_LABELS = {
 const ENTITY_LABELS = {
   users: 'Kullanıcı', campuses: 'Kampüs', products: 'Ürün', categories: 'Kategori',
   suppliers: 'Tedarikçi', purchases: 'Alım belgesi', waste_records: 'Fire', transfers: 'Transfer',
+  supplier_returns: 'Tedarikçiye iade',
   counts: 'Sayım', daily_revenues: 'Günlük ciro', campus_products: 'Kampüs fiyatı',
   stock_movements: 'Stok hareketi', supplier_payments: 'Tedarikçi ödemesi',
 };

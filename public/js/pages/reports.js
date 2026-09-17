@@ -203,20 +203,30 @@ async function critical() {
 async function suppliers(range) {
   const data = await api.get('/api/reports/purchases-by-supplier', { campusId: state.campusId, ...range });
   return [
-    el('div.grid.grid-3', {}, [
+    el('div.grid.grid-4', {}, [
       stat('Dönem Toplam Alım', fmt.money(data.total)),
-      stat('Tedarikçi Sayısı', String(data.items.length)),
+      stat('İade', fmt.money(data.returnTotal), {
+        tone: data.returnTotal > 0 ? 'warn' : '',
+        sub: data.total > 0 ? `Alımın %${Math.round((data.returnTotal / data.total) * 1000) / 10}'i` : '',
+      }),
+      stat('Net Alım', fmt.money(data.netTotal), { sub: 'Alım − iade' }),
       stat('En Büyük Tedarikçi', data.items[0]?.supplier_name ?? '—', { sub: data.items[0] ? fmt.money(data.items[0].gross_total) : '' }),
     ]),
-    card('Tedarikçi Bazlı Alım', [
+    card('Tedarikçi Bazlı Alım ve İade', [
       table([
         { label: 'Tedarikçi', value: (r) => r.supplier_name, wrap: true },
         { label: 'Belge', num: true, value: (r) => r.document_count },
         { label: 'Net', num: true, value: (r) => fmt.money(r.net_total) },
         { label: 'KDV', num: true, value: (r) => fmt.money(r.vat_total) },
         { label: 'Toplam', num: true, render: (r) => el('strong', { text: fmt.money(r.gross_total) }) },
+        { label: 'İade', num: true, render: (r) => (r.return_total > 0 ? el('span.neg', { text: fmt.money(r.return_total) }) : el('span.muted', { text: '—' })) },
+        { label: 'İade %', num: true, render: (r) => (r.return_total > 0 ? badge(fmt.pct(r.return_pct), r.return_pct > 5 ? 'bad' : 'warn') : el('span.muted', { text: '—' })) },
+        { label: 'Net Alım', num: true, value: (r) => fmt.money(r.net_purchase) },
         { label: 'Pay', num: true, value: (r) => (data.total ? fmt.pct(Math.round((r.gross_total / data.total) * 1000) / 10) : '—') },
-      ], data.items, { emptyText: 'Bu dönemde alım yok.' }),
+      ], data.items, {
+        rowClass: (r) => (r.return_pct > 5 ? 'is-warn' : ''),
+        emptyText: 'Bu dönemde alım yok.',
+      }),
     ], { tight: true }),
     data.items.length ? card('Alım Dağılımı', [
       barChart(data.items.map((r) => ({ label: r.supplier_name, value: r.gross_total }))),

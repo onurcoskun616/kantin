@@ -521,13 +521,23 @@ route('GET', '/api/suppliers/:id', ({ params }) => {
   const payments = db.supplier_payments
     .filter((p) => p.supplier_id === supplier.id)
     .sort((a, b) => (a.payment_date < b.payment_date ? 1 : -1));
-  const totalPurchase = purchases.reduce((s, p) => s + p.gross_total, 0);
-  const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
+  // İadeler borcu azaltır: mal geri gittiği için tedarikçi alacaklandırır
+  const returns = db.supplier_returns
+    .filter((r) => r.supplier_id === supplier.id && allowed.includes(r.campus_id))
+    .map((r) => ({ ...r, campus_name: campusName(r.campus_id) }))
+    .sort((a, b) => (a.return_date < b.return_date ? 1 : -1));
+
+  const totalPurchase = purchases.reduce((s2, p) => s2 + p.gross_total, 0);
+  const totalReturn = returns.reduce((s2, r) => s2 + r.gross_total, 0);
+  const totalPaid = payments.reduce((s2, p) => s2 + p.amount, 0);
   return {
-    ...supplier, purchases, payments,
+    ...supplier, purchases, payments, returns,
     balance: {
-      totalPurchase: round2(totalPurchase), totalPaid: round2(totalPaid),
-      debt: round2(totalPurchase - totalPaid),
+      totalPurchase: round2(totalPurchase),
+      totalReturn: round2(totalReturn),
+      netPurchase: round2(totalPurchase - totalReturn),
+      totalPaid: round2(totalPaid),
+      debt: round2(totalPurchase - totalReturn - totalPaid),
     },
   };
 });
@@ -697,6 +707,10 @@ route('POST', '/api/purchases/:id/cancel', ({ params }) => {
     && c.count_type === 'DONEM' && c.count_date >= header.document_date);
   if (later) {
     throw conflict(`Bu belge ${later.count_date} tarihli kesinleşmiş sayıma dahil olduğu için iptal edilemez. Düzeltme kaydı giriniz.`);
+  }
+  const linkedReturn = db.supplier_returns.find((r) => r.purchase_id === header.id);
+  if (linkedReturn) {
+    throw conflict(`Bu belgeye bağlı bir iade kaydı var (#${linkedReturn.id}). Önce iadeyi silin.`);
   }
   header.status = 'IPTAL';
   db.movements = db.movements.filter((m) => !(m.ref_type === 'purchase' && m.ref_id === header.id));
@@ -930,6 +944,167 @@ route('POST', '/api/transfers', ({ body }) => {
   }
   logAudit('CREATE', 'transfers', transfer.id, fromCampusId, { toCampusId, lineCount: lines.length });
   return { id: transfer.id };
+});
+
+/* ------------------------ Tedarikçiye iade ------------------------- */
+const RETURN_REASONS = ['BOZUK', 'SKT', 'YANLIS_URUN', 'FAZLA_GONDERIM', 'HASARLI', 'DIGER'];
+
+route('GET', '/api/returns', ({ query }) => {
+  const allowed = visibleCampusIds(query.campusId);
+  const rows = db.supplier_returns
+    .filter((r) => allowed.includes(r.campus_id))
+    .filter((r) => !query.from || r.return_date >= query.from)
+    .filter((r) => !query.to || r.return_date <= query.to)
+    .filter((r) => !query.supplierId || r.supplier_id === Number(query.supplierId));
+
+  const items = rows
+    .sort((a, b) => (a.return_date < b.return_date ? 1 : a.return_date > b.return_date ? -1 : b.id - a.id))
+    .slice(0, Number(query.limit || 200))
+    .map((r) => ({
+      ...r,
+      supplier_name: byId(db.suppliers, r.supplier_id)?.name ?? '—',
+      campus_name: campusName(r.campus_id),
+      created_by_name: userName(r.created_by),
+      purchase_document_no: r.purchase_id ? byId(db.purchases, r.purchase_id)?.document_no ?? null : null,
+      line_count: db.supplier_return_lines.filter((l) => l.return_id === r.id).length,
+    }));
+
+  const reasonMap = new Map();
+  for (const r of rows) {
+    const g = reasonMap.get(r.reason) || { reason: r.reason, document_count: 0, total: 0 };
+    g.document_count += 1; g.total += r.gross_total;
+    reasonMap.set(r.reason, g);
+  }
+
+  return {
+    items,
+    summary: {
+      documentCount: items.length,
+      netTotal: round2(items.reduce((s2, r) => s2 + r.net_total, 0)),
+      grossTotal: round2(items.reduce((s2, r) => s2 + r.gross_total, 0)),
+    },
+    byReason: [...reasonMap.values()]
+      .map((r) => ({ ...r, total: round2(r.total) }))
+      .sort((a, b) => b.total - a.total),
+  };
+});
+
+route('GET', '/api/returns/:id', ({ params }) => {
+  const header = byId(db.supplier_returns, params.id);
+  if (!header) throw notFound('İade belgesi bulunamadı.');
+  campusAccess(header.campus_id);
+  const lines = db.supplier_return_lines
+    .filter((l) => l.return_id === header.id)
+    .map((l) => {
+      const p = productById(l.product_id);
+      return { ...l, product_name: p?.name ?? '—', barcode: p?.barcode ?? null, unit: p?.unit ?? 'ADET' };
+    });
+  return {
+    ...header, lines,
+    supplier_name: byId(db.suppliers, header.supplier_id)?.name ?? '—',
+    campus_name: campusName(header.campus_id),
+    created_by_name: userName(header.created_by),
+    purchase_document_no: header.purchase_id ? byId(db.purchases, header.purchase_id)?.document_no ?? null : null,
+  };
+});
+
+route('POST', '/api/returns', ({ body }) => {
+  requireWrite();
+  const campusId = campusAccess(body.campusId);
+  const supplierId = Number(body.supplierId);
+  if (!byId(db.suppliers, supplierId)) throw bad('Tedarikçi bulunamadı.');
+
+  const returnDate = body.returnDate || today();
+  if (returnDate > today()) throw bad('Gelecek tarihli iade girilemez.');
+  const reason = String(body.reason || '');
+  if (!RETURN_REASONS.includes(reason)) throw bad('Geçerli bir iade nedeni seçin.');
+  const documentNo = text(body.documentNo, 'İade irsaliye no');
+  const lines = Array.isArray(body.lines) ? body.lines : [];
+  if (!lines.length) throw bad('En az bir ürün satırı girmelisiniz.');
+
+  assertNotLocked(campusId, returnDate);
+
+  const purchaseId = body.purchaseId ? Number(body.purchaseId) : null;
+  if (purchaseId) {
+    const purchase = byId(db.purchases, purchaseId);
+    if (!purchase) throw bad('Seçilen alım belgesi bulunamadı.');
+    if (purchase.campus_id !== campusId) throw bad('Alım belgesi başka bir kampüse ait.');
+    if (purchase.supplier_id !== supplierId) throw bad('Alım belgesi başka bir tedarikçiye ait.');
+    if (purchase.status === 'IPTAL') throw bad('İptal edilmiş alım belgesine iade girilemez.');
+  }
+
+  if (documentNo) {
+    const dup = db.supplier_returns.find((r) => r.supplier_id === supplierId
+      && r.document_no === documentNo && r.campus_id === campusId);
+    if (dup) throw conflict(`Bu iade irsaliye no (${documentNo}) bu tedarikçi için zaten kayıtlı. Belge #${dup.id}`);
+  }
+
+  const prepared = lines.map((raw, i) => {
+    const product = productById(raw.productId);
+    if (!product) throw bad(`Satır ${i + 1}: ürün bulunamadı.`);
+    if (product.product_type === 'URETILEN') {
+      throw bad(`Satır ${i + 1}: "${product.name}" kantinde üretilen bir ürün, tedarikçiye iade edilemez.`);
+    }
+    const quantity = num(raw.quantity, `Satır ${i + 1} miktar`, { required: true, min: 0.001 });
+    const prices = effectivePrices(campusId, product.id);
+    const unitPrice = num(raw.unitPrice, `Satır ${i + 1} birim fiyat`, { min: 0, def: prices.purchase_price })
+      ?? prices.purchase_price;
+    const vatRate = num(raw.vatRate, 'KDV', { def: product.vat_rate }) ?? product.vat_rate;
+    const totals = purchaseLineTotals({ quantity, unitPrice, vatRate });
+    return { product, quantity, unitPrice, vatRate, ...totals };
+  });
+
+  const netTotal = round2(prepared.reduce((s2, l) => s2 + l.netTotal, 0));
+  const vatTotal = round2(prepared.reduce((s2, l) => s2 + l.vatTotal, 0));
+
+  const stockWarnings = prepared
+    .map((l) => ({
+      name: l.product.name, quantity: l.quantity, stock: round2(stockOf(campusId, l.product.id)),
+    }))
+    .filter((w) => w.quantity > w.stock);
+
+  const header = {
+    id: nextId('supplier_return'), campus_id: campusId, supplier_id: supplierId, purchase_id: purchaseId,
+    document_no: documentNo, return_date: returnDate, reason,
+    net_total: netTotal, vat_total: vatTotal, gross_total: round2(netTotal + vatTotal),
+    note: text(body.note, 'Açıklama'), created_by: session.id, created_at: now(),
+  };
+  db.supplier_returns.push(header);
+
+  for (const l of prepared) {
+    db.supplier_return_lines.push({
+      id: nextId('supplier_return_line'), return_id: header.id, product_id: l.product.id,
+      quantity: l.quantity, unit_price: l.unitPrice, vat_rate: l.vatRate,
+      net_total: l.netTotal, vat_total: l.vatTotal, gross_total: l.grossTotal,
+    });
+    addMovement({
+      campus_id: campusId, product_id: l.product.id, movement_type: 'IADE', quantity: -l.quantity,
+      unit_cost: l.unitPrice, movement_date: returnDate,
+      ref_type: 'return', ref_id: header.id, note: `Tedarikçiye iade - ${reason}`,
+    });
+  }
+
+  logAudit('CREATE', 'supplier_returns', header.id, campusId, { supplierId, reason, grossTotal: header.gross_total });
+  return { id: header.id, netTotal, vatTotal, grossTotal: header.gross_total, stockWarnings };
+});
+
+route('DELETE', '/api/returns/:id', ({ params }) => {
+  requireWrite();
+  const header = byId(db.supplier_returns, params.id);
+  if (!header) throw notFound('İade belgesi bulunamadı.');
+  campusAccess(header.campus_id);
+
+  const later = db.counts.find((c) => c.campus_id === header.campus_id && c.status === 'KESINLESMIS'
+    && c.count_type === 'DONEM' && c.count_date >= header.return_date);
+  if (later) {
+    throw conflict(`Bu belge ${later.count_date} tarihli kesinleşmiş sayıma dahil olduğu için silinemez.`);
+  }
+
+  db.movements = db.movements.filter((m) => !(m.ref_type === 'return' && m.ref_id === header.id));
+  db.supplier_returns = db.supplier_returns.filter((r) => r.id !== header.id);
+  db.supplier_return_lines = db.supplier_return_lines.filter((l) => l.return_id !== header.id);
+  logAudit('DELETE', 'supplier_returns', header.id, header.campus_id, { grossTotal: header.gross_total });
+  return { ok: true };
 });
 
 /* ------------------------------ Sayım ------------------------------ */
@@ -1316,6 +1491,9 @@ route('GET', '/api/counts/:id/reconciliation', ({ params }) => {
     && p.status !== 'IPTAL' && p.document_date >= from && p.document_date <= to);
   const waste = db.waste.filter((w) => w.campus_id === data.campus_id
     && w.waste_date >= from && w.waste_date <= to);
+  // İade fire gibi maliyet değildir: tedarikçi alacaklandırır, ayrı gösterilir
+  const returns = db.supplier_returns.filter((r) => r.campus_id === data.campus_id
+    && r.return_date >= from && r.return_date <= to);
   const campus = byId(db.campuses, data.campus_id);
 
   const finalized = data.status === 'KESINLESMIS';
@@ -1382,6 +1560,11 @@ route('GET', '/api/counts/:id/reconciliation', ({ params }) => {
     waste: {
       costValue: round2(waste.reduce((s2, w) => s2 + w.quantity * w.unit_cost, 0)),
       recordCount: waste.length,
+    },
+    returns: {
+      netTotal: round2(returns.reduce((s2, r) => s2 + r.net_total, 0)),
+      grossTotal: round2(returns.reduce((s2, r) => s2 + r.gross_total, 0)),
+      documentCount: returns.length,
     },
     perStudent: campus.student_count > 0 && !isSpot ? {
       studentCount: campus.student_count,
@@ -1884,12 +2067,36 @@ route('GET', '/api/reports/purchases-by-supplier', ({ query }) => {
     g.vat_total += p.vat_total; g.gross_total += p.gross_total;
     grouped.set(p.supplier_id, g);
   }
+  const returnMap = new Map();
+  for (const r of db.supplier_returns) {
+    if (!allowed.includes(r.campus_id) || r.return_date < from || r.return_date > to) continue;
+    const g = returnMap.get(r.supplier_id) || { document_count: 0, gross_total: 0 };
+    g.document_count += 1; g.gross_total += r.gross_total;
+    returnMap.set(r.supplier_id, g);
+  }
+
   const items = [...grouped.values()]
-    .map((g) => ({
-      ...g, net_total: round2(g.net_total), vat_total: round2(g.vat_total), gross_total: round2(g.gross_total),
-    }))
+    .map((g) => {
+      const ret = returnMap.get(g.supplier_id);
+      const returnTotal = round2(ret?.gross_total ?? 0);
+      return {
+        ...g,
+        net_total: round2(g.net_total), vat_total: round2(g.vat_total), gross_total: round2(g.gross_total),
+        return_total: returnTotal,
+        return_count: ret?.document_count ?? 0,
+        net_purchase: round2(g.gross_total - returnTotal),
+        return_pct: g.gross_total > 0 ? pctOf(returnTotal, g.gross_total) : null,
+      };
+    })
     .sort((a, b) => b.gross_total - a.gross_total);
-  return { period: { from, to }, items, total: round2(items.reduce((s, r) => s + r.gross_total, 0)) };
+
+  return {
+    period: { from, to },
+    items,
+    total: round2(items.reduce((s2, r) => s2 + r.gross_total, 0)),
+    returnTotal: round2(items.reduce((s2, r) => s2 + r.return_total, 0)),
+    netTotal: round2(items.reduce((s2, r) => s2 + r.net_purchase, 0)),
+  };
 });
 
 /* -------------------------- Kullanıcılar --------------------------- */

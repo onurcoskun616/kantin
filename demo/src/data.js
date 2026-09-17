@@ -116,6 +116,7 @@ export function buildDemoData() {
   const db = {
     campuses: [], categories: [], suppliers: [], products: [], campus_products: [],
     movements: [], purchases: [], purchase_lines: [], supplier_payments: [],
+    supplier_returns: [], supplier_return_lines: [],
     waste: [], transfers: [], transfer_lines: [],
     counts: [], count_lines: [], production_sales: [],
     revenues: [], users: [], audit_logs: [], price_history: [],
@@ -401,6 +402,51 @@ export function buildDemoData() {
     quantity: 48, unit_cost: water.purchase_price, movement_date: transferDate,
     ref_type: 'transfer', ref_id: transfer.id,
   });
+
+  /* Örnek iadeler — fire ile farkını göstermek için iki ayrı kampüste */
+  const RETURN_SAMPLES = [
+    {
+      code: 'IKT', product: 'Süt 200 ml', supplier: 'Marmara', qty: 24, days: -11, reason: 'BOZUK',
+      note: 'Soğuk zincir bozulmuş, parti kabul edilmedi.',
+    },
+    {
+      code: 'ESN', product: 'Meyve Suyu 200 ml', supplier: 'Anadolu', qty: 12, days: -6, reason: 'SKT',
+      note: 'Raf ömrü 3 gün kalmış ürünler geri gönderildi.',
+    },
+    {
+      code: 'IKT', product: 'Kraker', supplier: 'Anadolu', qty: 18, days: -4, reason: 'HASARLI',
+      note: 'Koli ezilmiş, paketler yırtık.',
+    },
+  ];
+
+  for (const sample of RETURN_SAMPLES) {
+    const campus = campusByCode[sample.code];
+    const product = db.products.find((p) => p.name === sample.product);
+    const supplier = db.suppliers.find((s2) => s2.name.includes(sample.supplier)) ?? db.suppliers[0];
+    if (!campus || !product) continue;
+
+    const day = iso(dayOffset(sample.days));
+    const net = round2(sample.qty * product.purchase_price);
+    const vat = round2(net * (product.vat_rate / 100));
+    const ret = {
+      id: nextId('supplier_return'), campus_id: campus.id, supplier_id: supplier.id,
+      purchase_id: null, document_no: `IADE-${campus.code}-${String(ids.supplier_return).padStart(2, '0')}`,
+      return_date: day, reason: sample.reason,
+      net_total: net, vat_total: vat, gross_total: round2(net + vat),
+      note: sample.note, created_by: adminId, created_at: `${day} 09:30:00`,
+    };
+    db.supplier_returns.push(ret);
+    db.supplier_return_lines.push({
+      id: nextId('supplier_return_line'), return_id: ret.id, product_id: product.id,
+      quantity: sample.qty, unit_price: product.purchase_price, vat_rate: product.vat_rate,
+      net_total: net, vat_total: vat, gross_total: round2(net + vat),
+    });
+    addMovement({
+      campus_id: campus.id, product_id: product.id, movement_type: 'IADE', quantity: -sample.qty,
+      unit_cost: product.purchase_price, movement_date: day,
+      ref_type: 'return', ref_id: ret.id, note: `Tedarikçiye iade - ${sample.reason}`,
+    });
+  }
 
   /* Tedarikçi ödemeleri */
   for (const supplier of db.suppliers) {

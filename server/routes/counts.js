@@ -418,6 +418,12 @@ countRoutes.get('/:id/reconciliation', async (ctx) => {
        FROM waste_records WHERE campus_id = ? AND waste_date BETWEEN ? AND ?`,
     [data.campus_id, from, to]
   );
+  // Iade, fire gibi maliyet degildir: tedarikci alacaklandirir. Ayri gosterilir.
+  const returns = get(
+    `SELECT COALESCE(SUM(gross_total), 0) AS gross, COALESCE(SUM(net_total), 0) AS net, COUNT(*) AS document_count
+       FROM supplier_returns WHERE campus_id = ? AND return_date BETWEEN ? AND ?`,
+    [data.campus_id, from, to]
+  );
   const campus = get('SELECT * FROM campuses WHERE id = ?', [data.campus_id]);
 
   const finalized = data.status === 'KESINLESMIS';
@@ -475,6 +481,10 @@ countRoutes.get('/:id/reconciliation', async (ctx) => {
     },
     purchases: { netTotal: round2(purchases.net), grossTotal: round2(purchases.gross), documentCount: purchases.doc_count },
     waste: { costValue: round2(waste.cost), recordCount: waste.record_count },
+    returns: {
+      netTotal: round2(returns.net), grossTotal: round2(returns.gross),
+      documentCount: returns.document_count,
+    },
     perStudent: campus.student_count > 0 && !isSpot ? {
       studentCount: campus.student_count,
       revenuePerStudent: round2(actualRevenue / campus.student_count),

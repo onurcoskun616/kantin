@@ -160,6 +160,12 @@ purchaseRoutes.post('/:id/cancel', async (ctx) => {
     throw conflict(`Bu belge ${laterCount.count_date} tarihli kesinlesmis sayima dahil oldugu icin iptal edilemez. Duzeltme kaydi giriniz.`);
   }
 
+  // Bu belgeye dayanan iade varsa once o cozulmelidir
+  const linkedReturn = get('SELECT id FROM supplier_returns WHERE purchase_id = ? LIMIT 1', [id]);
+  if (linkedReturn) {
+    throw conflict(`Bu belgeye bagli bir iade kaydi var (#${linkedReturn.id}). Once iadeyi silin.`);
+  }
+
   tx(() => {
     run("UPDATE purchases SET status = 'IPTAL' WHERE id = ?", [id]);
     run("DELETE FROM stock_movements WHERE ref_type = 'purchase' AND ref_id = ?", [id]);

@@ -31,17 +31,31 @@ supplierRoutes.get('/:id', async (ctx) => {
   const payments = all(
     'SELECT * FROM supplier_payments WHERE supplier_id = ? ORDER BY payment_date DESC, id DESC LIMIT 100', [id]
   );
+  // Iadeler borcu azaltir: mal geri gittigi icin tedarikci alacaklandirir
+  const returns = all(
+    `SELECT r.*, k.name AS campus_name FROM supplier_returns r
+       JOIN campuses k ON k.id = r.campus_id
+      WHERE r.supplier_id = ? ${f.clause.replace('p.campus_id', 'r.campus_id')}
+      ORDER BY r.return_date DESC, r.id DESC LIMIT 100`,
+    [id, ...f.params]
+  );
+
+  const round = (n) => Math.round(n * 100) / 100;
   const totalPurchase = purchases.reduce((s, p) => s + p.gross_total, 0);
+  const totalReturn = returns.reduce((s, r) => s + r.gross_total, 0);
   const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
 
   return {
     ...supplier,
     purchases,
     payments,
+    returns,
     balance: {
-      totalPurchase: Math.round(totalPurchase * 100) / 100,
-      totalPaid: Math.round(totalPaid * 100) / 100,
-      debt: Math.round((totalPurchase - totalPaid) * 100) / 100,
+      totalPurchase: round(totalPurchase),
+      totalReturn: round(totalReturn),
+      netPurchase: round(totalPurchase - totalReturn),
+      totalPaid: round(totalPaid),
+      debt: round(totalPurchase - totalReturn - totalPaid),
     },
   };
 });

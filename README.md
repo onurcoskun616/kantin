@@ -34,6 +34,8 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
 - Kritik stok seviyesi ve önerilen sipariş miktarı
 - Kampüsler arası transfer takibi
 - Fire/zayiat kaydı (SKT, kırılma, bozulma, ikram, personel)
+- **Tedarikçiye iade** — fireden ayrı tutulur: maliyeti kantine yazılmaz,
+  tedarikçinin cari hesabından düşer. İade belgesi alım belgesinden doldurulabilir.
 
 ### Ciro ve denetim
 - Günlük ciro girişi: nakit / kredi kartı / veresiye-öğrenci kartı / diğer kırılımı
@@ -52,8 +54,8 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
 ### Tedarikçi
 - İrsaliye/fatura girişi (iskonto, KDV, SKT alanlarıyla)
 - Mükerrer belge no kontrolü
-- Cari hesap: toplam alım, ödemeler, bakiye
-- Tedarikçi bazlı alım raporu
+- Cari hesap: toplam alım, iade, ödemeler, bakiye (Bakiye = Alım − İade − Ödeme)
+- Tedarikçi bazlı alım ve iade raporu (iade oranı %5'i geçen tedarikçi işaretlenir)
 
 ### Raporlar
 - Ürün bazlı satış adedi ve kârlılık

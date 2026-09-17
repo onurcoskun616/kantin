@@ -200,6 +200,47 @@ CREATE TABLE IF NOT EXISTS purchase_lines (
 );
 CREATE INDEX IF NOT EXISTS idx_purchase_lines_purchase ON purchase_lines(purchase_id);
 
+-- ---------------------------------------------------------------------
+-- Tedarikciye iade
+--
+-- Fire'den farklidir: fire'de maliyet kantinde kalir, iadede tedarikci
+-- alacaklandirir. Bu yuzden iade fire raporuna girmez, tedarikcinin cari
+-- hesabindan dusulur. Stok etkisi ayni yondedir (IADE hareketi, eksi miktar).
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS supplier_returns (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  campus_id     INTEGER NOT NULL REFERENCES campuses(id) ON DELETE CASCADE,
+  supplier_id   INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
+  -- Hangi alim belgesine dayandigi (biliniyorsa)
+  purchase_id   INTEGER REFERENCES purchases(id) ON DELETE SET NULL,
+  document_no   TEXT,
+  return_date   TEXT    NOT NULL,
+  reason        TEXT    NOT NULL CHECK (reason IN
+                  ('BOZUK','SKT','YANLIS_URUN','FAZLA_GONDERIM','HASARLI','DIGER')),
+  net_total     REAL    NOT NULL DEFAULT 0,
+  vat_total     REAL    NOT NULL DEFAULT 0,
+  gross_total   REAL    NOT NULL DEFAULT 0,
+  note          TEXT,
+  created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_returns_campus_date ON supplier_returns(campus_id, return_date);
+CREATE INDEX IF NOT EXISTS idx_returns_supplier ON supplier_returns(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_returns_purchase ON supplier_returns(purchase_id);
+
+CREATE TABLE IF NOT EXISTS supplier_return_lines (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  return_id   INTEGER NOT NULL REFERENCES supplier_returns(id) ON DELETE CASCADE,
+  product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+  quantity    REAL    NOT NULL CHECK (quantity > 0),
+  unit_price  REAL    NOT NULL,            -- KDV haric birim iade fiyati
+  vat_rate    REAL    NOT NULL DEFAULT 10,
+  net_total   REAL    NOT NULL DEFAULT 0,
+  vat_total   REAL    NOT NULL DEFAULT 0,
+  gross_total REAL    NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_return_lines_return ON supplier_return_lines(return_id);
+
 -- Tedarikciye yapilan odemeler (cari hesap)
 CREATE TABLE IF NOT EXISTS supplier_payments (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,

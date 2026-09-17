@@ -105,6 +105,33 @@ demektir.
 
 ---
 
+## Ek: fire ile iadeyi ayırmak
+
+Stok açısından ikisi de aynı yönde düşer, ama **maliyeti kimin taşıdığı** farklıdır
+ve bu fark denetimi doğrudan etkiler:
+
+| | Fire | Tedarikçiye iade |
+|---|---|---|
+| Ne oldu? | Mal bizde bozuldu / kırıldı / ikram edildi | Mal tedarikçiye geri gönderildi |
+| Maliyeti kim taşır? | Kantin | Tedarikçi (alacaklandırır) |
+| Fire raporunda | ✓ görünür | ✗ görünmez |
+| Cari hesapta | etkisi yok | borcu azaltır |
+| Stok etkisi | düşer | düşer |
+
+İade fire olarak kaydedilirse kantin, taşımadığı bir maliyeti üstlenmiş görünür ve
+fire oranı yapay olarak yükselir — gerçek fire sorununu göremezsiniz. Tersine, iade
+hiç kaydedilmezse mal satılmış sayılır ve **olmayan bir ciro açığı** doğar.
+
+İade ekranı, iade belgesini ilgili alım belgesinden doldurabilir; böylece fiyatlar
+faturayla birebir eşleşir. Aynı irsaliye numarası ikinci kez girilemez, üretilen
+ürünler (tost, çay) iade edilemez ve iadesi olan alım belgesi iptal edilemez.
+
+**Denetim sinyali:** bir tedarikçide iade oranı %5'i geçiyorsa rapor onu işaretler.
+Tekrar eden "bozuk mal" iadeleri ya tedarikçi sorunudur ya da kayıp/kaçağı iade
+gibi göstermenin bir yoludur — ikisi de bakılmayı hak eder.
+
+---
+
 ## Kontrollerin kapsamadığı yer
 
 Dürüst olmak gerekirse bu dört kontrol denetimi **zorlaştırır, imkânsız

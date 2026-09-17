@@ -399,6 +399,157 @@ describe('Sayimi yeniden acma', () => {
   });
 });
 
+/* --------------------- Tedarikciye iade ---------------------------- */
+describe('Tedarikciye iade', () => {
+  let campusId; let supplierId; let productId; let producedId; let purchaseId; let returnId;
+
+  test('hazirlik: alim yapilir', async () => {
+    campusId = (await ok('GET', '/api/campuses')).items[1].id;
+    supplierId = (await ok('GET', '/api/suppliers')).items[0].id;
+    productId = (await ok('POST', '/api/products', {
+      name: 'Iade Test Ürünü', barcode: 'RET-0001', purchasePrice: 20, salePrice: 33, vatRate: 10,
+    })).id;
+    producedId = (await ok('POST', '/api/products', {
+      name: 'Iade Test Tost', productType: 'URETILEN', purchasePrice: 15, salePrice: 30,
+    })).id;
+
+    const r = await ok('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'RET-IRS-1', documentDate: daysAgo(10),
+      lines: [{ productId, quantity: 100, unitPrice: 20, vatRate: 10 }],
+    });
+    purchaseId = r.id;
+    assert.equal(r.grossTotal, 2200);
+  });
+
+  test('iade stoktan duser', async () => {
+    const r = await ok('POST', '/api/returns', {
+      campusId, supplierId, purchaseId, documentNo: 'IADE-001', returnDate: daysAgo(8),
+      reason: 'BOZUK', lines: [{ productId, quantity: 20, unitPrice: 20, vatRate: 10 }],
+    });
+    returnId = r.id;
+    assert.equal(r.netTotal, 400);
+    assert.equal(r.grossTotal, 440);
+    assert.equal(r.stockWarnings.length, 0);
+
+    const stock = await ok('GET', `/api/stock?campusId=${campusId}`);
+    assert.equal(stock.items.find((i) => i.product_id === productId).stock_qty, 80);
+  });
+
+  test('iade fire degildir: fire raporuna girmez', async () => {
+    const waste = await ok('GET', `/api/reports/waste?campusId=${campusId}&from=${daysAgo(30)}&to=${iso(new Date())}`);
+    assert.equal(waste.totalCost, 0, 'iade fire maliyeti olarak sayilmamali');
+  });
+
+  test('iade tedarikcinin borcunu azaltir', async () => {
+    const supplier = await ok('GET', `/api/suppliers/${supplierId}`);
+    assert.equal(supplier.balance.totalReturn >= 440, true);
+    assert.equal(
+      supplier.balance.netPurchase,
+      Math.round((supplier.balance.totalPurchase - supplier.balance.totalReturn) * 100) / 100
+    );
+    assert.equal(
+      supplier.balance.debt,
+      Math.round((supplier.balance.totalPurchase - supplier.balance.totalReturn - supplier.balance.totalPaid) * 100) / 100
+    );
+    assert.ok(supplier.returns.some((r) => r.id === returnId));
+  });
+
+  test('uretilen urun iade edilemez', async () => {
+    const r = await api('POST', '/api/returns', {
+      campusId, supplierId, returnDate: daysAgo(5), reason: 'BOZUK',
+      lines: [{ productId: producedId, quantity: 1, unitPrice: 15 }],
+    });
+    assert.equal(r.status, 400);
+  });
+
+  test('ayni iade irsaliye no ikinci kez girilemez', async () => {
+    const r = await api('POST', '/api/returns', {
+      campusId, supplierId, documentNo: 'IADE-001', returnDate: daysAgo(5), reason: 'SKT',
+      lines: [{ productId, quantity: 1, unitPrice: 20 }],
+    });
+    assert.equal(r.status, 409);
+  });
+
+  test('gecersiz neden reddedilir', async () => {
+    const r = await api('POST', '/api/returns', {
+      campusId, supplierId, returnDate: daysAgo(5), reason: 'OLMAYAN_NEDEN',
+      lines: [{ productId, quantity: 1, unitPrice: 20 }],
+    });
+    assert.equal(r.status, 400);
+  });
+
+  test('baska tedarikcinin alim belgesine iade girilemez', async () => {
+    const otherSupplier = (await ok('GET', '/api/suppliers')).items[1].id;
+    const r = await api('POST', '/api/returns', {
+      campusId, supplierId: otherSupplier, purchaseId, returnDate: daysAgo(5), reason: 'BOZUK',
+      lines: [{ productId, quantity: 1, unitPrice: 20 }],
+    });
+    assert.equal(r.status, 400);
+  });
+
+  test('stoktan fazla iade uyari verir ama kaydedilir', async () => {
+    const r = await ok('POST', '/api/returns', {
+      campusId, supplierId, documentNo: 'IADE-002', returnDate: daysAgo(4), reason: 'FAZLA_GONDERIM',
+      lines: [{ productId, quantity: 500, unitPrice: 20, vatRate: 10 }],
+    });
+    assert.equal(r.stockWarnings.length, 1);
+    assert.equal(r.stockWarnings[0].stock, 80);
+    // Geri al: stok tutarliligini bozmasin
+    await ok('DELETE', `/api/returns/${r.id}`);
+    const stock = await ok('GET', `/api/stock?campusId=${campusId}`);
+    assert.equal(stock.items.find((i) => i.product_id === productId).stock_qty, 80, 'silinen iade stogu geri vermeli');
+  });
+
+  test('iadesi olan alim belgesi iptal edilemez', async () => {
+    const r = await api('POST', `/api/purchases/${purchaseId}/cancel`);
+    assert.equal(r.status, 409);
+  });
+
+  test('mutabakatta iade ayri kalem olarak gorunur', async () => {
+    await ok('POST', '/api/revenues', { campusId, revenueDate: daysAgo(3), cashAmount: 1650 });
+    const count = await ok('POST', '/api/counts', { campusId, countDate: iso(new Date()) });
+    // 100 alim - 20 iade = 80 olmali; 30 sayilirsa 50 adet satilmis demektir
+    await ok('PUT', `/api/counts/${count.id}/lines`, { lines: [{ productId, countedQty: 30 }] });
+    await ok('POST', `/api/counts/${count.id}/submit`, { witnessName: 'Iade Tanik' });
+
+    const rec = await ok('GET', `/api/counts/${count.id}/reconciliation`);
+    assert.equal(rec.returns.grossTotal, 440);
+    assert.equal(rec.returns.documentCount, 1);
+    assert.equal(rec.waste.costValue, 0, 'iade fire olarak sayilmamali');
+
+    const line = (await ok('GET', `/api/counts/${count.id}`)).lines.find((l) => l.product_id === productId);
+    assert.equal(line.expected_qty, 80, 'iade stoktan dusulmus olmali');
+    // 50 adet x 33 TL = 1650 TL, girilen ciro da 1650 -> mutabakat tam
+    assert.equal(rec.revenue.expected, 1650);
+    assert.equal(rec.revenue.difference, 0, 'iade dogru islenirse mutabakat tutmali');
+  });
+
+  test('kesinlesmis sayim donemine geriye donuk iade girilemez', async () => {
+    const counts = await ok('GET', `/api/counts?campusId=${campusId}`);
+    const submitted = counts.items.find((c) => c.status === 'SAYILDI');
+
+    // Iki imza kurali: sayimi kilitleyen admin degil, baska bir yetkili kesinlestirmeli
+    const login = await api('POST', '/api/auth/login',
+      { email: 'ikinci.mudur@topkapiokullari.com', password: 'Mudur123456' }, false);
+    const res = await fetch(`${BASE}/api/counts/${submitted.id}/finalize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${login.data.token}` },
+      body: '{}',
+    });
+    assert.equal(res.status, 200);
+
+    // Artik bu tarihten onceye iade girilemez
+    const blocked = await api('POST', '/api/returns', {
+      campusId, supplierId, documentNo: 'IADE-GEC', returnDate: daysAgo(2), reason: 'BOZUK',
+      lines: [{ productId, quantity: 1, unitPrice: 20 }],
+    });
+    assert.equal(blocked.status, 409);
+
+    // Kesinlesmis sayima dahil olan iade de silinemez
+    assert.equal((await api('DELETE', `/api/returns/${returnId}`)).status, 409);
+  });
+});
+
 /* ----------------------------- Yetkiler ---------------------------- */
 describe('Rol ve yetki kontrolleri', () => {
   let campusA; let campusB; let staffToken;

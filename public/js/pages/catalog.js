@@ -231,11 +231,16 @@ async function showSupplier(id, onDone) {
     title: `${data.name} — Cari Hesap`,
     wide: true,
     body: [
-      el('div.grid.grid-3', {}, [
+      el('div.grid.grid-4', {}, [
         stat('Toplam Alım', fmt.money(data.balance.totalPurchase)),
+        stat('İade', fmt.money(data.balance.totalReturn), {
+          sub: data.balance.totalReturn > 0 ? `Net alım ${fmt.money(data.balance.netPurchase)}` : 'İade yok',
+          tone: data.balance.totalReturn > 0 ? 'warn' : '',
+        }),
         stat('Toplam Ödeme', fmt.money(data.balance.totalPaid)),
         stat('Bakiye (Borç)', fmt.money(data.balance.debt), { tone: data.balance.debt > 0 ? 'warn' : 'ok' }),
       ]),
+      el('p.card-note', { text: 'Bakiye = Alım − İade − Ödeme. İade edilen mal borçtan düşülür.' }),
       canWrite() ? el('button.btn.btn-primary', {
         text: '+ Ödeme Kaydet',
         onclick: () => formModal({
@@ -261,6 +266,16 @@ async function showSupplier(id, onDone) {
         { label: 'Kampüs', value: (r) => shortName(r.campus_name) },
         { label: 'Tutar', num: true, value: (r) => fmt.money(r.gross_total) },
       ], data.purchases, { emptyText: 'Alım kaydı yok.' }),
+      ...(data.returns?.length ? [
+        el('h4', { text: 'İadeler', style: 'font-size:13px;color:var(--text-muted)' }),
+        table([
+          { label: 'Tarih', value: (r) => fmt.date(r.return_date) },
+          { label: 'Belge No', value: (r) => r.document_no || '—' },
+          { label: 'Kampüs', value: (r) => shortName(r.campus_name) },
+          { label: 'Neden', value: (r) => r.reason },
+          { label: 'Tutar', num: true, value: (r) => fmt.money(r.gross_total) },
+        ], data.returns),
+      ] : []),
       el('h4', { text: 'Ödemeler', style: 'font-size:13px;color:var(--text-muted)' }),
       table([
         { label: 'Tarih', value: (r) => fmt.date(r.payment_date) },

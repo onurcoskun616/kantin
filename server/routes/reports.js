@@ -388,12 +388,33 @@ reportRoutes.get('/purchases-by-supplier', async (ctx) => {
       WHERE p.status <> 'IPTAL' AND p.document_date BETWEEN ? AND ? ${f.clause}
       GROUP BY s.id ORDER BY gross_total DESC`, [from, to, ...f.params]
   );
+
+  const rf = campusFilter(ctx.user, 'r.campus_id', ctx.query.campusId);
+  const returnMap = new Map(all(
+    `SELECT r.supplier_id, COUNT(*) AS document_count, SUM(r.gross_total) AS gross_total
+       FROM supplier_returns r WHERE r.return_date BETWEEN ? AND ? ${rf.clause}
+      GROUP BY r.supplier_id`, [from, to, ...rf.params]
+  ).map((r) => [r.supplier_id, r]));
+
+  const decorated = items.map((r) => {
+    const ret = returnMap.get(r.supplier_id);
+    const returnTotal = round2(ret?.gross_total ?? 0);
+    return {
+      ...r,
+      net_total: round2(r.net_total), vat_total: round2(r.vat_total), gross_total: round2(r.gross_total),
+      return_total: returnTotal,
+      return_count: ret?.document_count ?? 0,
+      net_purchase: round2(r.gross_total - returnTotal),
+      return_pct: r.gross_total > 0 ? pctOf(returnTotal, r.gross_total) : null,
+    };
+  });
+
   return {
     period: { from, to },
-    items: items.map((r) => ({
-      ...r, net_total: round2(r.net_total), vat_total: round2(r.vat_total), gross_total: round2(r.gross_total),
-    })),
+    items: decorated,
     total: round2(items.reduce((s, r) => s + r.gross_total, 0)),
+    returnTotal: round2(decorated.reduce((s, r) => s + r.return_total, 0)),
+    netTotal: round2(decorated.reduce((s, r) => s + r.net_purchase, 0)),
   };
 });
 

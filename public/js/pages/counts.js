@@ -338,6 +338,10 @@ function periodSummary(rec) {
     el('dt', { text: 'Üretilen üründen beyan' }), el('dd', { text: fmt.money(rec.revenue.production) }),
     el('dt', { text: 'Dönem alımları' }), el('dd', { text: `${fmt.money(rec.purchases.grossTotal)} (${rec.purchases.documentCount} belge)` }),
     el('dt', { text: 'Fire maliyeti' }), el('dd', { text: `${fmt.money(rec.waste.costValue)} (${rec.waste.recordCount} kayıt)` }),
+    ...(rec.returns && rec.returns.documentCount > 0 ? [
+      el('dt', { text: 'Tedarikçiye iade' }),
+      el('dd', { text: `${fmt.money(rec.returns.grossTotal)} (${rec.returns.documentCount} belge)` }),
+    ] : []),
     el('dt', { text: 'Satılan mal maliyeti' }), el('dd', { text: fmt.money(rec.profitability.cogs) }),
     ...(rec.count.submittedByName ? [
       el('dt', { text: 'Sayımı yapan' }), el('dd', { text: rec.count.submittedByName }),

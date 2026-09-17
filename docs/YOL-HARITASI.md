@@ -11,6 +11,11 @@ Bu belge iki bölümden oluşur:
 
 ## 1. Talebinizde olmayan, sisteme eklediğim parçalar
 
+### 1.0 Tedarikçiye iade  ✅ eklendi
+Fire'den ayrı bir kalem: maliyeti kantine yazılmaz, tedarikçinin cari hesabından
+düşer. Ayrım yapılmazsa ya olmayan bir ciro açığı doğar ya da fire oranı yapay
+olarak yükselir. Ayrıntı: [DENETIM-KONTROLLERI.md](DENETIM-KONTROLLERI.md)
+
 ### 1.1 Fire / zayiat kaydı  ✅ eklendi
 Bozulan, kırılan, son kullanma tarihi geçen, ikram edilen veya personelin
 tükettiği ürünler kaydedilmezse sayımda eksik çıkar ve **kayıp/kaçak gibi
