@@ -37,6 +37,9 @@ export function stockOf(campusId, productId, untilDate = null) {
  * URETILEN urunler (tost, cay, pogaca) varsayilan olarak haric tutulur:
  * bunlar raftan sayilamadigi icin defter miktarlari anlamsizdir. Donem
  * satislari sayim ekranindaki "uretim satisi" bolumunden girilir.
+ *
+ * HAMMADDE urunleri (ekmek, kasar) dahildir: raftan/dolaptan sayilirlar.
+ * Tuketimleri recete uzerinden hesaplanip sayim farkindan dusulur.
  */
 export function stockSnapshot(campusId, {
   untilDate = null, onlyActive = true, search = null, categoryId = null, includeProduced = false,
@@ -48,7 +51,7 @@ export function stockSnapshot(campusId, {
   const where = ['1 = 1'];
   const tail = [];
   if (onlyActive) where.push('p.is_active = 1');
-  if (!includeProduced) where.push("p.product_type = 'SATIN_ALINAN'");
+  if (!includeProduced) where.push("p.product_type IN ('SATIN_ALINAN','HAMMADDE')");
   if (search) { where.push('(p.name LIKE ? OR p.barcode LIKE ?)'); tail.push(`%${search}%`, `%${search}%`); }
   if (categoryId) { where.push('p.category_id = ?'); tail.push(Number(categoryId)); }
 

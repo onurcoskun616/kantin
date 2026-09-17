@@ -84,6 +84,20 @@ const PRODUCTS = [
   ['8690000000257', 'Dondurma (külah)',       'Dondurma',               12.00, 22.00, 10, 20,  2.2],
   ['8690000000172', 'Kurşun Kalem',           'Kırtasiye',               4.00,  8.00, 20, 20,  0.9],
   ['8690000000189', 'Defter A4',              'Kırtasiye',              22.00, 40.00, 20, 10,  0.4],
+
+  // Hammaddeler: raftan sayılır ama doğrudan satılmaz; reçetelerde tüketilir
+  [null, 'Ekmek (dilim)',     'Sandviç ve Unlu Mamul',  0.80, 0,  1, 0, 0, 'HAMMADDE', 'ADET'],
+  [null, 'Kaşar Peyniri (g)', 'Süt ve Süt Ürünleri',    0.42, 0,  1, 0, 0, 'HAMMADDE', 'GR'],
+  [null, 'Tereyağı (g)',      'Süt ve Süt Ürünleri',    0.55, 0,  1, 0, 0, 'HAMMADDE', 'GR'],
+  [null, 'Çay (g)',           'Sıcak İçecek',           0.28, 0, 10, 0, 0, 'HAMMADDE', 'GR'],
+  [null, 'Salep Tozu (g)',    'Sıcak İçecek',           1.10, 0, 10, 0, 0, 'HAMMADDE', 'GR'],
+];
+
+// Reçeteler: [üretilen ürün, parti başına üretilen adet, [[içerik, parti miktarı], ...]]
+const RECIPES = [
+  ['Tost', 1, [['Ekmek (dilim)', 2], ['Kaşar Peyniri (g)', 30], ['Tereyağı (g)', 5]]],
+  ['Çay (bardak)', 40, [['Çay (g)', 60]]],
+  ['Salep (bardak)', 10, [['Salep Tozu (g)', 120]]],
 ];
 
 const SUPPLIERS = [
@@ -118,7 +132,7 @@ export function buildDemoData() {
     movements: [], purchases: [], purchase_lines: [], supplier_payments: [],
     supplier_returns: [], supplier_return_lines: [],
     waste: [], transfers: [], transfer_lines: [],
-    counts: [], count_lines: [], production_sales: [],
+    counts: [], count_lines: [], production_sales: [], recipes: [], recipe_items: [],
     revenues: [], users: [], audit_logs: [], price_history: [],
   };
 
@@ -152,10 +166,11 @@ export function buildDemoData() {
 
   /* Ürünler */
   const rates = new Map();
-  PRODUCTS.forEach(([barcode, name, category, purchase, sale, vat, critical, rate, type = 'SATIN_ALINAN']) => {
+  PRODUCTS.forEach(([barcode, name, category, purchase, sale, vat, critical, rate,
+    type = 'SATIN_ALINAN', unit = 'ADET']) => {
     const row = {
       id: nextId('product'), barcode, name, category_id: categoryByName[category].id,
-      unit: 'ADET', product_type: type,
+      unit, product_type: type,
       purchase_price: purchase, sale_price: sale, vat_rate: vat,
       critical_stock: type === 'URETILEN' ? 0 : critical,
       meb_approved: 1, max_price: 0, track_expiry: 0, is_active: 1,
@@ -180,6 +195,54 @@ export function buildDemoData() {
   });
   const adminId = 1;
 
+  /* Reçeteler */
+  const productByName = new Map(db.products.map((p) => [p.name, p]));
+  for (const [productName, yieldQty, items] of RECIPES) {
+    const product = productByName.get(productName);
+    if (!product) continue;
+    const recipe = {
+      id: nextId('recipe'), product_id: product.id, yield_quantity: yieldQty,
+      note: null, is_active: 1, created_by: adminId,
+      created_at: `${iso(dayOffset(-90))} 08:00:00`, updated_at: `${iso(dayOffset(-90))} 08:00:00`,
+    };
+    db.recipes.push(recipe);
+    for (const [ingredientName, quantity] of items) {
+      const ingredient = productByName.get(ingredientName);
+      if (!ingredient) continue;
+      db.recipe_items.push({
+        id: nextId('recipe_item'), recipe_id: recipe.id,
+        ingredient_id: ingredient.id, quantity, note: null,
+      });
+    }
+  }
+
+  /** Üretilen ürünün 1 adedinin hammadde maliyeti. */
+  const unitCostOf = (productId) => {
+    const recipe = db.recipes.find((r) => r.product_id === productId);
+    if (!recipe) return db.products.find((p) => p.id === productId)?.purchase_price ?? 0;
+    const cost = db.recipe_items
+      .filter((ri) => ri.recipe_id === recipe.id)
+      .reduce((sum, ri) => {
+        const ing = db.products.find((p) => p.id === ri.ingredient_id);
+        return sum + ri.quantity * (ing?.purchase_price ?? 0);
+      }, 0);
+    return round2(cost / recipe.yield_quantity);
+  };
+
+  /** Beyan edilen üretim adetlerinin gerektirdiği hammadde tüketimi. */
+  const consumptionFor = (producedQty) => {
+    const use = new Map();
+    for (const [productId, qty] of producedQty) {
+      const recipe = db.recipes.find((r) => r.product_id === productId);
+      if (!recipe || !qty) continue;
+      for (const ri of db.recipe_items.filter((x) => x.recipe_id === recipe.id)) {
+        const perUnit = ri.quantity / recipe.yield_quantity;
+        use.set(ri.ingredient_id, (use.get(ri.ingredient_id) || 0) + perUnit * qty);
+      }
+    }
+    return use;
+  };
+
   /* ------------------ Dönemler ------------------ */
   // -75 açılış · -48 1. sayım · -20 2. sayım · bugüne kadar açık dönem
   const openingDate = iso(dayOffset(-75));
@@ -199,9 +262,24 @@ export function buildDemoData() {
     });
   };
 
-  // Stoğu tutulan (sayılabilir) ürünler ile kantinde hazırlananlar ayrılır
-  const stocked = db.products.filter((p) => p.product_type === 'SATIN_ALINAN');
+  // Stoğu tutulan (sayılabilir) ürünler: satın alınanlar + hammaddeler.
+  // Üretilenler raftan sayılamaz, ayrı beyan edilir.
+  const stocked = db.products.filter((p) => p.product_type !== 'URETILEN');
   const produced = db.products.filter((p) => p.product_type === 'URETILEN');
+  const isRaw = (p) => p.product_type === 'HAMMADDE';
+
+  /** Bir hammaddenin günlük tüketimi (100 öğrenci başına), reçetelerden türetilir. */
+  const rawWeeklyUse = (ingredientId) => {
+    let total = 0;
+    for (const p of produced) {
+      const recipe = db.recipes.find((r) => r.product_id === p.id);
+      if (!recipe) continue;
+      const item = db.recipe_items.find((ri) => ri.recipe_id === recipe.id && ri.ingredient_id === ingredientId);
+      if (!item) continue;
+      total += (item.quantity / recipe.yield_quantity) * rates.get(p.id);
+    }
+    return total;
+  };
 
   for (const campus of db.campuses) {
     const conf = CAMPUSES.find((c) => c.code === campus.code);
@@ -210,7 +288,10 @@ export function buildDemoData() {
 
     /* Açılış stoğu */
     for (const p of stocked) {
-      const weekly = rates.get(p.id) * scale * 5;
+      // Hammadde tüketimi satış hızından değil, reçetelerden gelir
+      const weekly = isRaw(p)
+        ? rawWeeklyUse(p.id) * scale * 5
+        : rates.get(p.id) * scale * 5;
       const qty = Math.max(6, Math.round(weekly * 1.4 * (0.9 + random() * 0.2)));
       stock.set(p.id, qty);
       addMovement({
@@ -228,8 +309,15 @@ export function buildDemoData() {
       const purchaseDays = schoolDays.filter((_, i) => i % 5 === 1);
       const plannedSales = new Map();
       for (const p of db.products) {
+        if (isRaw(p)) continue;  // hammadde tüketimi aşağıda reçeteden hesaplanır
         const qty = Math.round(rates.get(p.id) * scale * schoolDays.length * (0.92 + random() * 0.16));
         plannedSales.set(p.id, qty);
+      }
+      // Üretim planından hammadde tüketimi
+      const producedPlan = new Map(produced.map((p) => [p.id, plannedSales.get(p.id) || 0]));
+      const rawUse = consumptionFor(producedPlan);
+      for (const p of stocked) {
+        if (isRaw(p)) plannedSales.set(p.id, Math.round(rawUse.get(p.id) || 0));
       }
       // Kantinde hazırlanan ürünlerin dönem cirosu (sayımla doğrulanamayan kısım)
       const productionRevenue = produced.reduce((s2, p) => s2 + plannedSales.get(p.id) * p.sale_price, 0);
@@ -324,8 +412,10 @@ export function buildDemoData() {
       let cogs = 0;
       for (const p of stocked) {
         const expectedQty = stock.get(p.id) || 0;
-        const sold = Math.min(plannedSales.get(p.id), Math.max(0, expectedQty - 2));
-        const countedQty = expectedQty - sold;
+        // Hammaddede çıkışın tamamı reçete tüketimidir; doğrudan satışı yoktur
+        const recipeQty = isRaw(p) ? Math.min(plannedSales.get(p.id) || 0, Math.max(0, expectedQty - 2)) : 0;
+        const sold = isRaw(p) ? 0 : Math.min(plannedSales.get(p.id), Math.max(0, expectedQty - 2));
+        const countedQty = expectedQty - recipeQty - sold;
         const salesValue = round2(sold * p.sale_price);
         const costValue = round2(sold * p.purchase_price);
         expectedRevenue += salesValue;
@@ -333,15 +423,17 @@ export function buildDemoData() {
 
         db.count_lines.push({
           id: nextId('count_line'), count_id: count.id, product_id: p.id,
-          expected_qty: expectedQty, counted_qty: countedQty, diff_qty: -sold, sold_qty: sold,
+          expected_qty: expectedQty, counted_qty: countedQty,
+          diff_qty: -(recipeQty + sold), recipe_qty: recipeQty, sold_qty: sold,
           purchase_price: p.purchase_price, sale_price: p.sale_price, vat_rate: p.vat_rate,
           sales_value: salesValue, cost_value: costValue,
         });
-        if (sold > 0) {
+        const totalOut = recipeQty + sold;
+        if (totalOut > 0) {
           addMovement({
-            campus_id: campus.id, product_id: p.id, movement_type: 'SATIS', quantity: -sold,
+            campus_id: campus.id, product_id: p.id, movement_type: 'SATIS', quantity: -totalOut,
             unit_cost: p.purchase_price, movement_date: countDate, ref_type: 'count', ref_id: count.id,
-            note: 'Sayım ile hesaplanan dönem satışı',
+            note: isRaw(p) ? 'Sayım ile hesaplanan üretim tüketimi' : 'Sayım ile hesaplanan dönem satışı',
           });
         }
         stock.set(p.id, countedQty);
@@ -350,11 +442,13 @@ export function buildDemoData() {
       // Üretilen ürünler: beyan edilen dönem adetleri
       for (const p of produced) {
         const qty = plannedSales.get(p.id);
+        // Maliyet tahminden değil, reçetedeki hammadde toplamından gelir
+        const unitCost = unitCostOf(p.id);
         const salesValue = round2(qty * p.sale_price);
-        const costValue = round2(qty * p.purchase_price);
+        const costValue = round2(qty * unitCost);
         db.production_sales.push({
           id: nextId('production_sale'), count_id: count.id, product_id: p.id, quantity: qty,
-          purchase_price: p.purchase_price, sale_price: p.sale_price, vat_rate: p.vat_rate,
+          purchase_price: unitCost, sale_price: p.sale_price, vat_rate: p.vat_rate,
           sales_value: salesValue, cost_value: costValue,
         });
         expectedRevenue += salesValue;

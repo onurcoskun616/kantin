@@ -144,13 +144,16 @@ otomatik hesaplanabilir. Şu anda manuel işaretleniyor.
 
 ### Öncelik 3 — Olgunlaşma
 
-**Menü/reçete yönetimi (üretilen ürünler)**
-Üretilen ürünler artık ayrı bir kalem: stoktan çıkarıldılar ve dönem satışları
-ayrıca beyan ediliyor (bkz. DENETIM-KONTROLLERI.md § 3). Eksik kalan parça
-**reçete (BOM) tanımı**: "1 tost = 2 dilim ekmek + 30 g kaşar" tanımlanırsa
-hammadde stoktan otomatik düşer ve beyan edilen adet, ekmek/kaşar tüketimiyle
-çapraz kontrol edilebilir. Şu an bu kalem güven esasına dayanıyor — cironun
-%20-30'u buysa, sıradaki en değerli geliştirme budur.
+**Menü/reçete yönetimi (üretilen ürünler)**  ✅ tamamlandı
+Reçete (BOM) tanımı eklendi: "1 tost = 2 dilim ekmek + 30 g kaşar". Üretilen
+ürünün maliyeti artık hammadde toplamından gelir ve sayımda hammadde tüketimi
+reçeteden hesaplanıp sayım farkından düşülür — beyan edilen üretim adedi böylece
+bağımsız olarak çapraz kontrol edilir. Ayrıntı ve kısıtlar:
+[DENETIM-KONTROLLERI.md § 3.1](DENETIM-KONTROLLERI.md)
+
+Geriye kalan: reçete miktarları da elle girilir, yani mutlak bir doğrulama değil.
+Reçetesi tanımlanmamış üretilen ürünlerde beyan hâlâ denetimsizdir; Reçeteler
+ekranı bunları işaretler.
 
 **Öğrenci kartı / bakiye sistemi**
 Veresiye alanı var ancak öğrenci bazlı bakiye takibi yok. Nakitsiz kantin

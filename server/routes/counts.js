@@ -12,6 +12,9 @@
  *                     sayima katilan ikinci kisinin adi kayda gecer.
  *   3. URETILEN URUN  Tost/cay gibi raftan sayilamayan urunler ayri kalemdir;
  *                     beyan edilen adetler mutabakatta ayrica gosterilir.
+ *                     Recete tanimliysa: beyan edilen adedin gerektirdigi
+ *                     hammadde, o hammaddenin sayim farkindan DUSULUR; geriye
+ *                     kalan aciklanamayan tuketimdir (bkz. lib/recipe.js).
  *   4. NOKTA SAYIMI   Habersiz ara sayim. Stoga dokunmaz, donemi kapatmaz;
  *                     silinemez bir tespit kaydi birakir.
  *
@@ -24,7 +27,8 @@ import { requireWrite, assertCampusAccess, campusFilter, requireRole } from '../
 import { logAudit } from '../lib/audit.js';
 import { str, num, int, date, arr, today, oneOf } from '../lib/validate.js';
 import { stockSnapshot, addMovement, effectivePrices } from '../lib/stock.js';
-import { round2, netFromGross, pctOf } from '../lib/money.js';
+import { round2, round4, netFromGross, pctOf } from '../lib/money.js';
+import { recipeConsumption, recipeUnitCost } from '../lib/recipe.js';
 
 export const countRoutes = new Router();
 
@@ -272,6 +276,12 @@ countRoutes.post('/:id/finalize', async (ctx) => {
         .map((p) => [p.product_id, p])
     );
 
+    // RECETE: beyan edilen uretim adetlerinin gerektirdigi hammadde tuketimi.
+    // Bu miktar hammaddenin sayim farkindan dusulur; aksi halde uretimde
+    // kullanilan mal "satilmis" sayilip beklenen ciroyu sisirir.
+    const productionRows = all('SELECT * FROM production_sales WHERE count_id = ?', [header.id]);
+    const consumption = recipeConsumption(header.campus_id, productionRows);
+
     let expectedRevenue = 0;
     let cogsTotal = 0;
 
@@ -279,14 +289,17 @@ countRoutes.post('/:id/finalize', async (ctx) => {
       const expected = round2(snap.has(line.product_id) ? snap.get(line.product_id).stock_qty : line.expected_qty);
       const counted = round2(line.counted_qty);
       const diff = round2(counted - expected);
-      const sold = round2(expected - counted);
+      const recipeQty = round4(consumption.get(line.product_id) || 0);
+      // Dogrudan satis: toplam cikistan recete tuketimi dusuldukten sonrasi
+      const sold = round2(expected - recipeQty - counted);
       const salesValue = round2(sold * line.sale_price);
       const costValue = round2(sold * line.purchase_price);
 
       run(
-        `UPDATE count_lines SET expected_qty = ?, diff_qty = ?, sold_qty = ?, sales_value = ?, cost_value = ?
+        `UPDATE count_lines SET expected_qty = ?, diff_qty = ?, recipe_qty = ?, sold_qty = ?,
+                sales_value = ?, cost_value = ?
           WHERE id = ?`,
-        [expected, diff, sold, salesValue, costValue, line.id]
+        [expected, diff, recipeQty, sold, salesValue, costValue, line.id]
       );
       expectedRevenue += salesValue;
       cogsTotal += costValue;
@@ -307,13 +320,18 @@ countRoutes.post('/:id/finalize', async (ctx) => {
       }
     }
 
-    // Uretilen urunler: beyan edilen adetler
+    // Uretilen urunler: beyan edilen adetler.
+    // Maliyet recete varsa hammadde toplamindan, yoksa elle girilen tahminden gelir.
+    // Hammaddenin kendi satir maliyeti zaten recipe_qty kadar dusuldugu icin
+    // cift sayim olmaz.
     let productionRevenue = 0;
-    for (const row of all('SELECT * FROM production_sales WHERE count_id = ?', [header.id])) {
+    for (const row of productionRows) {
+      const cost = recipeUnitCost(header.campus_id, row.product_id);
+      const unitCost = cost.hasRecipe ? cost.unitCost : row.purchase_price;
       const salesValue = round2(row.quantity * row.sale_price);
-      const costValue = round2(row.quantity * row.purchase_price);
-      run('UPDATE production_sales SET sales_value = ?, cost_value = ? WHERE id = ?',
-        [salesValue, costValue, row.id]);
+      const costValue = round2(row.quantity * unitCost);
+      run('UPDATE production_sales SET purchase_price = ?, sales_value = ?, cost_value = ? WHERE id = ?',
+        [round4(unitCost), salesValue, costValue, row.id]);
       productionRevenue += salesValue;
       cogsTotal += costValue;
     }
@@ -427,18 +445,54 @@ countRoutes.get('/:id/reconciliation', async (ctx) => {
   const campus = get('SELECT * FROM campuses WHERE id = ?', [data.campus_id]);
 
   const finalized = data.status === 'KESINLESMIS';
+
+  // RECETE: kesinlesmeden once de onizleme yapabilmek icin tuketim burada da
+  // hesaplanir; kesinlesme aninda ayni hesap satirlara yazilir.
+  const consumption = finalized
+    ? new Map(data.lines.map((l) => [l.product_id, l.recipe_qty || 0]))
+    : recipeConsumption(data.campus_id, data.production);
+  const usedQty = (line) => (finalized ? (line.recipe_qty || 0) : (consumption.get(line.product_id) || 0));
+  const directSold = (line) => round4((line.expected_qty ?? 0) - usedQty(line) - line.counted_qty);
+
   const countedRevenue = finalized
     ? round2(data.expected_revenue - data.production_revenue)
-    : round2(data.lines.reduce((s, l) => s + (l.expected_qty - l.counted_qty) * l.sale_price, 0));
+    : round2(data.lines.reduce((s, l) => s + directSold(l) * l.sale_price, 0));
   const productionRevenue = finalized
     ? data.production_revenue
     : round2(data.production.reduce((s, r) => s + r.quantity * r.sale_price, 0));
   const expectedRevenue = round2(countedRevenue + productionRevenue);
 
+  const productionCost = round2(data.production.reduce((s, r) => {
+    const cost = finalized ? r.purchase_price : recipeUnitCost(data.campus_id, r.product_id).unitCost;
+    return s + r.quantity * cost;
+  }, 0));
+
   const cogs = finalized
     ? data.cogs_total
-    : round2(data.lines.reduce((s, l) => s + (l.expected_qty - l.counted_qty) * l.purchase_price, 0)
-      + data.production.reduce((s, r) => s + r.quantity * r.purchase_price, 0));
+    : round2(data.lines.reduce((s, l) => s + directSold(l) * l.purchase_price, 0) + productionCost);
+
+  // Recete kontrolu: beyan edilen uretimin gerektirdigi hammadde ile
+  // fiilen tukenen hammadde karsilastirilir
+  const recipeCheck = data.lines
+    .filter((l) => usedQty(l) > 0)
+    .map((l) => {
+      const expectedUse = round4(usedQty(l));
+      const totalOut = round4((l.expected_qty ?? 0) - l.counted_qty);
+      const unexplained = round4(totalOut - expectedUse);
+      const product = get('SELECT product_type FROM products WHERE id = ?', [l.product_id]);
+      return {
+        product_id: l.product_id,
+        product_name: l.product_name,
+        unit: l.unit,
+        product_type: product?.product_type ?? 'SATIN_ALINAN',
+        recipe_qty: expectedUse,
+        total_out: totalOut,
+        unexplained,
+        unexplained_value: round2(unexplained * l.purchase_price),
+        unexplained_pct: expectedUse > 0 ? pctOf(unexplained, expectedUse) : null,
+      };
+    })
+    .sort((a, b) => Math.abs(b.unexplained_value) - Math.abs(a.unexplained_value));
 
   const actualRevenue = round2(revenue.total);
   // Nokta sayimi urunlerin yalnizca bir bolumunu kapsar; ciro ile karsilastirilamaz
@@ -468,9 +522,19 @@ countRoutes.get('/:id/reconciliation', async (ctx) => {
     },
     production: {
       revenue: productionRevenue,
-      cost: round2(data.production.reduce((s, r) => s + r.quantity * r.purchase_price, 0)),
+      cost: productionCost,
       sharePct: expectedRevenue > 0 ? pctOf(productionRevenue, expectedRevenue) : null,
       items: data.production.filter((r) => r.quantity > 0),
+      // Recete tanimli olan uretim kalemleri: maliyeti tahmin degil, hammadde toplami
+      withRecipe: data.production.filter((r) => r.quantity > 0
+        && recipeUnitCost(data.campus_id, r.product_id).hasRecipe).length,
+    },
+    recipeCheck: {
+      items: recipeCheck,
+      // Hammaddede aciklanamayan tuketim, dogrudan satilmadigi icin kayip isaretidir
+      totalUnexplainedValue: round2(recipeCheck
+        .filter((r) => r.product_type === 'HAMMADDE')
+        .reduce((s, r) => s + r.unexplained_value, 0)),
     },
     profitability: {
       cogs, actualNet, grossProfit,

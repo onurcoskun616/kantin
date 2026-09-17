@@ -36,7 +36,7 @@ CATEGORIES = [
     "Sıcak İçecek", "Dondurma", "Kırtasiye", "Diğer",
 ]
 UNITS = ["ADET", "KG", "LT", "PAKET", "KUTU", "PORSIYON"]
-PRODUCT_TYPES = ["Satın alınan", "Üretilen"]
+PRODUCT_TYPES = ["Satın alınan", "Hammadde", "Üretilen"]
 VAT_RATES = [1, 10, 20]
 CAMPUSES = [
     ("IKT", "İkitelli OSB Kampüsü"),
@@ -52,9 +52,10 @@ PRODUCT_COLUMNS = [
     ("Ürün Adı *", 34, "ZORUNLU. Rafta/menüde göründüğü şekilde yazın. Gramaj varsa ekleyin: 'Ayran 200 ml'"),
     ("Kategori", 24, "Listeden seçin. Yeni kategori yazarsanız sisteme otomatik eklenir."),
     ("Birim", 12, "Listeden seçin. Çoğu kantin ürünü ADET'tir."),
-    ("Ürün Tipi", 22, "Satın alınan = tedarikçiden gelir, raftan sayılır.\n"
-                      "Üretilen = kantinde hazırlanır (tost, çay, poğaça). Üretilen ürünler stoktan "
-                      "ve sayımdan çıkarılır; dönem satış adedi sayım ekranında ayrıca girilir."),
+    ("Ürün Tipi", 22, "Satın alınan = tedarikçiden gelir, raftan sayılır, doğrudan satılır.\n"
+                      "Hammadde = raftan sayılır ama satılmaz; reçetelerde tüketilir (ekmek, kaşar, çay).\n"
+                      "Üretilen = kantinde hazırlanır (tost, çay, poğaça). Stoktan ve sayımdan çıkarılır; "
+                      "dönem satış adedi sayım ekranında girilir, maliyeti reçetesinden hesaplanır."),
     ("Alış Fiyatı (KDV hariç) *", 22, "ZORUNLU. Tedarikçi FATURASINDAKİ birim fiyat, KDV HARİÇ."),
     ("Satış Fiyatı (KDV dahil) *", 22, "ZORUNLU. Öğrenciden tahsil ettiğiniz RAF fiyatı, KDV DAHİL."),
     ("KDV Oranı (%)", 14, "Tedarikçi faturasındaki KDV oranını yazın. Emin değilseniz faturaya bakın."),
@@ -230,9 +231,10 @@ def build_instructions(ws):
                             "gri hücreler otomatik hesaplanır, onlara yazmayın."),
         ("2. Örnek satırlar", "İlk 3 satır yeşil renkli örnektir. Üzerine yazabilir veya satırları silebilirsiniz."),
         ("3. Zorunlu alanlar", "Başlığında * olan üç alan zorunludur: Ürün Adı, Alış Fiyatı, Satış Fiyatı."),
-        ("4. Ürün tipi", "Tost, çay, poğaça gibi kantinde HAZIRLANAN ürünler için \"Üretilen\" seçin. "
-                         "Bunlar raftan sayılamadığı için stok ve sayım dışında tutulur; dönem satış "
-                         "adetleri sayım ekranında ayrıca girilir."),
+        ("4. Ürün tipi", "Tost, çay, poğaça gibi kantinde HAZIRLANAN ürünler için \"Üretilen\" seçin; "
+                         "bunların içine giren ekmek, kaşar, çay gibi kalemler için \"Hammadde\" seçin. "
+                         "Hammadde sayıma girer ama satılmaz (satış fiyatını 0 bırakın); tüketimi "
+                         "uygulamadaki Reçeteler ekranından tanımlanır."),
         ("5. Açılış Stoğu", "İsteğe bağlıdır. Sisteme geçiş günü her kampüsteki mevcut miktarları girmek "
                             "isterseniz \"Açılış Stoğu\" sekmesini doldurun. Boş bırakırsanız stokları "
                             "uygulamadan da girebilirsiniz."),

@@ -75,13 +75,20 @@ export async function renderProducts(root) {
         { label: 'Birim Kâr', num: true, render: (r) => deltaCell(r.profit.unitProfit) },
         { label: 'Kâr Marjı', num: true, render: (r) => marginBadge(r.profit.marginPct) },
         { label: 'Maliyet Üzeri', num: true, value: (r) => fmt.pct(r.profit.markupPct) },
-        { label: 'Tip', render: (r) => (r.product_type === 'URETILEN' ? badge('Üretilen', 'warn') : el('span.muted', { text: 'Satın alınan' })) },
+        { label: 'Tip', render: (r) => PRODUCT_TYPE_BADGE[r.product_type]?.() ?? el('span.muted', { text: 'Satın alınan' }) },
         { label: 'Kampüs Fiyatı', render: (r) => (r.campus_sale_price !== null && r.campus_sale_price !== undefined ? badge('Özel', 'info') : el('span.muted', { text: '—' })) },
         { label: 'Durum', render: (r) => (r.is_active ? badge('Aktif', 'ok') : badge('Pasif')) },
         {
           label: '', render: (r) => (canWrite() ? el('div.btn-row', {}, [
             el('button.btn.btn-sm', { text: 'Düzenle', onclick: () => openProductForm(cats.items, r, draw) }),
             el('button.btn.btn-sm', { text: 'Kampüs Fiyatı', onclick: () => openCampusPrice(r, draw) }),
+            r.product_type === 'URETILEN' ? el('button.btn.btn-sm', {
+              text: '📋 Reçete',
+              onclick: async () => {
+                const { openEditor } = await import('./recipes.js');
+                openEditor(r.id, draw);
+              },
+            }) : null,
           ]) : '—'),
         },
       ], data.items, {
@@ -91,6 +98,12 @@ export async function renderProducts(root) {
     ], { tight: true, note: 'Kâr marjı = birim kâr / KDV hariç satış fiyatı. Maliyet üzeri kâr = birim kâr / alış fiyatı.' }));
   }
 }
+
+const PRODUCT_TYPE_BADGE = {
+  SATIN_ALINAN: () => el('span.muted', { text: 'Satın alınan' }),
+  HAMMADDE: () => badge('Hammadde', 'info'),
+  URETILEN: () => badge('Üretilen', 'warn'),
+};
 
 function marginBadge(pct) {
   if (pct === null || pct === undefined) return el('span.muted', { text: '—' });
@@ -112,10 +125,12 @@ function openProductForm(categories, product, onDone) {
         options: ['ADET', 'KG', 'LT', 'PAKET', 'KUTU', 'PORSIYON'].map((u) => ({ value: u, label: u })) },
       { name: 'productType', label: 'Ürün tipi', type: 'select', value: product?.product_type ?? 'SATIN_ALINAN',
         options: [
-          { value: 'SATIN_ALINAN', label: 'Satın alınan — raftan sayılır' },
+          { value: 'SATIN_ALINAN', label: 'Satın alınan — raftan sayılır, doğrudan satılır' },
+          { value: 'HAMMADDE', label: 'Hammadde — sayılır ama satılmaz (ekmek, kaşar, çay)' },
           { value: 'URETILEN', label: 'Üretilen — kantinde hazırlanır (tost, çay, poğaça)' },
         ],
-        hint: 'Üretilen ürünler stoktan ve sayımdan çıkarılır; dönem satış adedi sayım ekranında ayrıca beyan edilir.' },
+        hint: 'Hammadde sayıma girer ama satılmaz; tüketimi reçeteden hesaplanır. '
+          + 'Üretilen ürünler stoktan ve sayımdan çıkarılır; dönem satış adedi sayım ekranında beyan edilir.' },
       { name: 'purchasePrice', label: 'Alış fiyatı (KDV hariç)', type: 'number', step: '0.01', min: '0', value: product?.purchase_price ?? '', required: true,
         hint: 'Tedarikçi faturasındaki birim fiyat.' },
       { name: 'salePrice', label: 'Satış fiyatı (KDV dahil)', type: 'number', step: '0.01', min: '0', value: product?.sale_price ?? '', required: true,

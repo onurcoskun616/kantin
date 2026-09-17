@@ -23,6 +23,8 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
 - **Kör sayım** — miktar girilirken "olması gereken" gizlidir; sayan kişi hedef rakamı göremez
 - **İki imza** — sayıma katılan ikinci kişi kayda geçer; sayımı kilitleyen kendi sayımını kesinleştiremez
 - **Üretilen ürün ayrımı** — tost/çay gibi sayılamayan kalemler ayrı beyan edilir, beyanın payı uyarı olarak gösterilir
+- **Reçete (BOM)** — "1 tost = 2 dilim ekmek + 30 g kaşar": maliyet tahmin değil hammadde toplamı olur,
+  beyan edilen üretim adedi hammadde tüketimiyle çapraz kontrol edilir
 - **Habersiz nokta sayımı** — seçili ürünlerde ara kontrol; stoğa dokunmaz, silinemez
 - Ayrıntılar: **[docs/DENETIM-KONTROLLERI.md](docs/DENETIM-KONTROLLERI.md)**
 
@@ -43,6 +45,13 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
 - Ciro takvimi — girilmemiş iş günlerini kırmızı gösterir
 - Toplu ciro girişi (haftalık/aylık tek ekranda)
 - Sayım bazlı mutabakat raporu ve kalem bazlı sapma listesi
+
+### Reçete ve üretim
+- Üç ürün tipi: satın alınan · hammadde (sayılır ama satılmaz) · üretilen
+- Partili reçete desteği (1 demlik çay = 40 bardak)
+- Üretilen ürünün gerçek birim maliyeti ve kâr marjı; tahminle arasındaki sapma gösterilir
+- Sayımda hammadde tüketimi reçeteden hesaplanıp sayım farkından düşülür
+- Reçete kontrolü raporu: beyan edilen üretim hammadde tüketimiyle tutarlı mı?
 
 ### Fiyat ve kârlılık
 - Alış (KDV hariç) ve satış (KDV dahil) fiyatı ayrı tutulur

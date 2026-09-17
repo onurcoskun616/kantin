@@ -5,6 +5,7 @@ import { assertCampusAccess, campusFilter, seesAllCampuses } from '../lib/auth.j
 import { today, monthRange } from '../lib/validate.js';
 import { round2, pctOf, netFromGross, productProfit } from '../lib/money.js';
 import { stockSnapshot, stockValue } from '../lib/stock.js';
+import { recipeUnitCost } from '../lib/recipe.js';
 
 export const reportRoutes = new Router();
 
@@ -311,10 +312,22 @@ reportRoutes.get('/price-control', async (ctx) => {
   );
 
   const items = rows.map((r) => {
-    const purchase = r.campus_purchase_price ?? r.purchase_price;
+    // Uretilen urunlerde maliyet receteden gelir; recete yoksa elle girilen tahmindir
+    const recipe = r.product_type === 'URETILEN' ? recipeUnitCost(campusId ?? 0, r.id) : null;
+    const purchase = recipe?.hasRecipe ? recipe.unitCost : (r.campus_purchase_price ?? r.purchase_price);
     const sale = r.campus_sale_price ?? r.sale_price;
     const profit = productProfit(purchase, sale, r.vat_rate);
     const issues = [];
+
+    // Hammadde dogrudan satilmaz: satis fiyati aranmaz, kar marji hesaplanmaz
+    if (r.product_type === 'HAMMADDE') {
+      if (purchase <= 0) issues.push('Alis fiyati tanimsiz');
+      return { ...r, effective_purchase_price: purchase, effective_sale_price: 0, profit, issues };
+    }
+
+    if (r.product_type === 'URETILEN' && !recipe?.hasRecipe) {
+      issues.push('Recete tanimsiz - maliyet tahmine dayali');
+    }
     if (sale <= 0) issues.push('Satis fiyati tanimsiz');
     if (purchase <= 0) issues.push('Alis fiyati tanimsiz');
     if (sale > 0 && purchase > 0 && profit.unitProfit < 0) issues.push('Zararina satis');
@@ -323,7 +336,10 @@ reportRoutes.get('/price-control', async (ctx) => {
     }
     if (r.max_price > 0 && sale > r.max_price) issues.push(`Tavan fiyat asimi (tavan: ${r.max_price})`);
     if (!r.meb_approved) issues.push('Yonetmelige uygun degil');
-    return { ...r, effective_purchase_price: purchase, effective_sale_price: sale, profit, issues };
+    return {
+      ...r, effective_purchase_price: purchase, effective_sale_price: sale, profit, issues,
+      has_recipe: recipe?.hasRecipe ?? null,
+    };
   }).filter((r) => r.issues.length > 0);
 
   return { minMargin, items };

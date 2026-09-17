@@ -194,8 +194,7 @@ function extractProducts({ rows, headerRow, map }) {
       vatRate: vatRate === null ? 10 : vatRate,
       criticalStock: toNumber(pick('criticalStock')) ?? 0,
       maxPrice: toNumber(pick('maxPrice')) ?? 0,
-      // "Üretilen" yazan satırlar kantinde hazırlanan ürün sayılır
-      productType: /uretilen|üretilen/i.test(toText(pick('productType'))) ? 'URETILEN' : 'SATIN_ALINAN',
+      productType: readProductType(toText(pick('productType'))),
     };
     // Bilgilendirme amaçlı kâr hesabı (sunucu yeniden hesaplar)
     const saleNet = item.salePrice / (1 + item.vatRate / 100);
@@ -204,6 +203,14 @@ function extractProducts({ rows, headerRow, map }) {
     valid.push(item);
   }
   return { valid, errors, exampleRows };
+}
+
+/** "Üretilen" / "Hammadde" yazan satırları ürün tipine çevirir. */
+function readProductType(text) {
+  const value = String(text || '').toLocaleLowerCase('tr');
+  if (/uretilen|üretilen/.test(value)) return 'URETILEN';
+  if (/hammadde/.test(value)) return 'HAMMADDE';
+  return 'SATIN_ALINAN';
 }
 
 function extractOpening({ rows, headerRow, map }) {

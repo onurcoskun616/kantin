@@ -8,9 +8,9 @@
  * Veriler tarayıcıda tutulur: başkalarına ulaşmaz, sunucuya gitmez.
  */
 import { buildDemoData, iso, dayOffset, eachDay, isWeekday, round2 } from './data.js';
-import { productProfit, netFromGross, pctOf, purchaseLineTotals } from './money.js';
+import { productProfit, netFromGross, pctOf, purchaseLineTotals, round4 } from './money.js';
 
-const STORAGE_KEY = 'kantin_demo_db_v2';
+const STORAGE_KEY = 'kantin_demo_db_v3';
 
 /* ---------------------------- Hata türü ---------------------------- */
 export class DemoError extends Error {
@@ -125,7 +125,7 @@ function stockSnapshot(campusId, { untilDate = null, onlyActive = true, includeP
   }
   return db.products
     .filter((p) => (onlyActive ? p.is_active : true))
-    .filter((p) => includeProduced || p.product_type !== 'URETILEN')
+    .filter((p) => includeProduced || p.product_type !== 'URETILEN')  // hammadde raftan sayılır
     .map((p) => {
       const prices = effectivePrices(campusId, p.id);
       return {
@@ -445,7 +445,7 @@ function parseProduct(body) {
     name: text(body.name, 'Ürün adı', { required: true }),
     category_id: body.categoryId ? Number(body.categoryId) : null,
     unit: text(body.unit, 'Birim') || 'ADET',
-    product_type: body.productType === 'URETILEN' ? 'URETILEN' : 'SATIN_ALINAN',
+    product_type: ['URETILEN', 'HAMMADDE'].includes(body.productType) ? body.productType : 'SATIN_ALINAN',
     purchase_price: num(body.purchasePrice, 'Alış fiyatı', { min: 0, def: 0 }) ?? 0,
     sale_price: num(body.salePrice, 'Satış fiyatı', { min: 0, def: 0 }) ?? 0,
     vat_rate: num(body.vatRate, 'KDV oranı', { min: 0, def: 10 }) ?? 10,
@@ -946,6 +946,199 @@ route('POST', '/api/transfers', ({ body }) => {
   return { id: transfer.id };
 });
 
+/* ---------------------------- Reçete ------------------------------- */
+/** Bir ürünün reçetesini satırlarıyla döndürür; yoksa null. */
+function recipeFor(productId) {
+  const recipe = db.recipes.find((r) => r.product_id === Number(productId) && r.is_active);
+  if (!recipe) return null;
+  const items = db.recipe_items
+    .filter((ri) => ri.recipe_id === recipe.id)
+    .map((ri) => {
+      const p = productById(ri.ingredient_id);
+      return {
+        ...ri,
+        ingredient_name: p?.name ?? '—',
+        ingredient_unit: p?.unit ?? 'ADET',
+        ingredient_type: p?.product_type ?? 'SATIN_ALINAN',
+        catalog_purchase_price: p?.purchase_price ?? 0,
+      };
+    })
+    .sort((a, b) => a.ingredient_name.localeCompare(b.ingredient_name, 'tr'));
+  return { ...recipe, items };
+}
+
+/** Üretilen ürünün 1 adedinin hammadde maliyeti. */
+function recipeUnitCost(campusId, productId) {
+  const recipe = recipeFor(productId);
+  if (!recipe || !recipe.items.length) {
+    return { unitCost: productById(productId)?.purchase_price ?? 0, items: [], hasRecipe: false, yield: 1 };
+  }
+  const items = recipe.items.map((item) => {
+    const price = effectivePrices(campusId, item.ingredient_id)?.purchase_price ?? 0;
+    const perUnit = round4(item.quantity / recipe.yield_quantity);
+    return {
+      ...item, unit_price: price, per_unit_quantity: perUnit,
+      per_unit_cost: round4(perUnit * price), batch_cost: round2(item.quantity * price),
+    };
+  });
+  return {
+    unitCost: round4(items.reduce((s2, i) => s2 + i.per_unit_cost, 0)),
+    batchCost: round2(items.reduce((s2, i) => s2 + i.batch_cost, 0)),
+    items, hasRecipe: true, yield: recipe.yield_quantity, recipeId: recipe.id,
+  };
+}
+
+/** Beyan edilen üretim adetlerine göre hammadde tüketimi. */
+function recipeConsumption(campusId, productionRows) {
+  const consumption = new Map();
+  for (const row of productionRows) {
+    if (!row.quantity) continue;
+    const recipe = recipeFor(row.product_id);
+    if (!recipe || !recipe.items.length) continue;
+    for (const item of recipe.items) {
+      const perUnit = item.quantity / recipe.yield_quantity;
+      consumption.set(item.ingredient_id,
+        round4((consumption.get(item.ingredient_id) || 0) + perUnit * row.quantity));
+    }
+  }
+  return consumption;
+}
+
+route('GET', '/api/recipes', ({ query }) => {
+  const u = requireUser();
+  const campusId = query.campusId ? campusAccess(query.campusId) : (u.campus_id || db.campuses[0]?.id);
+
+  const items = db.products
+    .filter((p) => p.is_active && p.product_type === 'URETILEN')
+    .sort((a, b) => a.name.localeCompare(b.name, 'tr'))
+    .map((p) => {
+      const cost = recipeUnitCost(campusId, p.id);
+      const recipe = recipeFor(p.id);
+      return {
+        ...p,
+        category_name: byId(db.categories, p.category_id)?.name ?? null,
+        recipe_id: recipe?.id ?? null,
+        yield_quantity: recipe?.yield_quantity ?? null,
+        item_count: recipe?.items.length ?? 0,
+        has_recipe: cost.hasRecipe,
+        unit_cost: round2(cost.unitCost),
+        estimated_cost: p.purchase_price,
+        profit: productProfit(cost.unitCost, p.sale_price, p.vat_rate),
+        cost_gap: cost.hasRecipe ? round2(cost.unitCost - p.purchase_price) : null,
+      };
+    });
+
+  return { campusId, items, withoutRecipe: items.filter((i) => !i.has_recipe).length };
+});
+
+route('GET', '/api/recipes/:productId', ({ params, query }) => {
+  const u = requireUser();
+  const productId = Number(params.productId);
+  const product = productById(productId);
+  if (!product) throw notFound('Ürün bulunamadı.');
+  const campusId = query.campusId ? campusAccess(query.campusId) : (u.campus_id || db.campuses[0]?.id);
+
+  const cost = recipeUnitCost(campusId, productId);
+  const recipe = recipeFor(productId);
+  return {
+    product,
+    hasRecipe: cost.hasRecipe,
+    yieldQuantity: cost.yield ?? 1,
+    note: recipe?.note ?? null,
+    items: cost.items,
+    unitCost: round2(cost.unitCost),
+    batchCost: cost.batchCost ?? 0,
+    profit: productProfit(cost.unitCost, product.sale_price, product.vat_rate),
+    candidates: db.products
+      .filter((p) => p.is_active && p.product_type !== 'URETILEN')
+      .sort((a, b) => (b.product_type.localeCompare(a.product_type) || a.name.localeCompare(b.name, 'tr')))
+      .map((p) => ({
+        id: p.id, name: p.name, unit: p.unit, barcode: p.barcode,
+        product_type: p.product_type, purchase_price: p.purchase_price,
+      })),
+  };
+});
+
+route('PUT', '/api/recipes/:productId', ({ params, body }) => {
+  requireWrite();
+  const productId = Number(params.productId);
+  const product = productById(productId);
+  if (!product) throw notFound('Ürün bulunamadı.');
+  if (product.product_type !== 'URETILEN') {
+    throw bad('Reçete yalnızca "üretilen" tipindeki ürünler için tanımlanır.');
+  }
+
+  const yieldQuantity = num(body.yieldQuantity, 'Üretilen adet', { required: true, min: 0.001 });
+  const lines = Array.isArray(body.items) ? body.items : [];
+  if (!lines.length) throw bad('En az bir içerik satırı girmelisiniz.');
+
+  const prepared = lines.map((raw, i) => {
+    const ingredient = productById(raw.ingredientId);
+    if (!ingredient) throw bad(`Satır ${i + 1}: içerik bulunamadı.`);
+    if (ingredient.id === productId) throw bad('Bir ürün kendi reçetesinin içeriği olamaz.');
+    if (ingredient.product_type === 'URETILEN') {
+      throw bad(`Satır ${i + 1}: "${ingredient.name}" üretilen bir ürün; reçete içeriği olamaz.`);
+    }
+    return {
+      ingredientId: ingredient.id,
+      quantity: num(raw.quantity, `Satır ${i + 1} miktar`, { required: true, min: 0.0001 }),
+    };
+  });
+  const ids = prepared.map((l) => l.ingredientId);
+  if (new Set(ids).size !== ids.length) throw bad('Aynı içerik birden fazla satırda olamaz.');
+
+  let recipe = db.recipes.find((r) => r.product_id === productId);
+  if (recipe) {
+    recipe.yield_quantity = yieldQuantity;
+    recipe.note = text(body.note, 'Açıklama');
+    recipe.is_active = 1;
+    recipe.updated_at = now();
+    db.recipe_items = db.recipe_items.filter((ri) => ri.recipe_id !== recipe.id);
+  } else {
+    recipe = {
+      id: nextId('recipe'), product_id: productId, yield_quantity: yieldQuantity,
+      note: text(body.note, 'Açıklama'), is_active: 1, created_by: session.id,
+      created_at: now(), updated_at: now(),
+    };
+    db.recipes.push(recipe);
+  }
+  for (const l of prepared) {
+    db.recipe_items.push({
+      id: nextId('recipe_item'), recipe_id: recipe.id,
+      ingredient_id: l.ingredientId, quantity: l.quantity, note: null,
+    });
+  }
+
+  logAudit('UPDATE', 'recipes', productId, null, { product: product.name, itemCount: prepared.length });
+  const campusId = session.campus_id || db.campuses[0]?.id;
+  const cost = recipeUnitCost(campusId, productId);
+  return {
+    ok: true, unitCost: round2(cost.unitCost), batchCost: cost.batchCost,
+    profit: productProfit(cost.unitCost, product.sale_price, product.vat_rate),
+  };
+});
+
+route('DELETE', '/api/recipes/:productId', ({ params }) => {
+  requireWrite();
+  const productId = Number(params.productId);
+  const recipe = db.recipes.find((r) => r.product_id === productId);
+  if (!recipe) throw notFound('Reçete bulunamadı.');
+
+  const used = db.production_sales.find((ps) => {
+    const count = byId(db.counts, ps.count_id);
+    return ps.product_id === productId && ps.quantity > 0 && count?.status === 'KESINLESMIS';
+  });
+  if (used) {
+    const count = byId(db.counts, used.count_id);
+    throw conflict(`Bu reçete ${count.count_date} tarihli kesinleşmiş sayımda kullanıldı. Silmek yerine içeriğini güncelleyin.`);
+  }
+
+  db.recipes = db.recipes.filter((r) => r.id !== recipe.id);
+  db.recipe_items = db.recipe_items.filter((ri) => ri.recipe_id !== recipe.id);
+  logAudit('DELETE', 'recipes', productId, null);
+  return { ok: true };
+});
+
 /* ------------------------ Tedarikçiye iade ------------------------- */
 const RETURN_REASONS = ['BOZUK', 'SKT', 'YANLIS_URUN', 'FAZLA_GONDERIM', 'HASARLI', 'DIGER'];
 
@@ -1238,7 +1431,7 @@ route('POST', '/api/counts', ({ body }) => {
   for (const snap of snapshot) {
     db.count_lines.push({
       id: nextId('count_line'), count_id: count.id, product_id: snap.product_id,
-      expected_qty: snap.stock_qty, counted_qty: 0, diff_qty: 0, sold_qty: 0,
+      expected_qty: snap.stock_qty, counted_qty: 0, diff_qty: 0, recipe_qty: 0, sold_qty: 0,
       purchase_price: snap.purchase_price, sale_price: snap.sale_price, vat_rate: snap.vat_rate,
       sales_value: 0, cost_value: 0,
     });
@@ -1372,6 +1565,11 @@ route('POST', '/api/counts/:id/finalize', ({ params }) => {
     stockSnapshot(header.campus_id, { untilDate: header.count_date, onlyActive: false })
       .map((p) => [p.product_id, p])
   );
+  // REÇETE: beyan edilen üretimin gerektirdiği hammadde tüketimi sayım
+  // farkından düşülür; aksi halde üretimde kullanılan mal "satılmış" görünür
+  const productionRows = db.production_sales.filter((r) => r.count_id === header.id);
+  const consumption = recipeConsumption(header.campus_id, productionRows);
+
   let expectedRevenue = 0;
   let cogsTotal = 0;
 
@@ -1379,10 +1577,12 @@ route('POST', '/api/counts/:id/finalize', ({ params }) => {
     const expected = round2(snap.get(line.product_id)?.stock_qty ?? line.expected_qty);
     const counted = round2(line.counted_qty);
     const diff = round2(counted - expected);
-    const sold = round2(expected - counted);
+    const recipeQty = round4(consumption.get(line.product_id) || 0);
+    const sold = round2(expected - recipeQty - counted);
 
     line.expected_qty = expected;
     line.diff_qty = diff;
+    line.recipe_qty = recipeQty;
     line.sold_qty = sold;
     line.sales_value = round2(sold * line.sale_price);
     line.cost_value = round2(sold * line.purchase_price);
@@ -1400,10 +1600,15 @@ route('POST', '/api/counts/:id/finalize', ({ params }) => {
     }
   }
 
+  // Üretilen ürün maliyeti reçeteden gelir; hammadde satırında recipe_qty
+  // kadar düşüldüğü için çift sayım olmaz
   let productionRevenue = 0;
-  for (const row of db.production_sales.filter((r) => r.count_id === header.id)) {
+  for (const row of productionRows) {
+    const cost = recipeUnitCost(header.campus_id, row.product_id);
+    const unitCost = cost.hasRecipe ? cost.unitCost : row.purchase_price;
+    row.purchase_price = round4(unitCost);
     row.sales_value = round2(row.quantity * row.sale_price);
-    row.cost_value = round2(row.quantity * row.purchase_price);
+    row.cost_value = round2(row.quantity * unitCost);
     productionRevenue += row.sales_value;
     cogsTotal += row.cost_value;
   }
@@ -1497,18 +1702,45 @@ route('GET', '/api/counts/:id/reconciliation', ({ params }) => {
   const campus = byId(db.campuses, data.campus_id);
 
   const finalized = data.status === 'KESINLESMIS';
+
+  // REÇETE: kesinleşmeden önce de önizleme yapabilmek için tüketim burada da hesaplanır
+  const consumption = finalized
+    ? new Map(data.lines.map((l) => [l.product_id, l.recipe_qty || 0]))
+    : recipeConsumption(data.campus_id, data.production);
+  const usedQty = (line) => (finalized ? (line.recipe_qty || 0) : (consumption.get(line.product_id) || 0));
+  const directSold = (line) => round4((line.expected_qty ?? 0) - usedQty(line) - line.counted_qty);
+
   const countedRevenue = finalized
     ? round2(data.expected_revenue - data.production_revenue)
-    : round2(data.lines.reduce((s2, l) => s2 + (l.expected_qty - l.counted_qty) * l.sale_price, 0));
+    : round2(data.lines.reduce((s2, l) => s2 + directSold(l) * l.sale_price, 0));
   const productionRevenue = finalized
     ? data.production_revenue
     : round2(data.production.reduce((s2, r) => s2 + r.quantity * r.sale_price, 0));
   const expectedRevenue = round2(countedRevenue + productionRevenue);
-  const productionCost = round2(data.production.reduce((s2, r) => s2 + r.quantity * r.purchase_price, 0));
+  const productionCost = round2(data.production.reduce((s2, r) => {
+    const cost = finalized ? r.purchase_price : recipeUnitCost(data.campus_id, r.product_id).unitCost;
+    return s2 + r.quantity * cost;
+  }, 0));
 
   const cogs = finalized
     ? data.cogs_total
-    : round2(data.lines.reduce((s2, l) => s2 + (l.expected_qty - l.counted_qty) * l.purchase_price, 0) + productionCost);
+    : round2(data.lines.reduce((s2, l) => s2 + directSold(l) * l.purchase_price, 0) + productionCost);
+
+  const recipeCheck = data.lines
+    .filter((l) => usedQty(l) > 0)
+    .map((l) => {
+      const expectedUse = round4(usedQty(l));
+      const totalOut = round4((l.expected_qty ?? 0) - l.counted_qty);
+      const unexplained = round4(totalOut - expectedUse);
+      return {
+        product_id: l.product_id, product_name: l.product_name, unit: l.unit,
+        product_type: productById(l.product_id)?.product_type ?? 'SATIN_ALINAN',
+        recipe_qty: expectedUse, total_out: totalOut, unexplained,
+        unexplained_value: round2(unexplained * l.purchase_price),
+        unexplained_pct: expectedUse > 0 ? pctOf(unexplained, expectedUse) : null,
+      };
+    })
+    .sort((a, b) => Math.abs(b.unexplained_value) - Math.abs(a.unexplained_value));
 
   const actualRevenue = sum('total_amount');
   const difference = isSpot ? null : round2(actualRevenue - expectedRevenue);
@@ -1544,6 +1776,14 @@ route('GET', '/api/counts/:id/reconciliation', ({ params }) => {
       revenue: productionRevenue, cost: productionCost,
       sharePct: expectedRevenue > 0 ? pctOf(productionRevenue, expectedRevenue) : null,
       items: data.production.filter((r) => r.quantity > 0),
+      withRecipe: data.production.filter((r) => r.quantity > 0
+        && recipeUnitCost(data.campus_id, r.product_id).hasRecipe).length,
+    },
+    recipeCheck: {
+      items: recipeCheck,
+      totalUnexplainedValue: round2(recipeCheck
+        .filter((r) => r.product_type === 'HAMMADDE')
+        .reduce((s2, r) => s2 + r.unexplained_value, 0)),
     },
     profitability: {
       cogs, actualNet, grossProfit,
@@ -1977,12 +2217,27 @@ route('GET', '/api/reports/price-control', ({ query }) => {
     .filter((p) => p.is_active)
     .map((p) => {
       const prices = effectivePrices(campusId, p.id);
-      const profit = productProfit(prices.purchase_price, prices.sale_price, p.vat_rate);
+      // Üretilen üründe maliyet reçeteden gelir; reçete yoksa elle girilen tahmindir
+      const recipe = p.product_type === 'URETILEN' ? recipeUnitCost(campusId, p.id) : null;
+      const purchasePrice = recipe?.hasRecipe ? recipe.unitCost : prices.purchase_price;
+      const profit = productProfit(purchasePrice, prices.sale_price, p.vat_rate);
       const issues = [];
+
+      // Hammadde doğrudan satılmaz: satış fiyatı aranmaz, marj hesaplanmaz
+      if (p.product_type === 'HAMMADDE') {
+        if (purchasePrice <= 0) issues.push('Alış fiyatı tanımsız');
+        return {
+          ...p, category_name: byId(db.categories, p.category_id)?.name ?? null,
+          effective_purchase_price: purchasePrice, effective_sale_price: 0, profit, issues,
+        };
+      }
+      if (p.product_type === 'URETILEN' && !recipe?.hasRecipe) {
+        issues.push('Reçete tanımsız - maliyet tahmine dayalı');
+      }
       if (prices.sale_price <= 0) issues.push('Satış fiyatı tanımsız');
-      if (prices.purchase_price <= 0) issues.push('Alış fiyatı tanımsız');
-      if (prices.sale_price > 0 && prices.purchase_price > 0 && profit.unitProfit < 0) issues.push('Zararına satış');
-      if (prices.sale_price > 0 && prices.purchase_price > 0
+      if (purchasePrice <= 0) issues.push('Alış fiyatı tanımsız');
+      if (prices.sale_price > 0 && purchasePrice > 0 && profit.unitProfit < 0) issues.push('Zararına satış');
+      if (prices.sale_price > 0 && purchasePrice > 0
         && profit.marginPct < minMargin && profit.unitProfit >= 0) {
         issues.push(`Kâr marjı %${minMargin} altında`);
       }
@@ -1990,9 +2245,9 @@ route('GET', '/api/reports/price-control', ({ query }) => {
       if (!p.meb_approved) issues.push('Yönetmeliğe uygun değil');
       return {
         ...p, category_name: byId(db.categories, p.category_id)?.name ?? null,
-        effective_purchase_price: prices.purchase_price,
+        effective_purchase_price: purchasePrice,
         effective_sale_price: prices.sale_price,
-        profit, issues,
+        profit, issues, has_recipe: recipe?.hasRecipe ?? null,
       };
     })
     .filter((r) => r.issues.length > 0)

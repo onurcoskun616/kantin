@@ -28,8 +28,10 @@ const CATEGORIES = [
 
 // KDV oranlari Turkiye gida perakendesine gore ornek degerlerdir; kendi
 // muhasebenizle dogrulayip guncelleyiniz.
-// Son sutun urun tipidir: URETILEN urunler kantinde hazirlanir, raftan
-// sayilamaz; donem satis adedi sayim ekranindan beyan edilir.
+// Son iki sutun urun tipi ve birimdir.
+//   URETILEN : kantinde hazirlanir, raftan sayilamaz; donem satis adedi
+//              sayim ekranindan beyan edilir, maliyeti recetesinden gelir
+//   HAMMADDE : raftan sayilir ama dogrudan satilmaz; recetelerde tuketilir
 const PRODUCTS = [
   ['8690000000011', 'Su 500 ml',              'Su ve İçecek',              4.00,  6.00, 10],
   ['8690000000028', 'Ayran 200 ml',           'Süt ve Süt Ürünleri',       8.50, 13.00,  1],
@@ -49,6 +51,20 @@ const PRODUCTS = [
   ['8690000000165', 'Salep (bardak)',         'Sıcak İçecek',              9.00, 20.00, 10, 'URETILEN'],
   ['8690000000172', 'Kurşun Kalem',           'Kırtasiye',                 4.00,  8.00, 20],
   ['8690000000189', 'Defter A4',              'Kırtasiye',                22.00, 40.00, 20],
+
+  // Hammaddeler: recetelerde tuketilir, dogrudan satilmaz (satis fiyati 0)
+  [null, 'Ekmek (dilim)',      'Sandviç ve Unlu Mamul',  0.80, 0,  1, 'HAMMADDE', 'ADET'],
+  [null, 'Kaşar Peyniri (g)',  'Süt ve Süt Ürünleri',    0.42, 0,  1, 'HAMMADDE', 'GR'],
+  [null, 'Tereyağı (g)',       'Süt ve Süt Ürünleri',    0.55, 0,  1, 'HAMMADDE', 'GR'],
+  [null, 'Çay (g)',            'Sıcak İçecek',           0.28, 0, 10, 'HAMMADDE', 'GR'],
+  [null, 'Salep Tozu (g)',     'Sıcak İçecek',           1.10, 0, 10, 'HAMMADDE', 'GR'],
+];
+
+// Receteler: [uretilen urun, uretilen adet, [[icerik adi, parti icin miktar], ...]]
+const RECIPES = [
+  ['Tost', 1, [['Ekmek (dilim)', 2], ['Kaşar Peyniri (g)', 30], ['Tereyağı (g)', 5]]],
+  ['Çay (bardak)', 40, [['Çay (g)', 60]]],
+  ['Salep (bardak)', 10, [['Salep Tozu (g)', 120]]],
 ];
 
 const SUPPLIERS = [
@@ -92,12 +108,13 @@ export function ensureSeedData({ withExamples = true } = {}) {
 
   if (get('SELECT COUNT(*) AS c FROM products').c === 0) {
     const catMap = new Map(all('SELECT id, name FROM categories').map((c) => [c.name, c.id]));
-    for (const [barcode, name, category, purchase, sale, vat, type = 'SATIN_ALINAN'] of PRODUCTS) {
+    for (const [barcode, name, category, purchase, sale, vat, type = 'SATIN_ALINAN', unit = 'ADET'] of PRODUCTS) {
       insert(
         `INSERT INTO products (barcode, name, category_id, unit, product_type, purchase_price, sale_price,
                                vat_rate, critical_stock)
-         VALUES (?, ?, ?, 'ADET', ?, ?, ?, ?, ?)`,
-        [barcode, name, catMap.get(category) ?? null, type, purchase, sale, vat, type === 'URETILEN' ? 0 : 20]
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [barcode, name, catMap.get(category) ?? null, unit, type, purchase, sale, vat,
+         type === 'URETILEN' ? 0 : 20]
       );
     }
     console.log(`[KURULUM] ${PRODUCTS.length} ornek urun eklendi.`);
@@ -106,13 +123,34 @@ export function ensureSeedData({ withExamples = true } = {}) {
   if (get('SELECT COUNT(*) AS c FROM suppliers').c === 0) {
     for (const [name, phone] of SUPPLIERS) insert('INSERT INTO suppliers (name, phone) VALUES (?, ?)', [name, phone]);
   }
+
+  if (get('SELECT COUNT(*) AS c FROM recipes').c === 0) {
+    const byName = new Map(all('SELECT id, name FROM products').map((p) => [p.name, p.id]));
+    let created = 0;
+    for (const [productName, yieldQty, items] of RECIPES) {
+      const productId = byName.get(productName);
+      if (!productId) continue;
+      const recipeId = insert('INSERT INTO recipes (product_id, yield_quantity) VALUES (?, ?)',
+        [productId, yieldQty]);
+      for (const [ingredientName, quantity] of items) {
+        const ingredientId = byName.get(ingredientName);
+        if (!ingredientId) continue;
+        insert('INSERT INTO recipe_items (recipe_id, ingredient_id, quantity) VALUES (?, ?, ?)',
+          [recipeId, ingredientId, quantity]);
+      }
+      created += 1;
+    }
+    if (created) console.log(`[KURULUM] ${created} ornek recete eklendi.`);
+  }
 }
 
 /* --------------------------- Demo verisi --------------------------- */
 function generateDemo() {
   const campuses = all('SELECT * FROM campuses');
-  // Uretilen urunlerin stogu tutulmaz; demo hareketlerine dahil edilmez
-  const products = all("SELECT * FROM products WHERE is_active = 1 AND product_type = 'SATIN_ALINAN'");
+  // Uretilen urunlerin stogu tutulmaz; hammaddeler sayilir, bu yuzden dahildir
+  const products = all(
+    "SELECT * FROM products WHERE is_active = 1 AND product_type IN ('SATIN_ALINAN','HAMMADDE')"
+  );
   const suppliers = all('SELECT * FROM suppliers');
   const admin = get("SELECT * FROM users WHERE role = 'ADMIN' LIMIT 1");
   if (!campuses.length || !products.length) return;

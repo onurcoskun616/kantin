@@ -85,11 +85,13 @@ CREATE TABLE IF NOT EXISTS products (
   name            TEXT    NOT NULL,
   category_id     INTEGER REFERENCES categories(id) ON DELETE SET NULL,
   unit            TEXT    NOT NULL DEFAULT 'ADET',
-  -- SATIN_ALINAN : tedarikciden alinir, raftan sayilir
+  -- SATIN_ALINAN : tedarikciden alinir, raftan sayilir, dogrudan satilir
+  -- HAMMADDE     : tedarikciden alinir, raftan sayilir, dogrudan SATILMAZ;
+  --                uretilen urunlerin recetesinde tuketilir (ekmek, kasar, cay)
   -- URETILEN     : kantinde hazirlanir (tost, cay, pogaca). Stogu sayilamaz;
   --                donem satisi sayim ekranindaki "uretim satisi" bolumunden girilir.
   product_type    TEXT    NOT NULL DEFAULT 'SATIN_ALINAN'
-                    CHECK (product_type IN ('SATIN_ALINAN','URETILEN')),
+                    CHECK (product_type IN ('SATIN_ALINAN','HAMMADDE','URETILEN')),
   purchase_price  REAL    NOT NULL DEFAULT 0,
   sale_price      REAL    NOT NULL DEFAULT 0,
   vat_rate        REAL    NOT NULL DEFAULT 10,
@@ -105,6 +107,41 @@ CREATE TABLE IF NOT EXISTS products (
 );
 CREATE INDEX IF NOT EXISTS idx_products_name ON products(name);
 CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
+
+-- ---------------------------------------------------------------------
+-- Receteler (URETILEN urunler icin)
+--
+-- Bir recete `yield_quantity` adet urun uretir ve icindeki hammaddeleri
+-- tuketir. Ornek: 1 demlik cay recetesi 40 bardak uretir, 60 g cay tuketir.
+--
+-- Recete iki ise yarar:
+--   1. Uretilen urunun GERCEK maliyeti (tahmin degil, hammadde toplami)
+--   2. Sayimda capraz kontrol: beyan edilen uretim adedinin gerektirdigi
+--      hammadde ile fiilen tukenen hammadde karsilastirilir
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS recipes (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id     INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
+  -- Bu recete kac adet urun uretir (1 demlik cay = 40 bardak gibi)
+  yield_quantity REAL    NOT NULL DEFAULT 1 CHECK (yield_quantity > 0),
+  note           TEXT,
+  is_active      INTEGER NOT NULL DEFAULT 1,
+  created_by     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+  updated_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS recipe_items (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  recipe_id     INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  ingredient_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+  -- yield_quantity adet urun icin gereken toplam miktar
+  quantity      REAL    NOT NULL CHECK (quantity > 0),
+  note          TEXT,
+  UNIQUE (recipe_id, ingredient_id)
+);
+CREATE INDEX IF NOT EXISTS idx_recipe_items_recipe ON recipe_items(recipe_id);
+CREATE INDEX IF NOT EXISTS idx_recipe_items_ingredient ON recipe_items(ingredient_id);
 
 -- Kampus bazli fiyat/kritik stok istisnasi (NULL = katalog degeri gecerli)
 CREATE TABLE IF NOT EXISTS campus_products (
@@ -341,7 +378,10 @@ CREATE TABLE IF NOT EXISTS count_lines (
   expected_qty      REAL    NOT NULL DEFAULT 0,  -- kayitlara gore olmasi gereken
   counted_qty       REAL    NOT NULL DEFAULT 0,  -- fiilen sayilan
   diff_qty          REAL    NOT NULL DEFAULT 0,  -- counted - expected
-  sold_qty          REAL    NOT NULL DEFAULT 0,  -- donem ornek satis = expected - counted
+  -- Recetelere gore uretimde tuketilmis olmasi gereken miktar
+  recipe_qty        REAL    NOT NULL DEFAULT 0,
+  -- Donem dogrudan satisi = expected - recipe_qty - counted
+  sold_qty          REAL    NOT NULL DEFAULT 0,
   purchase_price    REAL    NOT NULL DEFAULT 0,
   sale_price        REAL    NOT NULL DEFAULT 0,
   vat_rate          REAL    NOT NULL DEFAULT 10,

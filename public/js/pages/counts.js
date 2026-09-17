@@ -228,6 +228,11 @@ export async function renderDetail(root, { params }) {
     }));
   }
 
+  /* -------------------------- Reçete kontrolü ----------------------- */
+  if (!isSpot && rec.recipeCheck?.items?.length) {
+    root.append(buildRecipeCheck(rec));
+  }
+
   /* ---------------------- Üretilen ürün satışları ------------------- */
   if (!isSpot && data.production.length) {
     root.append(buildProductionSheet(data, false, reload));
@@ -468,6 +473,57 @@ function buildCountSheet(root, data, blind, reload) {
     note: blind
       ? 'Rafta/depoda fiilen saydığınız miktarı girin. Olması gereken miktar kasıtlı olarak gizlidir — sayımın bağımsız olması için. Barkod okuyucuyla arama kutusunu kullanarak hızlı ilerleyebilirsiniz.'
       : (editable ? 'Her ürün için fiilen saydığınız miktarı girin.' : 'Bu sayım kilitlenmiştir; satırlar salt okunurdur.'),
+  });
+}
+
+/* --------------------------- Reçete kontrolü ------------------------- */
+function buildRecipeCheck(rec) {
+  const raw = rec.recipeCheck.items.filter((r) => r.product_type === 'HAMMADDE');
+  const threshold = (r) => Math.abs(r.unexplained_pct ?? 0) > 5;
+  // Farkın işareti iki ayrı sorunu gösterir, karıştırılmamalıdır
+  const overUsed = raw.filter((r) => r.unexplained > 0 && threshold(r));   // gerekenden fazla tükenmiş
+  const underUsed = raw.filter((r) => r.unexplained < 0 && threshold(r));  // gerekenden az tükenmiş
+
+  const alerts = [];
+  if (overUsed.length) {
+    const total = overUsed.reduce((s, r) => s + r.unexplained_value, 0);
+    alerts.push(alertBox('danger', `${fmt.money(total)} tutarında fazla hammadde tükenmiş`,
+      `${overUsed.map((r) => r.product_name).join(', ')} kaleminde, beyan edilen üretim için gerekenden `
+      + 'fazla hammadde eksilmiş. Olası nedenler: gerçek üretim beyan edilenden yüksek (kayıt dışı satış), '
+      + 'kaydedilmemiş fire, ya da reçete miktarları gerçeği yansıtmıyor.'));
+  }
+  if (underUsed.length) {
+    alerts.push(alertBox('warning', 'Beyan edilen üretim, tükenen hammaddeden fazla',
+      `${underUsed.map((r) => r.product_name).join(', ')} kaleminde, beyan edilen üretim adedi için gereken `
+      + 'hammadde stoktan eksilmemiş. Yani "şu kadar ürettim" denen miktar, mevcut hammadde tüketimiyle '
+      + 'açıklanamıyor. Olası nedenler: üretim adedi fazla beyan edilmiş, reçete miktarları olduğundan yüksek '
+      + 'girilmiş, ya da hammadde sayımı hatalı.'));
+  }
+  if (!alerts.length) {
+    alerts.push(alertBox('success', 'Hammadde tüketimi beyanla tutarlı',
+      'Beyan edilen üretim adetlerinin gerektirdiği hammadde ile fiilen tükenen hammadde örtüşüyor. '
+      + 'Bu, beyan edilen üretim adedinin bağımsız olarak doğrulandığı anlamına gelir.'));
+  }
+
+  return card('Reçete Kontrolü — Beyan Edilen Üretim Gerçekten Yapıldı mı?', [
+    ...alerts,
+    table([
+      { label: 'Hammadde', value: (r) => r.product_name, wrap: true },
+      { label: 'Tip', render: (r) => (r.product_type === 'HAMMADDE' ? badge('Hammadde', 'info') : badge('Satılan da', 'warn')) },
+      { label: 'Reçeteye Göre Gerekli', num: true, value: (r) => `${fmt.num(r.recipe_qty)} ${r.unit}` },
+      { label: 'Fiilen Tükenen', num: true, value: (r) => `${fmt.num(r.total_out)} ${r.unit}` },
+      { label: 'Fark', num: true, render: (r) => deltaCell(r.unexplained, fmt.num) },
+      { label: 'Fark %', num: true, render: (r) => (r.unexplained_pct === null ? el('span.muted', { text: '—' }) : deltaCell(r.unexplained_pct, fmt.pct)) },
+      { label: 'Tutar', num: true, render: (r) => deltaCell(r.unexplained_value) },
+    ], rec.recipeCheck.items, {
+      rowClass: (r) => (r.product_type === 'HAMMADDE' && Math.abs(r.unexplained_pct ?? 0) > 5 ? 'is-warn' : ''),
+    }),
+  ], {
+    tight: true,
+    note: 'Fark = fiilen tükenen − reçeteye göre gerekli. ARTI fark: gerekenden fazla hammadde eksilmiş '
+      + '(kayıt dışı üretim/satış işareti). EKSİ fark: beyan edilen üretim için gereken hammadde eksilmemiş '
+      + '(fazla beyan işareti). Yalnızca hammadde kalemlerinde anlamlıdır; "Satılan da" etiketli ürünlerde '
+      + 'fark, o ürünün doğrudan satışıdır — sorun değildir.',
   });
 }
 

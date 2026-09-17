@@ -78,9 +78,52 @@ Beyanın payı hesaplanır ve ekranda uyarı olarak yazılır: *"Beklenen cironu
 %X'i beyana dayalı."* Böylece denetleyen kişi, rakamın ne kadarının sayımla
 doğrulandığını ve ne kadarının güvene dayandığını görür.
 
-> **Sonraki adım:** reçete (BOM) tanımı. "1 tost = 2 dilim ekmek + 30 g kaşar"
-> tanımlanırsa hammadde stoktan otomatik düşer ve beyan edilen adet, ekmek/kaşar
-> tüketimiyle çapraz kontrol edilebilir. Şu an bu kalem güven esasına dayanır.
+### 3.1 Reçete — beyanı bağımsız doğrulamak
+
+Reçete tanımlandığında bu kalem güven esasından çıkar. Üç ürün tipi vardır:
+
+| Tip | Stok | Sayım | Satış |
+|---|---|---|---|
+| `SATIN_ALINAN` | tutulur | sayılır | doğrudan satılır |
+| `HAMMADDE` | tutulur | **sayılır** | satılmaz, reçetede tüketilir |
+| `URETILEN` | tutulmaz | sayılmaz | beyan edilir, maliyeti reçeteden |
+
+Bir reçete `yield_quantity` adet ürün üretir: *"1 demlik çay = 40 bardak, 60 g çay"*.
+
+**Birinci fayda — gerçek maliyet.** Üretilen ürünün maliyeti artık tahmin değil,
+içindeki hammaddelerin toplamıdır. Örnek kurulumda aradaki fark çarpıcı:
+
+| Ürün | Elle girilen tahmin | Reçeteden gerçek | Sapma |
+|---|---|---|---|
+| Tost | ₺18,00 | ₺16,95 | −₺1,05 |
+| Çay (bardak) | ₺2,50 | ₺0,42 | −₺2,08 |
+| Salep (bardak) | ₺9,00 | ₺13,20 | **+₺4,20** |
+
+Salep'te maliyet tahminin %47 üstünde — yani o üründe kâr marjınız sandığınızdan
+düşük. Bu tür sapmalar fiyatlamanın yanlış varsayıma dayandığını gösterir.
+
+**İkinci fayda — çapraz kontrol.** Sayım kesinleşirken şu hesap yapılır:
+
+```
+Hammaddenin reçeteye göre tüketimi = Σ (beyan edilen üretim × birim reçete miktarı)
+Bu miktar, hammaddenin sayım farkından DÜŞÜLÜR.
+Geriye kalan = o hammaddenin doğrudan satışı (varsa) veya açıklanamayan tüketim
+```
+
+Bu düşme olmazsa üretimde kullanılan ekmek "satılmış" sayılır ve beklenen ciroyu
+yapay olarak şişirir. Düşüldükten sonra geriye kalan fark iki yönlü okunur:
+
+| Fark | Anlamı | Olası neden |
+|---|---|---|
+| **Artı** (gerekenden fazla tükenmiş) | Beyan edilenden fazla üretim yapılmış | Kayıt dışı satış, kaydedilmemiş fire, reçete miktarı düşük girilmiş |
+| **Eksi** (gereken kadar tükenmemiş) | Beyan edilen üretim hammaddeyle açıklanamıyor | Üretim adedi fazla beyan edilmiş, reçete miktarı yüksek girilmiş, sayım hatalı |
+
+Mutabakat ekranındaki **"Reçete Kontrolü"** kartı bu karşılaştırmayı kalem kalem
+gösterir ve %5'i aşan sapmaları işaretler.
+
+**Kısıtlar:** üretilen bir ürün başka bir reçetenin içeriği olamaz (döngü ve maliyet
+zinciri karmaşası), aynı içerik iki satırda olamaz, kesinleşmiş sayımda kullanılmış
+reçete silinemez — geçmiş mutabakatlar kendi anındaki maliyetle dondurulmuştur.
 
 ## 4. Habersiz nokta sayımı
 
@@ -139,7 +182,10 @@ kılmaz**. Açıkta kalan iki nokta:
 
 1. **Ciro beyanı.** Yazar kasa olmadığı için günlük ciro, birinin kasadan sayıp
    yazdığı rakamdır. Sayım bunu çapraz kontrol eder ama bağımsız bir kaynak yoktur.
-2. **Üretilen ürün adedi.** Reçete tanımı gelene kadar beyana dayalıdır.
+2. **Üretilen ürün adedi.** Reçete tanımlıysa hammadde tüketimiyle çapraz kontrol
+   edilir (§ 3.1) — bağımsız bir doğrulamadır ama mutlak değildir: reçete miktarları
+   da elle girilir. Reçetesi olmayan üretilen ürünlerde beyan hâlâ denetimsizdir;
+   Reçeteler ekranı bunları "Reçete tanımsız" olarak işaretler.
 
 İkisi de yazılımla değil, süreçle ve (ileride) yazar kasa ile kapanır. Süreç
 önerileri için `docs/YOL-HARITASI.md` dosyasının son bölümüne bakın.

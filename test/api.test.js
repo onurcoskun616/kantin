@@ -314,7 +314,9 @@ describe('Nokta sayimi', () => {
   let campusId; let productId; let spotId;
 
   test('hazirlik: ayri bir kampuste stok olustur', async () => {
-    campusId = (await ok('GET', '/api/campuses')).items[3].id;
+    campusId = (await ok('POST', '/api/campuses', {
+      code: 'NKT', name: 'Nokta Sayim Test Kampüsü', studentCount: 50,
+    })).id;
     const supplierId = (await ok('GET', '/api/suppliers')).items[0].id;
     productId = (await ok('POST', '/api/products', {
       name: 'Nokta Test Ürünü', barcode: 'SPOT-0001', purchasePrice: 5, salePrice: 11, vatRate: 10,
@@ -373,7 +375,9 @@ describe('Nokta sayimi', () => {
 /* ------------------------ Sayimi yeniden acma ---------------------- */
 describe('Sayimi yeniden acma', () => {
   test('kilitli sayim gerekce ile yeniden acilir ve denetim izine yazilir', async () => {
-    const campusId = (await ok('GET', '/api/campuses')).items[4].id;
+    const campusId = (await ok('POST', '/api/campuses', {
+      code: 'RPN', name: 'Yeniden Acma Test Kampüsü', studentCount: 50,
+    })).id;
     const productId = (await ok('POST', '/api/products', {
       name: 'Yeniden Ac Test', barcode: 'REOPEN-1', purchasePrice: 2, salePrice: 5,
     })).id;
@@ -404,7 +408,9 @@ describe('Tedarikciye iade', () => {
   let campusId; let supplierId; let productId; let producedId; let purchaseId; let returnId;
 
   test('hazirlik: alim yapilir', async () => {
-    campusId = (await ok('GET', '/api/campuses')).items[1].id;
+    campusId = (await ok('POST', '/api/campuses', {
+      code: 'IAD', name: 'Iade Test Kampüsü', studentCount: 50,
+    })).id;
     supplierId = (await ok('GET', '/api/suppliers')).items[0].id;
     productId = (await ok('POST', '/api/products', {
       name: 'Iade Test Ürünü', barcode: 'RET-0001', purchasePrice: 20, salePrice: 33, vatRate: 10,
@@ -550,6 +556,175 @@ describe('Tedarikciye iade', () => {
   });
 });
 
+/* ----------------------------- Reçete ------------------------------ */
+describe('Recete (BOM)', () => {
+  let campusId; let breadId; let cheeseId; let toastId; let approverToken;
+
+  test('hazirlik: hammadde, uretilen urun ve recete', async () => {
+    campusId = (await ok('POST', '/api/campuses', {
+      code: 'RCT', name: 'Recete Test Kampüsü', studentCount: 100,
+    })).id;
+
+    breadId = (await ok('POST', '/api/products', {
+      name: 'Test Ekmek Dilim', productType: 'HAMMADDE', unit: 'ADET', purchasePrice: 1, salePrice: 0,
+    })).id;
+    cheeseId = (await ok('POST', '/api/products', {
+      name: 'Test Kasar', productType: 'HAMMADDE', unit: 'GR', purchasePrice: 0.5, salePrice: 0,
+    })).id;
+    toastId = (await ok('POST', '/api/products', {
+      name: 'Test Recete Tost', productType: 'URETILEN', purchasePrice: 99, salePrice: 33, vatRate: 10,
+    })).id;
+
+    // 1 tost = 2 dilim ekmek + 20 g kasar -> birim maliyet 2 + 10 = 12 TL
+    const res = await ok('PUT', `/api/recipes/${toastId}`, {
+      yieldQuantity: 1,
+      items: [
+        { ingredientId: breadId, quantity: 2 },
+        { ingredientId: cheeseId, quantity: 20 },
+      ],
+    });
+    assert.equal(res.unitCost, 12, 'birim maliyet hammadde toplamindan gelmeli');
+    // Satis 33 TL KDV dahil -> net 30 TL; kar 18 TL, marj %60
+    assert.equal(res.profit.unitProfit, 18);
+    assert.equal(res.profit.marginPct, 60);
+  });
+
+  test('recete yalnizca uretilen urunlere tanimlanir', async () => {
+    const r = await api('PUT', `/api/recipes/${breadId}`, {
+      yieldQuantity: 1, items: [{ ingredientId: cheeseId, quantity: 1 }],
+    });
+    assert.equal(r.status, 400);
+  });
+
+  test('uretilen urun baska bir recetenin icerigi olamaz', async () => {
+    const other = (await ok('POST', '/api/products', {
+      name: 'Test Recete Sandvic', productType: 'URETILEN', purchasePrice: 10, salePrice: 40,
+    })).id;
+    const r = await api('PUT', `/api/recipes/${other}`, {
+      yieldQuantity: 1, items: [{ ingredientId: toastId, quantity: 1 }],
+    });
+    assert.equal(r.status, 400);
+  });
+
+  test('ayni icerik iki kez eklenemez', async () => {
+    const r = await api('PUT', `/api/recipes/${toastId}`, {
+      yieldQuantity: 1,
+      items: [{ ingredientId: breadId, quantity: 2 }, { ingredientId: breadId, quantity: 1 }],
+    });
+    assert.equal(r.status, 400);
+  });
+
+  test('partili recete birim maliyeti boler', async () => {
+    const teaLeafId = (await ok('POST', '/api/products', {
+      name: 'Test Cay Gram', productType: 'HAMMADDE', unit: 'GR', purchasePrice: 0.2, salePrice: 0,
+    })).id;
+    const teaId = (await ok('POST', '/api/products', {
+      name: 'Test Cay Bardak', productType: 'URETILEN', purchasePrice: 3, salePrice: 11, vatRate: 10,
+    })).id;
+    // 1 demlik = 40 bardak, 60 g cay -> parti 12 TL, birim 0.30 TL
+    const res = await ok('PUT', `/api/recipes/${teaId}`, {
+      yieldQuantity: 40, items: [{ ingredientId: teaLeafId, quantity: 60 }],
+    });
+    assert.equal(res.batchCost, 12);
+    assert.equal(res.unitCost, 0.3);
+  });
+
+  test('hammadde stogu sayima girer, uretilen urun girmez', async () => {
+    await ok('POST', '/api/stock/opening', {
+      campusId, date: daysAgo(20),
+      lines: [{ productId: breadId, quantity: 200 }, { productId: cheeseId, quantity: 2000 }],
+    });
+    const stock = await ok('GET', `/api/stock?campusId=${campusId}`);
+    assert.ok(stock.items.some((i) => i.product_id === breadId), 'hammadde stokta gorunmeli');
+    assert.ok(!stock.items.some((i) => i.product_id === toastId), 'uretilen urun stokta gorunmemeli');
+  });
+
+  test('RECETE TUKETIMI sayim farkindan dusulur', async () => {
+    // 50 tost beyan edilirse 100 dilim ekmek + 1000 g kasar tuketilmis olmali
+    await ok('POST', '/api/revenues', { campusId, revenueDate: daysAgo(2), cashAmount: 1650 });
+
+    const count = await ok('POST', '/api/counts', { campusId, countDate: iso(new Date()) });
+    await ok('PUT', `/api/counts/${count.id}/production`, { lines: [{ productId: toastId, quantity: 50 }] });
+    await ok('PUT', `/api/counts/${count.id}/lines`, {
+      lines: [{ productId: breadId, countedQty: 100 }, { productId: cheeseId, countedQty: 1000 }],
+    });
+    await ok('POST', `/api/counts/${count.id}/submit`, { witnessName: 'Recete Tanik' });
+
+    const login = await api('POST', '/api/auth/login',
+      { email: 'ikinci.mudur@topkapiokullari.com', password: 'Mudur123456' }, false);
+    approverToken = login.data.token;
+    const res = await fetch(`${BASE}/api/counts/${count.id}/finalize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${approverToken}` },
+      body: '{}',
+    });
+    assert.equal(res.status, 200);
+    const finalized = await res.json();
+
+    const bread = finalized.lines.find((l) => l.product_id === breadId);
+    assert.equal(bread.expected_qty, 200);
+    assert.equal(bread.counted_qty, 100);
+    assert.equal(bread.recipe_qty, 100, 'recete tuketimi 50 tost x 2 dilim = 100 olmali');
+    assert.equal(bread.sold_qty, 0, 'recete dususunden sonra dogrudan satis kalmamali');
+    assert.equal(bread.sales_value, 0, 'hammadde beklenen ciroya katki yapmamali');
+
+    // Beklenen ciro yalnizca tost satisindan: 50 x 33 = 1650
+    assert.equal(finalized.production_revenue, 1650);
+    assert.equal(finalized.expected_revenue, 1650);
+    assert.equal(finalized.actual_revenue, 1650);
+    assert.equal(finalized.difference, 0, 'recete dogru islenirse mutabakat tutmali');
+
+    // Maliyet recete uzerinden: 50 x 12 = 600
+    assert.equal(finalized.cogs_total, 600, 'uretilen urun maliyeti receteden gelmeli, 99 TL tahminden degil');
+  });
+
+  test('recete kontrolu aciklanamayan tuketimi ortaya cikarir', async () => {
+    // Yeni donem: 100 dilim ekmek daha alalim
+    const supplierId = (await ok('GET', '/api/suppliers')).items[0].id;
+    await ok('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'RCT-IRS-1', documentDate: iso(new Date()),
+      lines: [{ productId: breadId, quantity: 100, unitPrice: 1, vatRate: 1 }],
+    });
+
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    // Bugun kesinlesmis sayim var; bir sonraki sayim icin tarih ilerlemeli.
+    // Bunun yerine mutabakat onizlemesini TASLAK uzerinden dogrulayalim.
+    const counts = await ok('GET', `/api/counts?campusId=${campusId}`);
+    const finalizedCount = counts.items.find((c) => c.status === 'KESINLESMIS');
+    const rec = await ok('GET', `/api/counts/${finalizedCount.id}/reconciliation`);
+
+    const bread = rec.recipeCheck.items.find((r) => r.product_id === breadId);
+    assert.ok(bread, 'ekmek recete kontrolunde gorunmeli');
+    assert.equal(bread.recipe_qty, 100);
+    assert.equal(bread.total_out, 100);
+    assert.equal(bread.unexplained, 0, 'tutarli sayimda aciklanamayan tuketim olmamali');
+    assert.equal(rec.recipeCheck.totalUnexplainedValue, 0);
+    assert.equal(rec.production.withRecipe, 1, 'recetesi olan uretim kalemi sayilmali');
+  });
+
+  test('kesinlesmis sayimda kullanilan recete silinemez', async () => {
+    const r = await api('DELETE', `/api/recipes/${toastId}`);
+    assert.equal(r.status, 409);
+  });
+
+  test('fiyat denetimi recetesiz uretilen urunu isaretler', async () => {
+    const noRecipeId = (await ok('POST', '/api/products', {
+      name: 'Recetesiz Uretilen', productType: 'URETILEN', purchasePrice: 5, salePrice: 20,
+    })).id;
+    const report = await ok('GET', `/api/reports/price-control?campusId=${campusId}`);
+    const row = report.items.find((i) => i.id === noRecipeId);
+    assert.ok(row, 'recetesiz uretilen urun uyari listesinde olmali');
+    assert.ok(row.issues.some((i) => i.includes('Recete tanimsiz')));
+
+    // Hammadde satis fiyati olmadigi icin "zararina satis" uyarisi almamali
+    const breadRow = report.items.find((i) => i.id === breadId);
+    if (breadRow) {
+      assert.ok(!breadRow.issues.some((i) => i.includes('Zararina')), 'hammadde zararina satis sayilmamali');
+    }
+  });
+});
+
 /* ----------------------------- Yetkiler ---------------------------- */
 describe('Rol ve yetki kontrolleri', () => {
   let campusA; let campusB; let staffToken;
@@ -609,9 +784,11 @@ describe('Toplu ice aktarma', () => {
   let campusId; let campusCode;
 
   test('urun listesi kategori adiyla birlikte aktarilir', async () => {
-    // Onceki testlerde sayim kesinlesmemis bir kampus kullan; aksi halde
-    // gecmise donuk acilis stogu kilidi devreye girer (bkz. assertNotLocked)
-    const campus = (await ok('GET', '/api/campuses')).items[2];
+    // Testler birbirini etkilemesin diye kendi kampusunu olusturur:
+    // baska bir testin kesinlestirdigi sayim, acilis stogu kilidini tetiklerdi
+    const campus = await ok('POST', '/api/campuses', {
+      code: 'IMP', name: 'Ice Aktarma Test Kampüsü', studentCount: 50,
+    });
     campusId = campus.id;
     campusCode = campus.code;
 

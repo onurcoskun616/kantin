@@ -39,10 +39,12 @@ function upgradeExistingSchema() {
   addColumn('counts', 'reopened_count', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('counts', 'submitted_by', 'INTEGER');
   addColumn('counts', 'submitted_at', 'TEXT');
+  addColumn('count_lines', 'recipe_qty', 'REAL NOT NULL DEFAULT 0');
 
-  // Eski surumde counts.status yalnizca TASLAK/KESINLESMIS kabul ediyordu.
-  // SQLite CHECK kisitini degistiremedigi icin tablo yeniden kurulur.
-  relaxCountStatusCheck();
+  // SQLite CHECK kisitlarini ALTER ile degistiremedigi icin ilgili tablolar
+  // yeniden kurulur. Veri korunur; islem tek transaction icindedir.
+  rebuildIfMissing('counts', "'SAYILDI'");      // TASLAK/KESINLESMIS -> + SAYILDI
+  rebuildIfMissing('products', "'HAMMADDE'");   // SATIN_ALINAN/URETILEN -> + HAMMADDE
 }
 
 function columnExists(table, column) {
@@ -59,26 +61,36 @@ function tableExists(table) {
   return !!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
 }
 
-function relaxCountStatusCheck() {
-  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'counts'").get();
-  if (!row || String(row.sql).includes("'SAYILDI'")) return;
+/**
+ * Tablonun saklanan CREATE ifadesinde `sentinel` yoksa, tabloyu schema.sql'deki
+ * guncel tanimiyla yeniden kurar ve ortak sutunlardaki veriyi tasir.
+ * CHECK kisiti degisiklikleri icin gereklidir (SQLite ALTER ile desteklemez).
+ */
+function rebuildIfMissing(table, sentinel) {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+  if (!row || String(row.sql).includes(sentinel)) return;
 
-  console.log('[SEMA] counts tablosu yeni durum degerleri icin yeniden kuruluyor...');
-  const columns = db.prepare('PRAGMA table_info(counts)').all().map((c) => c.name);
-  const shared = columns.join(', ');
+  console.log(`[SEMA] ${table} tablosu yeniden kuruluyor (${sentinel} destegi)...`);
+  const oldColumns = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
 
+  const schema = fs.readFileSync(path.join(ROOT, 'server', 'schema.sql'), 'utf8');
+  const pattern = new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`);
+  const createSql = pattern.exec(schema);
+  if (!createSql) throw new Error(`schema.sql icinde ${table} tablosu bulunamadi.`);
+
+  const tempName = `${table}_eski`;
   db.exec('PRAGMA foreign_keys = OFF');
   db.exec('BEGIN IMMEDIATE');
   try {
-    db.exec('ALTER TABLE counts RENAME TO counts_eski');
-    const schema = fs.readFileSync(path.join(ROOT, 'server', 'schema.sql'), 'utf8');
-    const createSql = /CREATE TABLE IF NOT EXISTS counts \([\s\S]*?\n\);/.exec(schema);
-    if (!createSql) throw new Error('schema.sql icinde counts tablosu bulunamadi.');
+    db.exec(`ALTER TABLE ${table} RENAME TO ${tempName}`);
     db.exec(createSql[0]);
-    db.exec(`INSERT INTO counts (${shared}) SELECT ${shared} FROM counts_eski`);
-    db.exec('DROP TABLE counts_eski');
+    // Yalnizca her iki tanimda da bulunan sutunlar tasinir
+    const newColumns = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    const shared = oldColumns.filter((c) => newColumns.includes(c)).join(', ');
+    db.exec(`INSERT INTO ${table} (${shared}) SELECT ${shared} FROM ${tempName}`);
+    db.exec(`DROP TABLE ${tempName}`);
     db.exec('COMMIT');
-    console.log('[SEMA] counts tablosu yukseltildi.');
+    console.log(`[SEMA] ${table} tablosu yukseltildi.`);
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;

@@ -282,7 +282,7 @@ function parseProduct(body) {
     name: str(body.name, 'Urun adi', { required: true, max: 200 }),
     categoryId: int(body.categoryId, 'Kategori', { def: null }),
     unit: str(body.unit, 'Birim', { max: 20 }) || 'ADET',
-    productType: oneOf(body.productType, 'Urun tipi', ['SATIN_ALINAN', 'URETILEN'], { def: 'SATIN_ALINAN' }),
+    productType: oneOf(body.productType, 'Urun tipi', ['SATIN_ALINAN', 'HAMMADDE', 'URETILEN'], { def: 'SATIN_ALINAN' }),
     purchasePrice: num(body.purchasePrice, 'Alis fiyati', { min: 0, max: 1e6, def: 0 }) ?? 0,
     salePrice: num(body.salePrice, 'Satis fiyati', { min: 0, max: 1e6, def: 0 }) ?? 0,
     vatRate: num(body.vatRate, 'KDV orani', { min: 0, max: 100, def: 10 }) ?? 10,
