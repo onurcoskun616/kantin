@@ -1,0 +1,66 @@
+# TOPKAPI KANTIN — mevcut Caddy kurulumunun yanina eklemek icin
+#
+# Bu dosya, sunucuda ZATEN calisan bir Caddy ters vekilin oldugu durum icin
+# hazirlandi (topkapi-qr yiginindaki caddy:2-alpine gibi). Kokteki
+# docker-compose.yml tek basina calisan kurulum icindir; bu dosya ise
+# kantin'i var olan yapinin YANINA, hicbirine dokunmadan ekler.
+#
+# Kurulum:
+#   mkdir -p /opt/kantin-uygulama && cd /opt/kantin-uygulama
+#   git clone -b main https://github.com/onurcoskun616/kantin.git kaynak
+#   cp kaynak/deploy/compose-kantin.yml docker-compose.yml
+#   cp kaynak/.env.example .env      # ve .env'i doldurun
+#   # asagidaki AG ADINI kendi Caddy aginizla degistirin
+#   docker compose up -d --build
+#
+# Neden host'a port acmiyoruz?
+#   Caddy kantin'e Docker agi uzerinden `topkapi-kantin:3000` olarak ulasir.
+#   Portu host'a acmak gereksiz yere disariya yuzey acardi.
+
+services:
+  kantin:
+    build: ./kaynak
+    image: topkapi-kantin:latest
+    container_name: topkapi-kantin
+    restart: unless-stopped
+
+    # ports: YOK — bilerek. Caddy ic agdan erisiyor.
+
+    volumes:
+      # Veritabani VE fatura ekleri ayni birimde (data/ekler)
+      - kantin-data:/app/data
+      # Yedekler host'ta dursun ki disari kopyalamak kolay olsun
+      - ./backups:/app/backups
+
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+      DB_PATH: /app/data/kantin.db
+      ATTACHMENTS_DIR: /app/data/ekler
+      SESSION_TTL_HOURS: 12
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET tanimlanmali}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?ADMIN_EMAIL tanimlanmali}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD tanimlanmali}
+      ADMIN_NAME: ${ADMIN_NAME:-Sistem Yoneticisi}
+
+    networks:
+      - web
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  kantin-data:
+
+networks:
+  web:
+    external: true
+    # <<< BURAYI DEGISTIRIN >>>
+    # Caddy konteynerinin bagli oldugu agin ADI. Ogrenmek icin:
+    #   docker inspect topkapi-qr-caddy-1 \
+    #     --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+    name: DEGISTIRIN_caddy_agi

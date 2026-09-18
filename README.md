@@ -201,6 +201,12 @@ de indirebilirsiniz.
 
 ## Sunucuya kurulum (VPS)
 
+Sunucunuzda **zaten başka uygulamalar ve bir Caddy/Traefik ters vekili varsa**
+→ **[docs/KURULUM-DOCKER-CADDY.md](docs/KURULUM-DOCKER-CADDY.md)**
+(host'a hiçbir şey kurmaz, diğer uygulamalara dokunmaz).
+
+Boş bir sunucuya kuruyorsanız aşağıdaki rehber:
+
 Ubuntu üzerinde systemd + nginx + HTTPS + otomatik yedekleme içeren adım adım
 rehber: **[docs/VPS-KURULUM.md](docs/VPS-KURULUM.md)**
 
@@ -274,6 +280,7 @@ scripts/
   sablon-olustur.py Excel şablonu üretici
 docs/
   DENETIM-KONTROLLERI.md  Kör sayım, iki imza, üretilen ürün, nokta sayımı, ciro teslim fişi
+  KURULUM-DOCKER-CADDY.md Mevcut Docker + Caddy sunucusuna yan yana kurulum
   FATURA-GIRISI.md  Tedarikçi faturasını işleme: e-Fatura XML, elle giriş, dosya ekleme
   VPS-KURULUM.md    Sunucu kurulum rehberi
   YOL-HARITASI.md   Atlanan noktalar ve sonraki aşama önerileri

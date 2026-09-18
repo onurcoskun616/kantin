@@ -1,6 +1,11 @@
 # Harici bagimlilik olmadigi icin tek asamali, kucuk bir imaj yeterli.
 FROM node:22-alpine
 
+# Yedekleme betigi bash kullaniyor (BASH_SOURCE, pipefail); alpine'da
+# varsayilan olarak yok. Konteyner icinden yedek alabilmek icin ekliyoruz:
+#   docker exec topkapi-kantin /app/scripts/yedekle.sh
+RUN apk add --no-cache bash
+
 WORKDIR /app
 
 COPY package.json ./
@@ -8,14 +13,17 @@ COPY server ./server
 COPY public ./public
 COPY scripts ./scripts
 
-RUN mkdir -p /app/data /app/backups && chown -R node:node /app
+# data/ekler: faturalarin PDF/XML dosyalari. data/ ile ayni birimde durur ki
+# tek volume ile hem veritabani hem ekler kalici olsun.
+RUN mkdir -p /app/data/ekler /app/backups && chown -R node:node /app
 
 USER node
 
 ENV NODE_ENV=production \
     PORT=3000 \
     HOST=0.0.0.0 \
-    DB_PATH=/app/data/kantin.db
+    DB_PATH=/app/data/kantin.db \
+    ATTACHMENTS_DIR=/app/data/ekler
 
 EXPOSE 3000
 
