@@ -39,10 +39,27 @@ else
 fi
 
 bilgi "3  Caddyfile'da blok var mi?"
-if docker exec "$CADDY" grep -q "$ALAN" /etc/caddy/Caddyfile 2>/dev/null; then
-  ok "'$ALAN' Caddyfile'da tanimli"
+# Host'taki dosya ile konteynerin gordugu dosya AYRI kontrol edilir:
+# tek dosya bind-mount'larda ikisi ayrisabilir.
+CADDYFILE_HOST="${CADDYFILE:-/root/topkapi-qr/deploy/Caddyfile}"
+VAR_HOST=0; VAR_KONTEYNER=0
+[ -f "$CADDYFILE_HOST" ] && grep -qF "$ALAN" "$CADDYFILE_HOST" 2>/dev/null && VAR_HOST=1
+docker exec "$CADDY" grep -qF "$ALAN" /etc/caddy/Caddyfile 2>/dev/null && VAR_KONTEYNER=1
+
+if [ "$VAR_HOST" = 1 ] && [ "$VAR_KONTEYNER" = 1 ]; then
+  ok "'$ALAN' hem host hem konteyner dosyasinda var"
+elif [ "$VAR_HOST" = 1 ] && [ "$VAR_KONTEYNER" = 0 ]; then
+  kotu "Blok HOST dosyasinda var ama KONTEYNER gormuyor (bind-mount inode sorunu)"
+  printf '     Cozum: docker restart %s\n' "$CADDY"
+elif [ "$VAR_HOST" = 0 ] && [ "$VAR_KONTEYNER" = 1 ]; then
+  uyari "Blok konteynerde var ama host dosyasinda yok — farkli dosyaya bakiliyor olabilir"
+  printf '     Host dosyasi: %s\n' "$CADDYFILE_HOST"
+  docker inspect "$CADDY" --format '{{range .Mounts}}     {{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
 else
-  kotu "'$ALAN' Caddyfile'da YOK — caddy-ekle.sh calistirin"
+  kotu "'$ALAN' hicbir yerde YOK — caddy-ekle.sh calistirin"
+  printf '     Host dosyasi: %s\n' "$CADDYFILE_HOST"
+  printf '     Son 5 satiri:\n'
+  tail -5 "$CADDYFILE_HOST" 2>/dev/null | sed 's/^/       /'
 fi
 
 bilgi "4  DNS (sunucudan)"

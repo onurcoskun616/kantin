@@ -104,7 +104,38 @@ else
     printf '    reverse_proxy %s:3000\n' "$HEDEF"
     printf '}\n'
   } >> "$CADDYFILE"
-  ok "Blok dosyanin sonuna eklendi"
+
+  # Eklendigini DOGRULA. Sessizce basarisiz olursa validate eski (gecerli)
+  # yapilandirmayi onaylar, reload onu yukler ve her adim "basarili" gorunur.
+  if grep -qF "$ALAN" "$CADDYFILE"; then
+    ok "Blok dosyaya yazildi"
+  else
+    hata "Blok dosyaya YAZILAMADI: $CADDYFILE
+   Disk dolu veya dosya salt okunur olabilir:
+     df -h /root ; ls -la $CADDYFILE"
+  fi
+fi
+
+# Caddy konteynerin GORDUGU dosyada da var mi? Tek dosya bind-mount'larda
+# host'taki degisiklik konteynere yansimayabilir (dosya yerine inode baglanir).
+if docker exec "$CADDY_KONTEYNER" grep -qF "$ALAN" "$KONTEYNER_ICI" 2>/dev/null; then
+  ok "Konteyner de yeni blogu goruyor"
+else
+  uyari "Konteyner dosyayi guncel gormuyor (bind-mount inode sorunu)"
+  printf '     Caddy konteyneri yeniden baslatiliyor...\n'
+  if docker restart "$CADDY_KONTEYNER" >/dev/null 2>&1; then
+    sleep 3
+    if docker exec "$CADDY_KONTEYNER" grep -qF "$ALAN" "$KONTEYNER_ICI" 2>/dev/null; then
+      ok "Yeniden baslatma sonrasi blok gorunuyor"
+    else
+      geri_al
+      hata "Konteyner blogu hala gormuyor. Caddyfile bagli mi kontrol edin:
+     docker inspect $CADDY_KONTEYNER --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{\"\\n\"}}{{end}}'"
+    fi
+  else
+    geri_al
+    hata "Caddy konteyneri yeniden baslatilamadi."
+  fi
 fi
 
 bilgi "3/5  Dogrulama"
