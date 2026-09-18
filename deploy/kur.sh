@@ -69,9 +69,26 @@ mkdir -p "$DIZIN/backups"
 ok "docker-compose.yml hazir (ag: $AG)"
 
 bilgi "3/6  Ayarlar (.env)"
+# Konteyner calisirken .env kaybolmus olabilir (or. dizin yanlislikla silindi).
+# Bu durumda YENI anahtar uretmek yanlis olur: calisan konteynerdeki degerleri
+# geri kurtaririz, boylece acik oturumlar ve yonetici parolasi degismez.
+KURTARILAN=""
+if [ ! -f "$DIZIN/.env" ] && docker inspect "$KONTEYNER" >/dev/null 2>&1; then
+  KURTARILAN="$(docker inspect "$KONTEYNER" \
+    --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+    | grep -E '^(SESSION_SECRET|ADMIN_EMAIL|ADMIN_PASSWORD|ADMIN_NAME)=' || true)"
+  printf '%s' "$KURTARILAN" | grep -q '^SESSION_SECRET=' || KURTARILAN=""
+fi
+
 if [ -f "$DIZIN/.env" ]; then
   ok ".env zaten var, dokunulmadi"
   uyari "Degistirmek isterseniz: nano $DIZIN/.env  (sonra betigi tekrar calistirin)"
+elif [ -n "$KURTARILAN" ]; then
+  umask 077
+  printf '%s\n' "$KURTARILAN" > "$DIZIN/.env"
+  chmod 600 "$DIZIN/.env"
+  ok ".env calisan konteynerden geri kurtarildi (izin 600)"
+  ok "Mevcut oturum anahtari ve yonetici parolasi korundu"
 else
   GIZLI="$(head -c 48 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   E_POSTA="${ADMIN_EMAIL:-mudur@topkapikoleji.org}"
