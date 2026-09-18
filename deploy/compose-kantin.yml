@@ -59,8 +59,8 @@ volumes:
 networks:
   web:
     external: true
-    # <<< BURAYI DEGISTIRIN >>>
-    # Caddy konteynerinin bagli oldugu agin ADI. Ogrenmek icin:
-    #   docker inspect topkapi-qr-caddy-1 \
+    # Caddy konteynerinin bagli oldugu ag. Baska bir sunucuda kuruyorsaniz
+    # dogru adi soyle ogrenin:
+    #   docker inspect <caddy-konteyneri> \
     #     --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'
-    name: DEGISTIRIN_caddy_agi
+    name: topkapi-qr_default

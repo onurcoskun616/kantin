@@ -80,14 +80,14 @@ Dosyayı koruyun:
 sudo chmod 600 /opt/kantin-uygulama/.env
 ```
 
-## 4. Ağ adını yazın
+## 4. Ağ adını doğrulayın
+
+`docker-compose.yml` dosyasının en altındaki ağ adı `topkapi-qr_default`
+olarak hazır gelir. 1. adımda başka bir ad çıktıysa burayı düzeltin:
 
 ```bash
 sudo nano /opt/kantin-uygulama/docker-compose.yml
 ```
-
-En alttaki `name: DEGISTIRIN_caddy_agi` satırını 1. adımda öğrendiğiniz ağ
-adıyla değiştirin.
 
 ## 5. Başlatın
 
@@ -112,7 +112,16 @@ sudo docker exec topkapi-kantin node -e "fetch('http://127.0.0.1:3000/api/health
 
 ## 6. Caddy'ye kuralı ekleyin
 
-Caddyfile'a **sadece şu bloğu ekleyin** — mevcut satırlara dokunmayın:
+Caddyfile bu sunucuda **`/root/topkapi-qr/deploy/Caddyfile`** dosyasıdır
+(konteyner içine `/etc/caddy/Caddyfile` olarak bağlanmış).
+
+Önce yedeğini alın, sonra **dosyanın sonuna şu bloğu ekleyin** — mevcut
+satırlara dokunmayın:
+
+```bash
+sudo cp /root/topkapi-qr/deploy/Caddyfile /root/topkapi-qr/deploy/Caddyfile.yedek
+sudo nano /root/topkapi-qr/deploy/Caddyfile
+```
 
 ```caddyfile
 kantin.topkapikoleji.org {
@@ -124,23 +133,30 @@ kantin.topkapikoleji.org {
     }
 
     encode gzip
-    log {
-        output file /var/log/caddy/kantin.log
-    }
 }
 ```
 
-Caddy'yi yeniden yükleyin (kesinti olmadan):
+> Bilerek `log` yönergesi koymuyoruz: konteynerde olmayan bir dizine yazmak
+> istenirse **reload hata verir ve mevcut siteler de yüklenmez.** Caddy
+> varsayılan olarak stdout'a yazar, günlükleri
+> `docker logs topkapi-qr-caddy-1` ile görürsünüz.
+
+**Önce doğrulayın** (bu adım hiçbir şeyi değiştirmez):
+
+```bash
+sudo docker exec topkapi-qr-caddy-1 caddy validate --config /etc/caddy/Caddyfile
+```
+
+`Valid configuration` yazmıyorsa **reload etmeyin** — yedekten geri dönün:
+`sudo cp /root/topkapi-qr/deploy/Caddyfile.yedek /root/topkapi-qr/deploy/Caddyfile`
+
+Doğrulama geçtiyse yeniden yükleyin (kesinti olmadan):
 
 ```bash
 sudo docker exec topkapi-qr-caddy-1 caddy reload --config /etc/caddy/Caddyfile
 ```
 
-Hata verirse yapılandırmayı önce doğrulayın:
-
-```bash
-sudo docker exec topkapi-qr-caddy-1 caddy validate --config /etc/caddy/Caddyfile
-```
+Mevcut sitelerinizin hâlâ açıldığını kontrol edin.
 
 > Caddy sertifikayı **kendiliğinden** alır; certbot'a gerek yoktur. DNS
 > kaydının sunucuya yönlendiğinden ve Cloudflare'de **gri bulut (DNS only)**
