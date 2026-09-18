@@ -42,17 +42,21 @@ sudo git clone https://github.com/onurcoskun616/kantin.git /opt/kantin
 sudo chown -R kantin:kantin /opt/kantin
 ```
 
-> **Depo özelse** `git clone` sunucuda parola soracak ve başarısız olacaktır.
-> İki yoldan biri:
+> Depo şu an **herkese açık**, bu yüzden sunucuda parola sorulmadan
+> klonlanır. Kaynak kodda parola/gizli bilgi yoktur — hepsi `.env` içinde ve
+> `.env` depoya girmez.
 >
-> 1. **Deploy key (önerilen):** sunucuda `sudo -u kantin ssh-keygen -t ed25519 -f /opt/kantin/.ssh/id_ed25519 -N ""`
->    ile anahtar üretin, `.pub` dosyasının içeriğini GitHub'da
->    **Settings → Deploy keys → Add deploy key** ile ekleyin (yazma izni
->    gerekmez), sonra SSH adresiyle klonlayın:
->    `git clone git@github.com:onurcoskun616/kantin.git /opt/kantin`
-> 2. **Depoyu herkese açık yapın** — kaynak kodda parola/gizli bilgi yok
->    (hepsi `.env` içinde ve `.env` depoya girmiyor), bu yüzden güvenlik
->    açısından sorun olmaz.
+> **Depoyu ileride özel yaparsanız** `git clone` sunucuda parola sorup
+> başarısız olur. O durumda deploy key kullanın:
+>
+> ```bash
+> sudo -u kantin ssh-keygen -t ed25519 -f /opt/kantin/.ssh/id_ed25519 -N ""
+> sudo cat /opt/kantin/.ssh/id_ed25519.pub
+> ```
+>
+> Çıktıyı GitHub'da **Settings → Deploy keys → Add deploy key** ile ekleyin
+> (yazma izni gerekmez), sonra SSH adresiyle klonlayın:
+> `git clone git@github.com:onurcoskun616/kantin.git /opt/kantin`
 >
 > Belirli bir dalı kurmak isterseniz: `git clone -b <dal-adı> ...`
 
