@@ -37,6 +37,10 @@ ciro bunlardan türetilir. Kampüslerin ciro beyan oranları bilinçli olarak fa
 - Veriler tarayıcıda (`localStorage`) tutulur; başka cihaza veya kişiye geçmez.
 - Dosya indirme (Excel/CSV dışa aktarma) claude.ai korumalı alanında engellidir.
 - Parola doğrulaması yoktur; giriş ekranındaki hesaplardan biri seçilir.
+- Ciro teslim fişinde yazdırma: korumalı alan `window.print()` çağrısını sessizce
+  yok sayar. Bu yüzden fiş her durumda önce **ekranda** açılır; ardından ayrı bir
+  pencereden yazdırma denenir. O da engellenirse ekranda gerekçesi yazar.
+  Kurulu sürümde düğme doğrudan yazdırma penceresini açar.
 
 Bunlar dışında tüm iş akışı — sayım, mutabakat, ciro, alım, fire, transfer,
 raporlar, yetkiler — kurulu sürümle aynı mantıkla çalışır.

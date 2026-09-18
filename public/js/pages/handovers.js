@@ -301,9 +301,17 @@ function openVerify() {
 
 /* ============================== YAZDIRMA =========================== */
 /**
- * A4 uzerine iki nusha basar: ust yari kantin nushasi, alt yari on muhasebe
- * nushasi. Ikisi de ayni tutari ve ayni dogrulama kodunu tasir; imza satirlari
- * ayridir ki her taraf kendi nushasini imzali olarak saklasin.
+ * Fisi once EKRANDA acar, sonra yazdirma penceresini dener.
+ *
+ * Neden once ekran? Uygulama korumali bir cerceve icinde calisiyorsa
+ * (demo surumu boyle) tarayici window.print() cagrisini SESSIZCE yok sayiyor:
+ * dugme hicbir sey yapmamis gibi gorunuyordu. Artik belge her kosulda
+ * ekranda acilir; yazdirma onun uzerine gelir, acilamazsa kullaniciya
+ * neden acilmadigi yazilir.
+ *
+ * A4'e iki nusha basilir: kantin nushasi ve on muhasebe nushasi. Ikisi de
+ * ayni tutari ve ayni dogrulama kodunu tasir; imza satirlari ayridir ki
+ * her taraf kendi nushasini imzali olarak saklasin.
  */
 function printSlip(data) {
   const host = document.getElementById('printRoot') || (() => {
@@ -311,12 +319,116 @@ function printSlip(data) {
     document.body.append(n);
     return n;
   })();
+
+  const note = el('div.slip-note', { hidden: true });
+
+  const close = () => {
+    host.classList.remove('open');
+    host.replaceChildren();
+    document.body.classList.remove('slip-open');
+    document.removeEventListener('keydown', onKey);
+    window.removeEventListener('hashchange', close);
+  };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  // Onizleme acikken baska sayfaya gecilirse ustte asili kalmamali
+  window.addEventListener('hashchange', close, { once: true });
+
   host.replaceChildren(
+    el('div.slip-toolbar', {}, [
+      el('span.slip-toolbar-title', { text: `${data.document_no} — yazdırma önizlemesi` }),
+      el('span.muted', { text: '2 nüsha · A4' }),
+      el('span.spacer'),
+      el('button.btn.btn-primary', { text: '🖨️ Yazdır', onclick: () => attemptPrint(note) }),
+      el('button.btn', { text: 'Kapat', onclick: close }),
+    ]),
+    note,
     slipCopy(data, 'KANTİN NÜSHASI'),
     el('div.slip-cut', { text: '✂ — — — — — — — — — — — — — — — — — — — — — — — — — — — — — — — — — — — — —' }),
     slipCopy(data, 'ÖN MUHASEBE NÜSHASI'),
   );
-  window.print();
+  host.classList.add('open');
+  document.body.classList.add('slip-open');
+  host.scrollTop = 0;
+  document.addEventListener('keydown', onKey);
+
+  attemptPrint(note);
+}
+
+/**
+ * Yazdirma penceresini acmayi dener ve acilmadigini anlar.
+ *
+ * Korumali cercevede (sandbox, allow-modals yok) window.print() hata
+ * firlatmadan HICBIR SEY yapmaz. Tek guvenilir isaret 'beforeprint'
+ * olayidir: cagri gercekten islendiyse tetiklenir. Tetiklenmediyse fisi
+ * ayri bir pencereye yazip oradan yazdirmayi deneriz; o da engellenirse
+ * kullaniciya neden olmadigi yazilir.
+ */
+function attemptPrint(note) {
+  let fired = false;
+  const onBefore = () => { fired = true; };
+  window.addEventListener('beforeprint', onBefore);
+  try {
+    window.print();
+  } catch { /* bazi tarayicilar hata firlatir; asagida ayni sekilde ele alinir */ }
+
+  setTimeout(() => {
+    window.removeEventListener('beforeprint', onBefore);
+    if (fired) { note.hidden = true; return; }
+    if (printInNewWindow()) { note.hidden = true; return; }
+
+    note.replaceChildren(
+      el('strong', { text: 'Yazdırma penceresi açılamadı. ' }),
+      'Bu sayfa korumalı bir çerçeve içinde çalıştığı için (demo sürümünde olduğu gibi) '
+      + 'tarayıcı yazdırmayı engelliyor. Kendi sunucunuza kurulan sürümde düğme doğrudan '
+      + 'yazdırma penceresini açar. Belgenin son hâlini aşağıda olduğu gibi görebilirsiniz.',
+    );
+    note.hidden = false;
+  }, 500);
+}
+
+/**
+ * Fisi ayri bir pencereye kopyalayip oradan yazdirir.
+ * Cerceve icindeki sayfa yazdiramasa da acilan pencere ust duzeydedir ve
+ * yazdirabilir. Pencere engellenirse false doner.
+ */
+function printInNewWindow() {
+  let win;
+  try {
+    win = window.open('', '_blank', 'width=900,height=1000');
+  } catch { return false; }
+  if (!win || !win.document) return false;
+
+  try {
+    const slips = document.querySelectorAll('#printRoot .slip, #printRoot .slip-cut');
+    // Sayfanin stilleri (gercek sunucuda <link>, demoda satir ici <style>)
+    const styles = [...document.querySelectorAll('style, link[rel="stylesheet"]')]
+      .map((n) => n.outerHTML).join('\n');
+    const body = [...slips].map((n) => n.outerHTML).join('\n');
+
+    win.document.open();
+    win.document.write(
+      `<!doctype html><html lang="tr"><head><meta charset="utf-8">`
+      // Baslik document.write ile yazilirsa charset etiketi okunmadan
+      // cozumlenip bozuluyor; asagida DOM uzerinden veriliyor.
+      + `<title>slip</title>${styles}`
+      // Ayri pencerede uygulama kabugu yok: onizleme katmani yerine
+      // fisler dogrudan sayfa akisinda dursun
+      + '<style>body{margin:0;background:#fff}'
+      + '#printRoot,#printRoot.open{display:block;position:static;inset:auto;'
+      + 'overflow:visible;background:#fff;padding:12px 0}'
+      + '.slip{box-shadow:none;margin:0 auto 6mm}</style>'
+      + `</head><body><div id="printRoot" class="open">${body}</div></body></html>`
+    );
+    win.document.close();
+    win.document.title = document.title || 'Ciro Teslim Fişi';
+    win.focus();
+    // Stiller yuklensin diye bir tik bekle
+    setTimeout(() => { try { win.print(); } catch { /* kullanici Ctrl+P ile yazdirabilir */ } }, 400);
+    return true;
+  } catch {
+    try { win.close(); } catch { /* yoksay */ }
+    return false;
+  }
 }
 
 function slipCopy(data, copyLabel) {
@@ -337,6 +449,17 @@ function slipCopy(data, copyLabel) {
         el('div.slip-small', { text: `Düzenleme: ${fmt.dateTime(data.created_at)}` }),
       ]),
     ]),
+
+    // Fis kesildikten sonra ciro degistiyse, kagittaki TOPLAM ile asagidaki
+    // gunluk dokum artik ayni degildir. Imzali belgenin yeniden ciktisinda
+    // bunu gizlemek yanlis olur: kagidin uzerinde acikca yazar.
+    data.has_mismatch ? el('div.slip-alert', {}, [
+      el('strong', { text: 'DİKKAT — Bu fiş kesildikten sonra ciro kaydı değişmiştir.' }),
+      `Fişin teslim anındaki tutarı ${fmt.money(data.total_amount)}'dir ve bu belgede geçerli olan tutar budur. `
+      + `Sistemdeki güncel toplam ${fmt.money(data.current_total)} olup aradaki fark `
+      + `${fmt.money(data.difference)}'dir. Aşağıdaki günlük döküm güncel kayıtları gösterir; `
+      + 'değişiklik denetim izine kaydedilmiştir.',
+    ]) : null,
 
     el('table.slip-meta', {}, [el('tbody', {}, [
       el('tr', {}, [el('th', { text: 'Kampüs' }), el('td', { text: data.campus_name }),

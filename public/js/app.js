@@ -214,23 +214,22 @@ export function navigate(page, params = [], fromHash = false) {
   const navLabel = NAV.find((n) => n.id === page)?.label;
   document.getElementById('pageTitle').textContent = navLabel || DETAIL_TITLES[page] || 'Detay';
 
+  // Her gezinme kendi kabini alir ve ekrandaki kap onunla degistirilir.
+  // Sayfa render'lari asenkron: onceki sayfa verisini gec getirirse kendi
+  // (artik DOM'da olmayan) kabina yazar, yenisinin uzerine binemez.
   const content = clear(document.getElementById('pageContent'));
-  content.append(loading());
+  const host = el('div.page-host');
+  content.append(host);
+  host.append(loading());
 
-  // Hizli gecislerde yavas biten onceki sayfanin render'i yenisini ezmemeli
-  const token = (renderToken += 1);
   PAGE_LOADERS[page]()
-    .then((mod) => { if (token === renderToken) return mod.render(clear(content), { params }); })
+    .then((mod) => mod.render(clear(host), { params }))
     .catch((err) => {
-      if (token !== renderToken) return;
       console.error(err);
-      clear(content).append(el('div.alert.alert-danger', { text: err.message || 'Sayfa yüklenemedi.' }));
+      clear(host).append(el('div.alert.alert-danger', { text: err.message || 'Sayfa yüklenemedi.' }));
       if (!(err instanceof ApiError)) toast('Sayfa yüklenirken hata oluştu.', 'error');
     });
 }
-
-/** Her gezinme bir sira numarasi alir; yalnizca en sonuncusu ekrani boyar. */
-let renderToken = 0;
 
 /* ------------------------- Parola degistirme ----------------------- */
 function openChangePassword() {

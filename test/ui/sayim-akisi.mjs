@@ -16,7 +16,12 @@ import { createRequire } from 'node:module';
 
 const BASE = process.argv[2] || 'http://127.0.0.1:3000';
 const ADMIN = { email: 'admin@topkapiokullari.com', password: 'Kantin2026!' };
-const APPROVER = { email: 'onaylayan.test@topkapiokullari.com', password: 'Onay123456' };
+// Test ayni veritabaninda tekrar calistirilabilsin diye her kosuda kendi
+// kampusunu ve onaylayanini olusturur: ayni gune ikinci bir donem sayimi
+// acilamadigi icin sabit kampusle ikinci kosu basarisiz oluyordu.
+const RUN = Date.now().toString(36).slice(-5).toUpperCase();
+const CAMPUS_CODE = `UIS${RUN}`;
+const APPROVER = { email: `onaylayan.${RUN}@topkapiokullari.com`, password: 'Onay123456' };
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -36,8 +41,13 @@ const check = (label, condition, detail = '') => {
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
 const consoleErrors = [];
-page.on('pageerror', (e) => consoleErrors.push(e.message));
-page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
+// Kullanici degistirirken sayfa yeniden yuklenir ve ucusta olan istekler
+// iptal olur; tarayici bunun icin "Failed to fetch" basar. Testin dogal
+// sonucu, urun hatasi degil.
+const ABORTED_FETCH = /TypeError: Failed to fetch/;
+const record = (text) => { if (!ABORTED_FETCH.test(text)) consoleErrors.push(text); };
+page.on('pageerror', (e) => record(e.message));
+page.on('console', (m) => { if (m.type() === 'error') record(m.text()); });
 
 async function login({ email, password }) {
   await page.goto(BASE, { waitUntil: 'networkidle' });
@@ -50,23 +60,33 @@ async function login({ email, password }) {
 }
 
 try {
-  console.log('\n1) Yonetici girisi ve onaylayan kullanici');
+  console.log('\n1) Yonetici girisi, test kampusu ve onaylayan kullanici');
   await login(ADMIN);
-  await page.evaluate(async (user) => {
+  const campusId = await page.evaluate(async ([user, code]) => {
     const token = localStorage.getItem('kantin_token');
-    await fetch('/api/users', {
+    const post = (path, body) => fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        email: user.email, fullName: 'Onaylayan Mudur', role: 'GENEL_MUDURLUK', password: user.password,
-      }),
+      body: JSON.stringify(body),
+    }).then((r) => r.json());
+
+    await post('/api/users', {
+      email: user.email, fullName: 'Onaylayan Mudur', role: 'GENEL_MUDURLUK', password: user.password,
     });
-  }, APPROVER);
-  check('Giris yapildi', true);
+    const campus = await post('/api/campuses', {
+      code, name: `UI Sayım Kampüsü ${code}`, studentCount: 300,
+    });
+    return campus.id;
+  }, [APPROVER, CAMPUS_CODE]);
+  check('Test kampusu olusturuldu', !!campusId, String(campusId));
 
   console.log('\n2) Kor sayim acilir ve beklenen miktar gizlenir');
+  // Kampus API ile olusturuldu; secici ancak tam yeniden yuklemeyle tazelenir
   await page.goto(`${BASE}/#/counts`);
+  await page.reload({ waitUntil: 'networkidle' });
   await page.waitForTimeout(800);
+  await page.selectOption('#campusSelect', String(campusId));
+  await page.waitForTimeout(1200);
   await page.click('button:has-text("+ Dönem Sayımı")');
   await page.waitForSelector('.modal-backdrop');
   await page.click('.modal-foot .btn-primary');

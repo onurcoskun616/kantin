@@ -185,11 +185,22 @@ bakarak yeniden hesaplanamaz.
 
 ### Çıktı
 
-Yazdırma tek A4'e **iki nüsha** basar: üst yarı *kantin nüshası*, alt yarı
-*ön muhasebe nüshası*. Her iki nüshada da aynı belge numarası, aynı doğrulama
-kodu, günlük döküm, toplam, **tutarın yazıyla karşılığı** ve iki ayrı imza
-satırı (teslim eden / teslim alan) bulunur. Böylece her taraf kendi imzalı
-nüshasını saklar.
+"Yazdır" düğmesi fişi önce **ekranda** açar (önizleme), sonra yazdırma
+penceresini dener. Çıktı tek A4'e **iki nüsha** basar: üst yarı *kantin nüshası*,
+alt yarı *ön muhasebe nüshası*. Her iki nüshada da aynı belge numarası, aynı
+doğrulama kodu, günlük döküm, toplam, **tutarın yazıyla karşılığı** ve iki ayrı
+imza satırı (teslim eden / teslim alan) bulunur. Böylece her taraf kendi imzalı
+nüshasını saklar. Döküm uzunsa (ör. bir aylık teslim) ikinci nüsha kendi
+sayfasına taşınır; nüsha asla ortadan bölünmez.
+
+Fiş kesildikten sonra ciro değiştiyse, yeniden alınan çıktının üzerine
+**"Bu fiş kesildikten sonra ciro kaydı değişmiştir"** uyarısı basılır ve teslim
+anındaki tutar ile güncel tutar birlikte yazılır — imzalı belgenin kopyası
+sessizce farklı bir toplam göstermez.
+
+Not: uygulama korumalı bir çerçeve içinde çalışıyorsa (demo sürümü böyle)
+tarayıcı yazdırma penceresini engeller. Bu yüzden belge her koşulda ekranda
+açılır; yazdırma onun üstüne gelir.
 
 ### Ön Muhasebe rolü
 

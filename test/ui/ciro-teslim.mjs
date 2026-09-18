@@ -43,7 +43,10 @@ const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
 const consoleErrors = [];
 // Bu test bilerek reddedilen istekler yapiyor (409/403/400); tarayicinin
 // bunlar icin bastigi "failed to load resource" satirlari hata sayilmaz.
-const EXPECTED_HTTP = /Failed to load resource.*\b(400|403|409)\b/;
+// Sayfa yeniden yuklenirken ucusta olan istekler iptal olur ve tarayici
+// "Failed to fetch" basar; bu testin kullanici degistirme adimlarinin
+// dogal sonucu, urun hatasi degil.
+const EXPECTED_HTTP = /Failed to load resource.*\b(400|403|409)\b|TypeError: Failed to fetch/;
 const record = (text) => { if (!EXPECTED_HTTP.test(text)) consoleErrors.push(text); };
 page.on('pageerror', (e) => record(e.message));
 page.on('console', (m) => { if (m.type() === 'error') record(m.text()); });
@@ -107,9 +110,12 @@ try {
   check('Bekleyen tutar 3.000 TL gorunuyor', /3\.000,00/.test(pendingText), pendingText.slice(0, 200));
 
   console.log('\n3) Teslim fisi olusturulur ve tutar donar');
-  // Fis kaydedilir kaydedilmez ciktı penceresi acilir; testi durdurmasin
-  await page.addInitScript(() => { window.print = () => {}; });
-  await page.evaluate(() => { window.print = () => {}; });
+  // Fis kaydedilir kaydedilmez ciktı penceresi acilir; testi durdurmasin.
+  // Gercek yazdirma gibi davranmasi icin beforeprint olayini tetikliyoruz:
+  // aksi halde kod "yazdirma engellendi" yoluna sapar ve yeni pencere acar.
+  const stubPrint = () => { window.print = () => window.dispatchEvent(new Event('beforeprint')); };
+  await page.addInitScript(stubPrint);
+  await page.evaluate(stubPrint);
   await page.click('button:has-text("+ Teslim Fişi Oluştur")');
   await page.waitForSelector('.modal-backdrop');
   await page.fill('.modal input[name=from]', daysAgo(5));
@@ -127,11 +133,20 @@ try {
     new RegExp(`^${CAMPUS_CODE}-\\d{4}-0001$`).test(handover?.document_no || ''), handover?.document_no);
   check('Dogrulama kodu 6 hane', handover?.verification_code?.length === 6, handover?.verification_code);
 
-  console.log('\n4) Yazdirma bloklari DOM\'a basilir (iki nusha)');
+  console.log('\n4) Onizleme ekranda acilir, iki nusha basilir');
   await page.goto(`${BASE}/#/handoverDetail/${handover.id}`);
   await page.waitForTimeout(1500);
   await page.click('button:has-text("Yazdır")');
-  await page.waitForTimeout(600);
+  await page.waitForTimeout(900);
+
+  // Yazdirma penceresi acilamayan ortamlarda (korumali cerceve) da belge
+  // en azindan ekranda gorunmeli: onizleme katmani bunun icin var.
+  check('Onizleme ekranda acildi', await page.$eval('#printRoot', (n) => n.classList.contains('open')));
+  check('Onizleme arac cubugu var', !!(await page.$('.slip-toolbar')));
+  const visible = await page.$$eval('#printRoot .slip', (ns) => ns.map((n) => n.offsetHeight));
+  check('Nushalar ekranda gorunur boyutta', visible.length === 2 && visible.every((h) => h > 200), visible.join(','));
+  check('Engel uyarisi gosterilmedi', await page.$eval('.slip-note', (n) => n.hidden));
+
   const slips = await page.$$eval('#printRoot .slip', (ns) => ns.map((n) => n.textContent));
   check('Iki nusha basildi', slips.length === 2, `nusha=${slips.length}`);
   check('Kantin nushasi var', slips[0]?.includes('KANTİN NÜSHASI'));
@@ -139,6 +154,25 @@ try {
   check('Imza satirlari var', (slips[0]?.match(/İmza/g) || []).length === 2);
   check('Tutar yaziyla basildi', /TL/.test(slips[0] || '') && /Yazıyla/.test(slips[0] || ''));
   check('Dogrulama kodu kagitta', slips[0]?.includes(handover.verification_code));
+
+  // Yazdirmada kagida yalnizca fis cikmali
+  await page.emulateMedia({ media: 'print' });
+  await page.waitForTimeout(300);
+  const printView = await page.evaluate(() => ({
+    app: getComputedStyle(document.getElementById('app')).display,
+    toolbar: getComputedStyle(document.querySelector('.slip-toolbar')).display,
+    slip: getComputedStyle(document.querySelector('#printRoot .slip')).display,
+  }));
+  check('Yazdirmada uygulama gizleniyor', printView.app === 'none', JSON.stringify(printView));
+  check('Yazdirmada arac cubugu gizleniyor', printView.toolbar === 'none', JSON.stringify(printView));
+  check('Yazdirmada fis gorunuyor', printView.slip === 'block', JSON.stringify(printView));
+  await page.emulateMedia({ media: 'screen' });
+
+  // Baska sayfaya gecince onizleme ustte asili kalmamali
+  await page.evaluate(() => { location.hash = '#/handovers'; });
+  await page.waitForTimeout(900);
+  check('Sayfa degisince onizleme kapaniyor',
+    !(await page.$eval('#printRoot', (n) => n.classList.contains('open'))));
 
   console.log('\n5) Gorevli fise dahil ciroyu degistiremez');
   await login(STAFF);
