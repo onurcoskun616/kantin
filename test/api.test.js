@@ -37,6 +37,19 @@ async function ok(method, pathname, body) {
   return r.data;
 }
 
+/**
+ * Sunucu yalnizca zorunlu kayitlari olusturur (yonetici, kampusler,
+ * kategoriler); ornek tedarikci katalogu artik gelmiyor. Testler bu yuzden
+ * ihtiyac duyduklari tedarikciyi kendileri olusturur.
+ */
+async function ensureSupplier() {
+  const list = await ok('GET', '/api/suppliers');
+  if (list.items.length) return list.items[0].id;
+  return (await ok('POST', '/api/suppliers', {
+    name: 'Test Tedarikçi A.Ş.', taxNo: '1111111111', taxOffice: 'Test',
+  })).id;
+}
+
 before(async () => {
   child = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
     env: {
@@ -104,7 +117,7 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
 
   test('kampus, urun ve tedarikci hazirlanir', async () => {
     campusId = (await ok('GET', '/api/campuses')).items[0].id;
-    supplierId = (await ok('GET', '/api/suppliers')).items[0].id;
+    supplierId = await ensureSupplier();
     const product = await ok('POST', '/api/products', {
       name: 'Test Ürünü', barcode: 'TEST-0001', purchasePrice: 10, salePrice: 22, vatRate: 10, criticalStock: 5,
     });
@@ -317,7 +330,7 @@ describe('Nokta sayimi', () => {
     campusId = (await ok('POST', '/api/campuses', {
       code: 'NKT', name: 'Nokta Sayim Test Kampüsü', studentCount: 50,
     })).id;
-    const supplierId = (await ok('GET', '/api/suppliers')).items[0].id;
+    const supplierId = await ensureSupplier();
     productId = (await ok('POST', '/api/products', {
       name: 'Nokta Test Ürünü', barcode: 'SPOT-0001', purchasePrice: 5, salePrice: 11, vatRate: 10,
     })).id;
@@ -411,7 +424,7 @@ describe('Tedarikciye iade', () => {
     campusId = (await ok('POST', '/api/campuses', {
       code: 'IAD', name: 'Iade Test Kampüsü', studentCount: 50,
     })).id;
-    supplierId = (await ok('GET', '/api/suppliers')).items[0].id;
+    supplierId = await ensureSupplier();
     productId = (await ok('POST', '/api/products', {
       name: 'Iade Test Ürünü', barcode: 'RET-0001', purchasePrice: 20, salePrice: 33, vatRate: 10,
     })).id;
@@ -485,7 +498,10 @@ describe('Tedarikciye iade', () => {
   });
 
   test('baska tedarikcinin alim belgesine iade girilemez', async () => {
-    const otherSupplier = (await ok('GET', '/api/suppliers')).items[1].id;
+    // Belgenin tedarikcisinden FARKLI bir tedarikci gerekiyor
+    const otherSupplier = (await ok('POST', '/api/suppliers', {
+      name: 'Iade Capraz Test Tedarikçisi', taxNo: '2222222222',
+    })).id;
     const r = await api('POST', '/api/returns', {
       campusId, supplierId: otherSupplier, purchaseId, returnDate: daysAgo(5), reason: 'BOZUK',
       lines: [{ productId, quantity: 1, unitPrice: 20 }],
@@ -680,7 +696,7 @@ describe('Recete (BOM)', () => {
 
   test('recete kontrolu aciklanamayan tuketimi ortaya cikarir', async () => {
     // Yeni donem: 100 dilim ekmek daha alalim
-    const supplierId = (await ok('GET', '/api/suppliers')).items[0].id;
+    const supplierId = await ensureSupplier();
     await ok('POST', '/api/purchases', {
       campusId, supplierId, documentNo: 'RCT-IRS-1', documentDate: iso(new Date()),
       lines: [{ productId: breadId, quantity: 100, unitPrice: 1, vatRate: 1 }],
@@ -1036,7 +1052,7 @@ describe('Fatura ekleri', () => {
     campusId = (await ok('POST', '/api/campuses', {
       code: 'EKT', name: 'Ek Belge Test Kampüsü', studentCount: 50,
     })).id;
-    supplierId = (await ok('GET', '/api/suppliers')).items[0].id;
+    supplierId = await ensureSupplier();
     productId = (await ok('POST', '/api/products', {
       name: 'Ek Test Ürünü', barcode: 'EK-0001', purchasePrice: 10, salePrice: 18, vatRate: 10,
     })).id;

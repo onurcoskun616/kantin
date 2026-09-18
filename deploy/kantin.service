@@ -11,6 +11,11 @@ Documentation=https://github.com/onurcoskun616/kantin
 After=network-online.target
 Wants=network-online.target
 
+# Surekli cokerse sonsuz donguye girmesin (systemd 230+ bu anahtarlari
+# [Unit] bolumunde bekler; [Service] icinde yazilirsa sessizce yok sayilir)
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=kantin
@@ -22,8 +27,6 @@ Environment=NODE_ENV=production
 
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # Gunlukler journald'a yazilir: journalctl -u kantin -f
 StandardOutput=journal
@@ -35,7 +38,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/kantin/data /opt/kantin/backups
+# Bastaki '-' dizin henuz yoksa servisin baslamamasini onler.
+# (data/ekler fatura dosyalari icin; data'nin altinda oldugundan kapsanir)
+ReadWritePaths=-/opt/kantin/data
+ReadWritePaths=-/opt/kantin/backups
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

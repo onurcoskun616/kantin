@@ -21,7 +21,11 @@ import { reportRoutes } from './routes/reports.js';
 import { userRoutes, auditRoutes } from './routes/users.js';
 
 migrate();
-ensureSeedData();
+// Sunucu yalnizca ZORUNLU kayitlari olusturur: yonetici, kampusler, kategoriler.
+// Ornek urun/tedarikci katalogu buraya DAHIL DEGILDIR — aksi halde `--bos` ile
+// kurulan bir uretim veritabanina ilk aciliste ornek veri dolardi.
+// Ornekler yalnizca acik istekle gelir: `npm run seed` / `npm run seed -- --demo`.
+ensureSeedData({ withExamples: false });
 purgeExpiredSessions();
 
 const router = new Router();

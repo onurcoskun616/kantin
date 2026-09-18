@@ -40,6 +40,51 @@ export const config = {
   isProduction: process.env.NODE_ENV === 'production',
 };
 
-if (config.isProduction && config.sessionSecret.startsWith('gelistirme')) {
-  console.warn('[UYARI] SESSION_SECRET ayarlanmamis. Production icin .env dosyasinda mutlaka tanimlayin.');
+/**
+ * Ayarlarin bariz bozuk olmadigini kurulusta kontrol eder.
+ *
+ * En sik kurulum hatasi satir ici yorum: `.env` icinde
+ *   HOST=127.0.0.1   # nginx arkasinda
+ * yazildiginda hem systemd hem de bizim okuyucumuz '#' sonrasini degerin
+ * parcasi sayar; sunucu "getaddrinfo ENOTFOUND" ile baslamaz ve sebebi
+ * gunlukte anlasilmaz. Burada acikca soyluyoruz.
+ */
+function validateConfig() {
+  const problems = [];
+  const commented = (name, value) => (/\s#/.test(String(value))
+    ? `${name} degerinde satir ici yorum var: "${value}". `
+      + '.env dosyasinda aciklamayi kendi satirina alin (# ile baslayan ayri bir satir).'
+    : null);
+
+  for (const [name, value] of [
+    ['HOST', process.env.HOST], ['PORT', process.env.PORT],
+    ['DB_PATH', process.env.DB_PATH], ['ATTACHMENTS_DIR', process.env.ATTACHMENTS_DIR],
+    ['SESSION_TTL_HOURS', process.env.SESSION_TTL_HOURS],
+  ]) {
+    if (value === undefined) continue;
+    const msg = commented(name, value);
+    if (msg) problems.push(msg);
+  }
+
+  if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535) {
+    problems.push(`PORT gecerli bir port numarasi degil: "${process.env.PORT}"`);
+  }
+  if (/\s/.test(config.host)) {
+    problems.push(`HOST bosluk iceriyor: "${config.host}". Sunucuda 127.0.0.1 olmalidir.`);
+  }
+  if (!Number.isFinite(config.sessionTtlHours) || config.sessionTtlHours <= 0) {
+    problems.push(`SESSION_TTL_HOURS pozitif bir sayi olmali: "${process.env.SESSION_TTL_HOURS}"`);
+  }
+
+  if (problems.length) {
+    console.error('\n[AYAR HATASI] .env dosyasi duzeltilmeden sunucu baslatilamaz:\n');
+    for (const p of problems) console.error(`  - ${p}`);
+    console.error('\nOrnek icin .env.example dosyasina bakin.\n');
+    process.exit(1);
+  }
+
+  if (config.isProduction && config.sessionSecret.startsWith('gelistirme')) {
+    console.warn('[UYARI] SESSION_SECRET ayarlanmamis. Production icin .env dosyasinda mutlaka tanimlayin.');
+  }
 }
+validateConfig();

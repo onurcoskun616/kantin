@@ -101,10 +101,7 @@ export function ensureSeedData({ withExamples = true } = {}) {
     CATEGORIES.forEach((name, i) => insert('INSERT INTO categories (name, sort_order) VALUES (?, ?)', [name, i]));
   }
 
-  if (!withExamples) {
-    console.log('[KURULUM] Ornek urun ve tedarikci listesi atlandi (--bos).');
-    return;
-  }
+  if (!withExamples) return;
 
   if (get('SELECT COUNT(*) AS c FROM products').c === 0) {
     const catMap = new Map(all('SELECT id, name FROM categories').map((c) => [c.name, c.id]));
@@ -247,7 +244,9 @@ if (process.argv[1] && process.argv[1].endsWith('seed.js')) {
     db.exec('PRAGMA foreign_keys = ON');
     console.log('[RESET] Tum veriler silindi.');
   }
-  ensureSeedData({ withExamples: !process.argv.includes('--bos') });
+  const withExamples = !process.argv.includes('--bos');
+  ensureSeedData({ withExamples });
+  if (!withExamples) console.log('[KURULUM] Ornek urun ve tedarikci listesi atlandi (--bos).');
   if (process.argv.includes('--demo')) generateDemo();
   console.log('Tamamlandi.');
 }

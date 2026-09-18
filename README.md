@@ -147,6 +147,11 @@ npm run seed -- --bos       # örnek ürün/tedarikçi listesi OLMADAN kurar
 `--bos` yalnızca 5 kampüsü (İkitelli OSB, İstanbul OSB, Esenyurt, Kıraç, Çorlu),
 kategorileri ve yönetici hesabını oluşturur. Ürünleri Excel şablonuyla yüklersiniz.
 
+> Örnek ürün/tedarikçi listesi **yalnızca `npm run seed` açıkça çalıştırıldığında**
+> eklenir. Sunucu açılışta kendiliğinden yalnızca zorunlu kayıtları (yönetici,
+> kampüsler, kategoriler) oluşturur — böylece `--bos` ile kurulan bir üretim
+> veritabanına ilk açılışta örnek veri dolmaz.
+
 ### Docker ile
 
 ```bash
@@ -264,7 +269,8 @@ test/
   ui/               Tarayıcı regresyon testi
 deploy/             systemd, nginx ve cron dosyaları
 scripts/
-  yedekle.sh        Veritabanı yedekleme
+  yedekle.sh        Veritabanı + fatura ekleri yedekleme
+  kontrol.sh        Kurulum sonrası sağlık kontrolü
   sablon-olustur.py Excel şablonu üretici
 docs/
   DENETIM-KONTROLLERI.md  Kör sayım, iki imza, üretilen ürün, nokta sayımı, ciro teslim fişi
