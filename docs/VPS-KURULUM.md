@@ -140,15 +140,16 @@ Günlükler: `sudo journalctl -u kantin -f`
 
 ## 7. nginx ve alan adı
 
-DNS'te `kantin.topkapiokullari.com` gibi bir A kaydını sunucunun IP adresine
+DNS'te `kantin.topkapikoleji.org` gibi bir A kaydını sunucunun IP adresine
 yönlendirin, sonra:
 
 ```bash
 sudo cp /opt/kantin/deploy/nginx-ratelimit.conf /etc/nginx/conf.d/
 sudo cp /opt/kantin/deploy/nginx-kantin.conf /etc/nginx/sites-available/kantin
 
-# Dosyadaki server_name satırlarını kendi alan adınızla değiştirin
-sudo nano /etc/nginx/sites-available/kantin
+# Dosyada alan adı kantin.topkapikoleji.org olarak hazır gelir.
+# Başka bir adres kullanacaksanız server_name satırlarını değiştirin:
+# sudo nano /etc/nginx/sites-available/kantin
 
 sudo ln -s /etc/nginx/sites-available/kantin /etc/nginx/sites-enabled/
 sudo rm -f /etc/nginx/sites-enabled/default
@@ -159,7 +160,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ```bash
 sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d kantin.topkapiokullari.com
+sudo certbot --nginx -d kantin.topkapikoleji.org
 ```
 
 certbot sertifikayı kurar, nginx yapılandırmasını günceller ve yenilemeyi
