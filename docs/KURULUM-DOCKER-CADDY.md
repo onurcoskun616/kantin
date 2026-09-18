@@ -47,8 +47,23 @@ Betik: kodu indirir, `.env`'i güvenli biçimde üretir (oturum anahtarını
 kendisi rastgele oluşturur), konteyneri kurar, sağlık kontrolü yapar ve
 sonunda **Caddy'ye eklenecek bloğu ekrana yazar**.
 
-**Caddyfile'ı bilerek değiştirmez** — hatalı bir reload mevcut sitelerinizi de
-düşürebileceği için o adımı size bırakır (6. bölüm).
+**Caddyfile'ı kendisi değiştirmez.** Son adım için ayrı bir betik var:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/onurcoskun616/kantin/main/deploy/caddy-ekle.sh -o /tmp/caddy-ekle.sh
+sudo bash /tmp/caddy-ekle.sh
+```
+
+Bu betik geri alınabilir bir işlem yapar: tarihli yedek alır → bloğu ekler →
+`caddy validate` çalıştırır → **başarısızsa yedekten geri döner** → `reload`
+eder → **o da başarısızsa eski yapılandırmayı geri yükler** → sertifika
+alınana kadar adresi yoklar.
+
+Sonradan kaldırmak isterseniz:
+
+```bash
+sudo bash /tmp/caddy-ekle.sh --kaldir
+```
 
 Betik tekrar tekrar çalıştırılabilir; var olan `.env` dosyasının **üzerine
 asla yazmaz**.
