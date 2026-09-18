@@ -21,6 +21,42 @@ Diğer uygulamalara dokunulmaz.
 
 ---
 
+## Hızlı yol: tek komutla kurulum
+
+Aşağıdaki adımları tek tek uygulamak yerine hazır betiği çalıştırabilirsiniz.
+SSH terminalleri çok satırlı yapıştırmayı bozabildiği için **önerilen yol
+budur**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/onurcoskun616/kantin/main/deploy/kur.sh -o /tmp/kur.sh
+```
+
+Çalıştırmadan önce içeriğine bakmak isterseniz: `less /tmp/kur.sh`
+
+```bash
+sudo bash /tmp/kur.sh
+```
+
+Kendi yönetici bilgilerinizi vermek isterseniz:
+
+```bash
+sudo ADMIN_EMAIL=mudur@topkapikoleji.org ADMIN_PASSWORD='SizinParolaniz' bash /tmp/kur.sh
+```
+
+Betik: kodu indirir, `.env`'i güvenli biçimde üretir (oturum anahtarını
+kendisi rastgele oluşturur), konteyneri kurar, sağlık kontrolü yapar ve
+sonunda **Caddy'ye eklenecek bloğu ekrana yazar**.
+
+**Caddyfile'ı bilerek değiştirmez** — hatalı bir reload mevcut sitelerinizi de
+düşürebileceği için o adımı size bırakır (6. bölüm).
+
+Betik tekrar tekrar çalıştırılabilir; var olan `.env` dosyasının **üzerine
+asla yazmaz**.
+
+---
+
+## Adım adım (elle)
+
 ## 1. Caddy'nin ağını öğrenin
 
 Kantin konteyneri, Caddy'nin onu adıyla bulabilmesi için **aynı Docker
