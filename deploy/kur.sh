@@ -143,11 +143,43 @@ else
    En sik sebep: .env icinde satir ici yorum."
 fi
 
-bilgi "6/6  Son adim — Caddy kurali (ELLE)"
+bilgi "6/7  Otomatik yedekleme"
+# Fatura dosyalari veritabaninin ICINDE DEGIL: yedek betigi ikisini de alir.
+CRON=/etc/cron.d/kantin-yedek
+if [ -f "$CRON" ]; then
+  ok "Yedekleme cron kaydi zaten var: $CRON"
+else
+  cat > "$CRON" <<CRONEOF
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+MAILTO=""
+0 2 * * * root docker exec $KONTEYNER /app/scripts/yedekle.sh >> /var/log/kantin-yedek.log 2>&1
+CRONEOF
+  chmod 644 "$CRON"
+  ok "Her gece 02:00'de yedek alinacak: $CRON"
+fi
+
+# Ilk yedegi hemen al ki calistigini simdi gorelim
+if docker exec "$KONTEYNER" /app/scripts/yedekle.sh >/dev/null 2>&1; then
+  ADET="$(ls -1 "$DIZIN/backups" 2>/dev/null | wc -l)"
+  ok "Ilk yedek alindi ($DIZIN/backups, $ADET dosya)"
+  uyari "Yedekleri sunucu DISINA da kopyalayin; sunucu cokerse buradaki de gider"
+else
+  uyari "Yedek alinamadi. Elle deneyin: docker exec $KONTEYNER /app/scripts/yedekle.sh"
+fi
+
+bilgi "7/7  Son adim — Caddy kurali (ELLE)"
 cat <<EOF
   Kantin calisiyor ama disaridan erisim icin Caddy'ye tek blok eklemek
   gerekiyor. Bunu BILEREK otomatik yapmiyoruz: hatali bir reload mevcut
   sitelerinizi de dusurebilir.
+
+  KOLAY YOL — bunu yapan betik hazir (yedek alir, dogrular, sorun cikarsa
+  geri doner):
+     curl -fsSL https://raw.githubusercontent.com/onurcoskun616/kantin/main/deploy/caddy-ekle.sh -o /tmp/caddy-ekle.sh
+     sudo bash /tmp/caddy-ekle.sh
+
+  ELLE YAPMAK ISTERSENIZ:
 
   1) Yedek alin:
      cp /root/topkapi-qr/deploy/Caddyfile /root/topkapi-qr/deploy/Caddyfile.yedek
