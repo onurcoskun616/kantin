@@ -124,17 +124,29 @@ sudo nano /root/topkapi-qr/deploy/Caddyfile
 ```
 
 ```caddyfile
+# Kantin Yonetim Sistemi (Node app, topkapi-qr_default aginda; container: topkapi-kantin:3000)
 kantin.topkapikoleji.org {
-    reverse_proxy topkapi-kantin:3000
-
-    # Fatura ekleri 10 MB'a kadar olabilir
+    import security_headers
+    encode gzip
     request_body {
         max_size 12MB
     }
-
-    encode gzip
+    reverse_proxy topkapi-kantin:3000
 }
 ```
+
+Bu blok mevcut dosyanın üslubunu birebir izler:
+
+- **`import security_headers`** — dosyanın başındaki ortak parçacık (HSTS,
+  nosniff, X-Frame-Options, Referrer-Policy, `-Server`). Diğer tüm siteler
+  bunu kullanıyor, kantin de kullansın.
+- **`encode gzip`** — diğer bloklarla aynı.
+- **`request_body max_size 12MB`** — fatura eki 10 MB'a kadar olabiliyor.
+  Caddy'de gövde boyutu varsayılan olarak sınırsızdır; bu satır yüklemeyi
+  mümkün kılmaz, aşırı büyük isteği **sınırlar**. İstemezseniz çıkarabilirsiniz.
+- Alan adı **düz yazılır** — `okul.topkapiokullari.com` bloğundaki gibi.
+  Diğerleri `{$API_DOMAIN}` gibi ortam değişkeni kullanıyor çünkü onlar
+  `.env.prod` üzerinden geliyor; kantin o yığının parçası değil.
 
 > Bilerek `log` yönergesi koymuyoruz: konteynerde olmayan bir dizine yazmak
 > istenirse **reload hata verir ve mevcut siteler de yüklenmez.** Caddy
