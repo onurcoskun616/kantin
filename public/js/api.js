@@ -30,13 +30,18 @@ async function request(method, path, body) {
 
   const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
 
-  if (res.status === 401) {
+  const data = await res.json().catch(() => ({}));
+
+  // Giris denemesindeki 401 "oturum doldu" DEGILDIR: sunucunun gercek
+  // mesajini ("E-posta veya parola hatali.") oldugu gibi gostermeliyiz.
+  // Aksi halde yanlis parola giren kullanici sebebi anlamaz.
+  const girisDenemesi = path.startsWith('/api/auth/login');
+  if (res.status === 401 && !girisDenemesi) {
     auth.token = null;
     auth.user = null;
     window.dispatchEvent(new CustomEvent('auth:expired'));
-    throw new ApiError(401, 'Oturum süresi doldu. Lütfen tekrar giriş yapın.');
+    throw new ApiError(401, data.error || 'Oturum süresi doldu. Lütfen tekrar giriş yapın.');
   }
-  const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(res.status, data.error || `Beklenmeyen hata (${res.status})`, data.details);
   return data;
 }

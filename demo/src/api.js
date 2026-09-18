@@ -41,7 +41,9 @@ function request(method, path, body) {
         resolve(dispatch(method, pathname, query, body));
       } catch (err) {
         if (err instanceof DemoError) {
-          if (err.status === 401) {
+          // Giris denemesindeki 401 "oturum doldu" degildir; sunucunun
+          // gercek mesaji korunur (gercek surumle ayni davranis).
+          if (err.status === 401 && !pathname.startsWith('/api/auth/login')) {
             auth.token = null;
             auth.user = null;
             window.dispatchEvent(new CustomEvent('auth:expired'));

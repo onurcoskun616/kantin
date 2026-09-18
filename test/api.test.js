@@ -1183,6 +1183,16 @@ describe('Fatura ekleri', () => {
 
 /* --------------------------- Denetim izi --------------------------- */
 describe('Denetim izi', () => {
+  test('basarisiz giris gercek sebebi doner', async () => {
+    // Istemci her 401'i "oturum doldu" sayarsa yanlis parola giren kullanici
+    // sebebi anlamaz. Sunucunun mesaji net olmali.
+    const r = await api('POST', '/api/auth/login',
+      { email: ADMIN.email, password: 'kesinlikle-yanlis' }, false);
+    assert.equal(r.status, 401);
+    assert.match(r.data.error, /parola hatali/i);
+    assert.doesNotMatch(r.data.error, /oturum/i);
+  });
+
   test('islemler kayit altina alinir', async () => {
     const data = await ok('GET', '/api/audit?limit=100');
     const actions = data.items.map((i) => i.action);
