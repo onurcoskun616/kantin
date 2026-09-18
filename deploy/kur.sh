@@ -66,6 +66,9 @@ cp "$DIZIN/kaynak/deploy/compose-kantin.yml" "$DIZIN/docker-compose.yml"
 # Ag adi betige verilenle ayni olsun
 sed -i "s|^    name: .*|    name: $AG|" "$DIZIN/docker-compose.yml"
 mkdir -p "$DIZIN/backups"
+# Konteyner 'node' kullanicisi (uid 1000) olarak calisiyor. Bind-mount edilen
+# backups dizini host'ta root'a aitse konteyner icine YAZAMAZ ve yedek alinamaz.
+chown -R 1000:1000 "$DIZIN/backups" 2>/dev/null || true
 ok "docker-compose.yml hazir (ag: $AG)"
 
 bilgi "3/6  Ayarlar (.env)"
@@ -159,13 +162,17 @@ CRONEOF
   ok "Her gece 02:00'de yedek alinacak: $CRON"
 fi
 
-# Ilk yedegi hemen al ki calistigini simdi gorelim
-if docker exec "$KONTEYNER" /app/scripts/yedekle.sh >/dev/null 2>&1; then
+# Ilk yedegi hemen al ki calistigini SIMDI gorelim; yedeksiz uretim olmaz.
+if YEDEK_CIKTI="$(docker exec "$KONTEYNER" /app/scripts/yedekle.sh 2>&1)"; then
   ADET="$(ls -1 "$DIZIN/backups" 2>/dev/null | wc -l)"
   ok "Ilk yedek alindi ($DIZIN/backups, $ADET dosya)"
+  printf '%s\n' "$YEDEK_CIKTI" | sed 's/^/     /'
   uyari "Yedekleri sunucu DISINA da kopyalayin; sunucu cokerse buradaki de gider"
 else
-  uyari "Yedek alinamadi. Elle deneyin: docker exec $KONTEYNER /app/scripts/yedekle.sh"
+  uyari "Yedek alinamadi. Hata:"
+  printf '%s\n' "$YEDEK_CIKTI" | tail -10 | sed 's/^/     /'
+  printf '     Dizin izinleri: %s\n' "$(ls -ld "$DIZIN/backups" 2>/dev/null)"
+  printf '     Cozum denemesi: chown -R 1000:1000 %s\n' "$DIZIN/backups"
 fi
 
 bilgi "7/7  Son adim — Caddy kurali (ELLE)"
