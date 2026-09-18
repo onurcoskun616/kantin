@@ -38,7 +38,7 @@ Uygulamayı `root` ile çalıştırmayın; kendi kullanıcısı olsun.
 
 ```bash
 sudo useradd --system --home /opt/kantin --shell /usr/sbin/nologin kantin
-sudo git clone https://github.com/onurcoskun616/kantin.git /opt/kantin
+sudo git clone -b main https://github.com/onurcoskun616/kantin.git /opt/kantin
 sudo chown -R kantin:kantin /opt/kantin
 ```
 
@@ -58,7 +58,9 @@ sudo chown -R kantin:kantin /opt/kantin
 > (yazma izni gerekmez), sonra SSH adresiyle klonlayın:
 > `git clone git@github.com:onurcoskun616/kantin.git /opt/kantin`
 >
-> Belirli bir dalı kurmak isterseniz: `git clone -b <dal-adı> ...`
+> Sunucu **`main`** dalını takip eder. Geliştirme ayrı dallarda yapılır ve
+> hazır olduğunda `main`'e alınır; böylece yarım kalmış bir iş üretime
+> yansımaz.
 
 ## 4. Ayar dosyasını oluşturun
 
@@ -218,7 +220,7 @@ yüklemelerden sonra da çalıştırın.
 ```bash
 cd /opt/kantin
 sudo -u kantin /opt/kantin/scripts/yedekle.sh     # önce yedek
-sudo -u kantin git pull
+sudo -u kantin git pull origin main
 sudo systemctl restart kantin
 sudo /opt/kantin/scripts/kontrol.sh               # her şey yolunda mı?
 ```
