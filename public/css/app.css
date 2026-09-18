@@ -188,6 +188,9 @@ html[data-theme="dark"] .nav-item.active { color: #93c5fd; }
 .grid { display: grid; gap: 14px; }
 /* Grid ogeleri varsayilan min-width:auto ile genis tablolari tasirir;
    bu kural yatay kaydirmanin .table-wrap icinde kalmasini saglar. */
+/* Fatura satirinda urun secilmemis: kaydetmeden once doldurulmali */
+select.needs-pick { border-color: var(--danger); background: var(--danger-soft); }
+
 /* Sayfa kabi: grid'i bozmamasi icin kendi kutusunu olusturmaz */
 .page-host { display: contents; }
 .grid > *, .content > *, .page-host > *, .modal-body > * { min-width: 0; }

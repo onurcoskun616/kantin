@@ -1,7 +1,8 @@
 import { Router } from '../lib/router.js';
 import { all, get, insert, run, tx } from '../db.js';
 import { notFound, badRequest, conflict } from '../lib/http.js';
-import { requireWrite, assertCampusAccess, campusFilter } from '../lib/auth.js';
+import { requireWrite, requireRole, assertCampusAccess, campusFilter } from '../lib/auth.js';
+import { readRawBody, storeFile, readFile, deleteFile, MAX_ATTACHMENT_BYTES } from '../lib/uploads.js';
 import { logAudit } from '../lib/audit.js';
 import { str, num, int, date, arr, today } from '../lib/validate.js';
 import { purchaseLineTotals, round2 } from '../lib/money.js';
@@ -19,7 +20,8 @@ purchaseRoutes.get('/', async (ctx) => {
 
   const items = all(
     `SELECT p.*, s.name AS supplier_name, k.name AS campus_name, u.full_name AS created_by_name,
-            (SELECT COUNT(*) FROM purchase_lines l WHERE l.purchase_id = p.id) AS line_count
+            (SELECT COUNT(*) FROM purchase_lines l WHERE l.purchase_id = p.id) AS line_count,
+            (SELECT COUNT(*) FROM purchase_attachments a WHERE a.purchase_id = p.id) AS attachment_count
        FROM purchases p
        JOIN suppliers s ON s.id = p.supplier_id
        JOIN campuses  k ON k.id = p.campus_id
@@ -44,7 +46,7 @@ purchaseRoutes.get('/:id', async (ctx) => {
     `SELECT l.*, pr.name AS product_name, pr.barcode, pr.unit FROM purchase_lines l
        JOIN products pr ON pr.id = l.product_id WHERE l.purchase_id = ? ORDER BY l.id`, [id]
   );
-  return { ...header, lines };
+  return { ...header, lines, attachments: attachmentsOf(id) };
 });
 
 purchaseRoutes.post('/', async (ctx) => {
@@ -57,7 +59,19 @@ purchaseRoutes.post('/', async (ctx) => {
   const documentDate = date(ctx.body.documentDate, 'Belge tarihi', { def: today() });
   const dueDate = date(ctx.body.dueDate, 'Vade tarihi', { def: null });
   const note = str(ctx.body.note, 'Aciklama', { max: 500 });
+  // e-Fatura XML'inden aktarildiysa belgenin ETTN'si
+  const efaturaUuid = str(ctx.body.efaturaUuid, 'e-Fatura ETTN', { max: 60 });
   const lines = arr(ctx.body.lines, 'Satirlar', { required: true, min: 1 });
+
+  // Ayni e-Fatura ikinci kez aktarilmasin (kampus fark etmeksizin: ETTN tekildir)
+  if (efaturaUuid) {
+    const dupEf = get('SELECT id, document_no FROM purchases WHERE efatura_uuid = ?', [efaturaUuid]);
+    if (dupEf) {
+      throw conflict(
+        `Bu e-Fatura zaten sisteme aktarilmis (Belge #${dupEf.id}${dupEf.document_no ? ' / ' + dupEf.document_no : ''}).`
+      );
+    }
+  }
 
   // Ayni tedarikci + belge no ikilisi iki kez girilmesin (mukerrer irsaliye)
   if (documentNo) {
@@ -92,9 +106,10 @@ purchaseRoutes.post('/', async (ctx) => {
   const purchaseId = tx(() => {
     const pid = insert(
       `INSERT INTO purchases (campus_id, supplier_id, document_no, document_date, net_total, vat_total, gross_total,
-                              due_date, status, note, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ONAYLI', ?, ?)`,
-      [campusId, supplierId, documentNo, documentDate, netTotal, vatTotal, grossTotal, dueDate, note, ctx.user.id]
+                              due_date, status, note, efatura_uuid, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ONAYLI', ?, ?, ?)`,
+      [campusId, supplierId, documentNo, documentDate, netTotal, vatTotal, grossTotal, dueDate, note,
+       efaturaUuid || null, ctx.user.id]
     );
     for (const l of prepared) {
       insert(
@@ -126,7 +141,8 @@ purchaseRoutes.post('/', async (ctx) => {
 
   logAudit({
     user: ctx.user, action: 'CREATE', entity: 'purchases', entityId: purchaseId, campusId,
-    detail: { supplierId, documentNo, grossTotal, lineCount: prepared.length }, ip: ctx.ip,
+    detail: { supplierId, documentNo, grossTotal, lineCount: prepared.length, efaturaUuid: efaturaUuid || undefined },
+    ip: ctx.ip,
   });
 
   // Fiyat degisimi uyarilari
@@ -173,3 +189,111 @@ purchaseRoutes.post('/:id/cancel', async (ctx) => {
   logAudit({ user: ctx.user, action: 'CANCEL', entity: 'purchases', entityId: id, campusId: header.campus_id, ip: ctx.ip });
   return { ok: true };
 });
+
+/* ======================= ALIM BELGESI EKLERI ======================= */
+/**
+ * Faturanin kendisi (PDF / fotograf / e-Fatura XML) belgeye baglanir.
+ *
+ * Dosya JSON'a gomulmeden HAM olarak gonderilir (rawBody); boylece 10 MB'lik
+ * bir PDF base64'e cevrilip %33 sismez. Ad ve tur sorgu dizesinden gelir ama
+ * TUR ICERIKTEN DOGRULANIR — bkz. lib/uploads.js.
+ */
+purchaseRoutes.post('/:id/attachments', async (ctx) => {
+  requireWrite(ctx.user);
+  const header = purchaseFor(ctx, Number(ctx.params.id));
+  if (header.status === 'IPTAL') throw conflict('Iptal edilmis belgeye ek eklenemez.');
+
+  const buffer = await readRawBody(ctx.req, MAX_ATTACHMENT_BYTES);
+  const kind = ctx.query.kind === 'EFATURA_XML' ? 'EFATURA_XML' : 'BELGE';
+  const stored = storeFile(buffer, ctx.query.filename);
+
+  // Ayni dosya iki kez yuklenmisse tekrar saklamaya gerek yok
+  const same = get('SELECT id FROM purchase_attachments WHERE purchase_id = ? AND sha256 = ?',
+    [header.id, stored.sha256]);
+  if (same) {
+    deleteFile(stored.storedName);
+    throw conflict('Bu dosya bu belgeye zaten eklenmis.');
+  }
+
+  const id = insert(
+    `INSERT INTO purchase_attachments
+       (purchase_id, file_name, stored_name, content_type, byte_size, sha256, kind, uploaded_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [header.id, stored.fileName, stored.storedName, stored.contentType,
+     stored.byteSize, stored.sha256, kind, ctx.user.id]
+  );
+  logAudit({
+    user: ctx.user, action: 'ATTACH', entity: 'purchases', entityId: header.id, campusId: header.campus_id,
+    detail: { fileName: stored.fileName, byteSize: stored.byteSize, kind, sha256: stored.sha256 }, ip: ctx.ip,
+  });
+  return { items: attachmentsOf(header.id) };
+}, { rawBody: true });
+
+purchaseRoutes.get('/:id/attachments', async (ctx) => {
+  const header = purchaseFor(ctx, Number(ctx.params.id));
+  return { items: attachmentsOf(header.id) };
+});
+
+/** Dosyayi indirir. Kimlik dogrulamasi ve kampus kontrolu her istekte yapilir. */
+purchaseRoutes.get('/:id/attachments/:attachmentId', async (ctx) => {
+  const header = purchaseFor(ctx, Number(ctx.params.id));
+  const row = get('SELECT * FROM purchase_attachments WHERE id = ? AND purchase_id = ?',
+    [Number(ctx.params.attachmentId), header.id]);
+  if (!row) throw notFound('Ek belge bulunamadi.');
+
+  const data = readFile(row.stored_name);
+  if (!data) throw notFound('Dosya sunucuda bulunamadi. Yedekten geri yuklenmesi gerekebilir.');
+
+  ctx.res.writeHead(200, {
+    'Content-Type': row.content_type,
+    'Content-Length': data.length,
+    // Tarayici dosyayi calistirmasin, sadece gostersin/indirsin
+    'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(row.file_name)}`,
+    'Content-Security-Policy': "default-src 'none'; img-src 'self'; object-src 'none'; sandbox",
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'private, max-age=300',
+  });
+  ctx.res.end(data);
+});
+
+/**
+ * Ek belge silme yalnizca genel mudurluk/admin yetkisindedir: fatura kaniti
+ * niteliginde oldugu icin kampustaki gorevli kaldiramaz. Silme denetim izine
+ * dosya ozetiyle birlikte yazilir.
+ */
+purchaseRoutes.delete('/:id/attachments/:attachmentId', async (ctx) => {
+  requireRole(ctx.user, 'ADMIN', 'GENEL_MUDURLUK');
+  const header = purchaseFor(ctx, Number(ctx.params.id));
+  const row = get('SELECT * FROM purchase_attachments WHERE id = ? AND purchase_id = ?',
+    [Number(ctx.params.attachmentId), header.id]);
+  if (!row) throw notFound('Ek belge bulunamadi.');
+
+  run('DELETE FROM purchase_attachments WHERE id = ?', [row.id]);
+  deleteFile(row.stored_name);
+  logAudit({
+    user: ctx.user, action: 'ATTACHMENT_DELETE', entity: 'purchases', entityId: header.id,
+    campusId: header.campus_id,
+    detail: { fileName: row.file_name, sha256: row.sha256, kind: row.kind }, ip: ctx.ip,
+  });
+  return { items: attachmentsOf(header.id) };
+});
+
+/* ----------------------------- yardimcilar ------------------------- */
+/** Belgeyi bulur ve kullanicinin o kampusu gorme yetkisini dogrular. */
+function purchaseFor(ctx, id) {
+  const header = get('SELECT * FROM purchases WHERE id = ?', [id]);
+  if (!header) throw notFound('Alim belgesi bulunamadi.');
+  assertCampusAccess(ctx.user, header.campus_id);
+  return header;
+}
+
+function attachmentsOf(purchaseId) {
+  return all(
+    `SELECT a.id, a.file_name, a.content_type, a.byte_size, a.sha256, a.kind, a.created_at,
+            u.full_name AS uploaded_by_name
+       FROM purchase_attachments a
+       LEFT JOIN users u ON u.id = a.uploaded_by
+      WHERE a.purchase_id = ? ORDER BY a.id`,
+    [purchaseId]
+  );
+}

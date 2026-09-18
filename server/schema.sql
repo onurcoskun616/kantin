@@ -218,11 +218,34 @@ CREATE TABLE IF NOT EXISTS purchases (
   due_date      TEXT,
   status        TEXT    NOT NULL DEFAULT 'ONAYLI' CHECK (status IN ('TASLAK','ONAYLI','IPTAL')),
   note          TEXT,
+  -- e-Fatura XML'inden aktarildiysa belgenin ETTN'si. Ayni faturanin ikinci
+  -- kez girilmesini engeller (asagidaki tekil dizin).
+  efatura_uuid  TEXT,
   created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_purchases_efatura
+  ON purchases(efatura_uuid) WHERE efatura_uuid IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_purchases_campus_date ON purchases(campus_id, document_date);
 CREATE INDEX IF NOT EXISTS idx_purchases_supplier ON purchases(supplier_id);
+
+-- ALIM BELGESI EKLERI
+-- Faturanin kendisi (PDF/foto/XML) belgeye baglanir: denetimde "bu rakam
+-- nereden geldi" sorusunun karsiligi tek tikla acilir. Dosyalar diskte
+-- (data/ekler) tutulur; burada yalnizca kunyesi ve sha256 ozeti saklanir.
+CREATE TABLE IF NOT EXISTS purchase_attachments (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  purchase_id  INTEGER NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+  file_name    TEXT    NOT NULL,          -- kullanicinin gordugu ad
+  stored_name  TEXT    NOT NULL UNIQUE,   -- diskteki ad (sunucu uretir)
+  content_type TEXT    NOT NULL,
+  byte_size    INTEGER NOT NULL,
+  sha256       TEXT    NOT NULL,
+  kind         TEXT    NOT NULL DEFAULT 'BELGE' CHECK (kind IN ('BELGE','EFATURA_XML')),
+  uploaded_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_purchase ON purchase_attachments(purchase_id);
 
 CREATE TABLE IF NOT EXISTS purchase_lines (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,

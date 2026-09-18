@@ -56,8 +56,36 @@ function request(method, path, body) {
   });
 }
 
+/**
+ * Demoda dosya yukleme: dosya sunucuya gitmez, tarayici belleginde tutulur.
+ * Boylece ek belge akisi (fatura ekleme, acma) demoda da denenebilir; oturum
+ * kapaninca dosyalar gider.
+ */
+async function upload(path, file, params) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const { pathname, query } = splitPath(withQuery(path, { filename: file.name, ...params }));
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      try {
+        resolve(dispatch('POST', pathname, query, { __file: { bytes, name: file.name, type: file.type } }));
+      } catch (err) {
+        reject(new ApiError(err.status || 500, err.message));
+      }
+    }, 40);
+  });
+}
+
+/** Bellekte tutulan dosyayi Blob olarak geri verir. */
+async function fetchBlob(path) {
+  const { pathname, query } = splitPath(path);
+  const res = dispatch('GET', pathname, query, null);
+  return new Blob([res.bytes], { type: res.contentType });
+}
+
 export const api = {
   get: (path, params) => request('GET', withQuery(path, params)),
+  upload,
+  fetchBlob,
   post: (path, body) => request('POST', path, body ?? {}),
   put: (path, body) => request('PUT', path, body ?? {}),
   del: (path) => request('DELETE', path),

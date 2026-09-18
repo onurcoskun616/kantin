@@ -41,6 +41,7 @@ function upgradeExistingSchema() {
   addColumn('counts', 'submitted_at', 'TEXT');
   addColumn('count_lines', 'recipe_qty', 'REAL NOT NULL DEFAULT 0');
   addColumn('daily_revenues', 'handover_id', 'INTEGER');
+  addColumn('purchases', 'efatura_uuid', 'TEXT');
 
   // SQLite CHECK kisitlarini ALTER ile degistiremedigi icin ilgili tablolar
   // yeniden kurulur. Veri korunur; islem tek transaction icindedir.

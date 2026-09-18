@@ -11,8 +11,8 @@ import { buildDemoData, iso, dayOffset, eachDay, isWeekday, round2, demoCode } f
 import { productProfit, netFromGross, pctOf, purchaseLineTotals, round4, amountInWords } from './money.js';
 
 // Sürüm eki: demo veri şeması değiştiğinde eski kayıt kullanılmasın diye
-// artırılır (v4 = ciro teslim fişleri eklendi).
-const STORAGE_KEY = 'kantin_demo_db_v4';
+// artırılır (v5 = alım belgesi ekleri eklendi).
+const STORAGE_KEY = 'kantin_demo_db_v5';
 
 /* ---------------------------- Hata türü ---------------------------- */
 export class DemoError extends Error {
@@ -42,7 +42,11 @@ let persistTimer = null;
 function persist() {
   clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(db)); } catch { /* kota dolu olabilir */ }
+    try {
+      // Ek belgelerin icerigi (fatura PDF/XML baytlari) depoya yazilmaz:
+      // kotayi doldurur. Kunyesi kalir, icerik oturum boyunca bellektedir.
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(db, (key, value) => (key === 'bytes' ? undefined : value)));
+    } catch { /* kota dolu olabilir */ }
   }, 250);
 }
 
@@ -615,6 +619,7 @@ route('GET', '/api/purchases', ({ query }) => {
       campus_name: campusName(p.campus_id),
       created_by_name: userName(p.created_by),
       line_count: db.purchase_lines.filter((l) => l.purchase_id === p.id).length,
+      attachment_count: attachmentsFor(p.id).length,
     }));
   return { items };
 });
@@ -633,6 +638,7 @@ route('GET', '/api/purchases/:id', ({ params }) => {
     ...header, lines,
     supplier_name: byId(db.suppliers, header.supplier_id)?.name ?? '—',
     campus_name: campusName(header.campus_id),
+    attachments: attachmentsFor(header.id).map(publicAttachment),
   };
 });
 
@@ -650,6 +656,17 @@ route('POST', '/api/purchases', ({ body }) => {
     const dup = db.purchases.find((p) => p.supplier_id === supplierId && p.document_no === documentNo
       && p.campus_id === campusId && p.status !== 'IPTAL');
     if (dup) throw conflict(`Bu belge no (${documentNo}) bu tedarikçi için zaten kayıtlı. Belge #${dup.id}`);
+  }
+
+  // Aynı e-Fatura ikinci kez aktarılmasın (ETTN tekildir)
+  const efaturaUuid = text(body.efaturaUuid, 'e-Fatura ETTN');
+  if (efaturaUuid) {
+    const dupEf = db.purchases.find((p) => p.efatura_uuid === efaturaUuid);
+    if (dupEf) {
+      throw conflict(
+        `Bu e-Fatura zaten sisteme aktarilmis (Belge #${dupEf.id}${dupEf.document_no ? ' / ' + dupEf.document_no : ''}).`
+      );
+    }
   }
 
   const prepared = lines.map((raw, i) => {
@@ -674,7 +691,8 @@ route('POST', '/api/purchases', ({ body }) => {
     document_no: documentNo, document_date: documentDate,
     net_total: netTotal, vat_total: vatTotal, gross_total: round2(netTotal + vatTotal),
     paid_amount: 0, due_date: body.dueDate || null, status: 'ONAYLI',
-    note: text(body.note, 'Açıklama'), created_by: session.id, created_at: now(),
+    note: text(body.note, 'Açıklama'), efatura_uuid: efaturaUuid || null,
+    created_by: session.id, created_at: now(),
   };
   db.purchases.push(purchase);
 
@@ -702,6 +720,113 @@ route('POST', '/api/purchases', ({ body }) => {
   }
   logAudit('CREATE', 'purchases', purchase.id, campusId, { documentNo, grossTotal: purchase.gross_total });
   return { id: purchase.id, netTotal, vatTotal, grossTotal: purchase.gross_total, priceAlerts };
+});
+
+/* --------------------- Alım belgesi ekleri ------------------------- */
+/**
+ * Fatura dosyaları. Demoda dosya sunucuya gitmez: içeriği (bytes) bellekte
+ * tutulur, kaydedilen depoya yalnızca künyesi yazılır. Bu yüzden sayfa
+ * yenilenince önceden eklenen dosyaların içeriği kaybolur — künyesi kalır.
+ * Kurulu sürümde dosyalar okulun kendi sunucusunda `data/ekler` altındadır.
+ */
+const attachmentsFor = (purchaseId) => db.purchase_attachments.filter((a) => a.purchase_id === Number(purchaseId));
+
+/** Dosya baytlarını dışarı vermeden künyeyi döndürür. */
+const publicAttachment = (a) => ({
+  id: a.id, file_name: a.file_name, content_type: a.content_type, byte_size: a.byte_size,
+  sha256: a.sha256, kind: a.kind, created_at: a.created_at,
+  uploaded_by_name: userName(a.uploaded_by),
+});
+
+/** İçeriğe bakarak türü belirler — gerçek sunucudaki kontrolün aynısı. */
+function detectDemoType(bytes) {
+  const head = String.fromCharCode(...bytes.slice(0, 12));
+  if (head.startsWith('%PDF-')) return { type: 'application/pdf', ext: '.pdf' };
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return { type: 'image/jpeg', ext: '.jpg' };
+  if (bytes[0] === 0x89 && head.slice(1, 4) === 'PNG') return { type: 'image/png', ext: '.png' };
+  if (head.startsWith('RIFF') && head.slice(8, 12) === 'WEBP') return { type: 'image/webp', ext: '.webp' };
+  const text0 = new TextDecoder().decode(bytes.slice(0, 512)).replace(/^﻿/, '').trimStart();
+  if (text0.startsWith('<')) return { type: 'application/xml', ext: '.xml' };
+  throw bad('Yalnızca PDF, JPG, PNG, WEBP ve XML dosyaları yüklenebilir.');
+}
+
+/** Basit ama kararlı bir özet: aynı içerik aynı değeri verir. */
+function demoDigest(bytes) {
+  let h1 = 0x811c9dc5; let h2 = 0x01000193; let h3 = 0x9e3779b9; let h4 = 0x85ebca6b;
+  for (let i = 0; i < bytes.length; i += 1) {
+    h1 = Math.imul(h1 ^ bytes[i], 0x01000193) >>> 0;
+    h2 = Math.imul(h2 + bytes[i] * (i + 1), 0x85ebca6b) >>> 0;
+    h3 = Math.imul(h3 ^ (bytes[i] + i), 0xc2b2ae35) >>> 0;
+    h4 = (h4 + Math.imul(bytes[i] + 1, 0x27d4eb2f)) >>> 0;
+  }
+  const part = (n) => n.toString(16).padStart(8, '0');
+  return (part(h1) + part(h2) + part(h3) + part(h4)).repeat(2).slice(0, 64);
+}
+
+route('POST', '/api/purchases/:id/attachments', ({ params, query, body }) => {
+  requireWrite();
+  const header = byId(db.purchases, params.id);
+  if (!header) throw notFound('Alım belgesi bulunamadı.');
+  campusAccess(header.campus_id);
+  if (header.status === 'IPTAL') throw conflict('İptal edilmiş belgeye ek eklenemez.');
+
+  const file = body?.__file;
+  if (!file || !file.bytes?.length) throw bad('Boş dosya yüklenemez.');
+  if (file.bytes.length > 10 * 1024 * 1024) throw bad('Dosya çok büyük. En fazla 10 MB yüklenebilir.');
+
+  const sig = detectDemoType(file.bytes);
+  const sha256 = demoDigest(file.bytes);
+  if (attachmentsFor(header.id).some((a) => a.sha256 === sha256)) {
+    throw conflict('Bu dosya bu belgeye zaten eklenmiş.');
+  }
+
+  const row = {
+    id: nextId('attachment'), purchase_id: header.id,
+    file_name: String(query.filename || file.name || `belge${sig.ext}`).replace(/[\\/]/g, '_').slice(0, 120),
+    content_type: sig.type, byte_size: file.bytes.length, sha256,
+    kind: query.kind === 'EFATURA_XML' ? 'EFATURA_XML' : 'BELGE',
+    uploaded_by: session.id, created_at: now(),
+    bytes: file.bytes,   // yalnızca bellekte; persist sırasında atlanır
+  };
+  db.purchase_attachments.push(row);
+  logAudit('ATTACH', 'purchases', header.id, header.campus_id,
+    { fileName: row.file_name, byteSize: row.byte_size, kind: row.kind });
+  return { items: attachmentsFor(header.id).map(publicAttachment) };
+});
+
+route('GET', '/api/purchases/:id/attachments', ({ params }) => {
+  const header = byId(db.purchases, params.id);
+  if (!header) throw notFound('Alım belgesi bulunamadı.');
+  campusAccess(header.campus_id);
+  return { items: attachmentsFor(header.id).map(publicAttachment) };
+});
+
+route('GET', '/api/purchases/:id/attachments/:attachmentId', ({ params }) => {
+  const header = byId(db.purchases, params.id);
+  if (!header) throw notFound('Alım belgesi bulunamadı.');
+  campusAccess(header.campus_id);
+  const row = attachmentsFor(header.id).find((a) => a.id === Number(params.attachmentId));
+  if (!row) throw notFound('Ek belge bulunamadı.');
+  if (!row.bytes) {
+    throw new DemoError(404,
+      'Demoda dosya içerikleri yalnızca açık olduğunuz oturumda saklanır; sayfa yenilendiği için '
+      + 'bu dosyanın içeriği kayboldu. Kurulu sürümde dosya okulun sunucusunda kalıcı durur.');
+  }
+  return { bytes: row.bytes, contentType: row.content_type, fileName: row.file_name };
+});
+
+route('DELETE', '/api/purchases/:id/attachments/:attachmentId', ({ params }) => {
+  requireRole('ADMIN', 'GENEL_MUDURLUK');
+  const header = byId(db.purchases, params.id);
+  if (!header) throw notFound('Alım belgesi bulunamadı.');
+  campusAccess(header.campus_id);
+  const row = attachmentsFor(header.id).find((a) => a.id === Number(params.attachmentId));
+  if (!row) throw notFound('Ek belge bulunamadı.');
+
+  db.purchase_attachments = db.purchase_attachments.filter((a) => a.id !== row.id);
+  logAudit('ATTACHMENT_DELETE', 'purchases', header.id, header.campus_id,
+    { fileName: row.file_name, sha256: row.sha256, kind: row.kind });
+  return { items: attachmentsFor(header.id).map(publicAttachment) };
 });
 
 route('POST', '/api/purchases/:id/cancel', ({ params }) => {

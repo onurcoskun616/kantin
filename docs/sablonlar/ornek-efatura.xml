@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ÖRNEK e-FATURA (UBL-TR 1.2)
+
+  Bu dosya sistemin e-Fatura XML aktarımını denemek için hazırlanmıştır.
+  Gerçek bir fatura değildir; içindeki firma ve VKN bilgileri uydurmadır.
+
+  İçinde bilerek şunlar var:
+    - Farklı KDV oranları (%1 ve %10)
+    - Bir satırda %10 iskonto (UBL'de iskonto ayrı kalem olarak gelir)
+    - Barkodla eşleşen ürünler (StandardItemIdentification)
+    - Sistemde karşılığı olmayan bir ürün satırı ("Kağıt Havlu")
+-->
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+         xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+         xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+  <cbc:UBLVersionID>2.1</cbc:UBLVersionID>
+  <cbc:CustomizationID>TR1.2</cbc:CustomizationID>
+  <cbc:ProfileID>TICARIFATURA</cbc:ProfileID>
+  <cbc:ID>GIB2026000000123</cbc:ID>
+  <cbc:UUID>8f14e45f-ceea-4d29-9a1b-7c3d2e5a9b01</cbc:UUID>
+  <cbc:IssueDate>2026-09-15</cbc:IssueDate>
+  <cbc:InvoiceTypeCode>SATIS</cbc:InvoiceTypeCode>
+  <cbc:DocumentCurrencyCode>TRY</cbc:DocumentCurrencyCode>
+  <cbc:LineCountNumeric>3</cbc:LineCountNumeric>
+
+  <cac:PaymentMeans>
+    <cbc:PaymentMeansCode>1</cbc:PaymentMeansCode>
+    <cbc:PaymentDueDate>2026-10-15</cbc:PaymentDueDate>
+  </cac:PaymentMeans>
+
+  <cac:AccountingSupplierParty>
+    <cac:Party>
+      <cac:PartyIdentification>
+        <cbc:ID schemeID="VKN">1234567890</cbc:ID>
+      </cac:PartyIdentification>
+      <cac:PartyName>
+        <cbc:Name>Anadolu Gıda Dağıtım A.Ş.</cbc:Name>
+      </cac:PartyName>
+      <cac:PartyTaxScheme>
+        <cac:TaxScheme>
+          <cbc:Name>Beşiktaş</cbc:Name>
+        </cac:TaxScheme>
+      </cac:PartyTaxScheme>
+    </cac:Party>
+  </cac:AccountingSupplierParty>
+
+  <cac:AccountingCustomerParty>
+    <cac:Party>
+      <cac:PartyIdentification>
+        <cbc:ID schemeID="VKN">9876543210</cbc:ID>
+      </cac:PartyIdentification>
+      <cac:PartyName>
+        <cbc:Name>Topkapı Okulları</cbc:Name>
+      </cac:PartyName>
+    </cac:Party>
+  </cac:AccountingCustomerParty>
+
+  <cac:TaxTotal>
+    <cbc:TaxAmount currencyID="TRY">232.20</cbc:TaxAmount>
+  </cac:TaxTotal>
+
+  <cac:LegalMonetaryTotal>
+    <cbc:LineExtensionAmount currencyID="TRY">3240.00</cbc:LineExtensionAmount>
+    <cbc:TaxExclusiveAmount currencyID="TRY">3240.00</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount currencyID="TRY">3472.20</cbc:TaxInclusiveAmount>
+    <cbc:PayableAmount currencyID="TRY">3472.20</cbc:PayableAmount>
+  </cac:LegalMonetaryTotal>
+
+  <!-- 1) Ayran: 120 x 8,50 = 1.020,00 · KDV %1 -->
+  <cac:InvoiceLine>
+    <cbc:ID>1</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="C62">120</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="TRY">1020.00</cbc:LineExtensionAmount>
+    <cac:TaxTotal>
+      <cbc:TaxAmount currencyID="TRY">10.20</cbc:TaxAmount>
+      <cac:TaxSubtotal>
+        <cbc:TaxableAmount currencyID="TRY">1020.00</cbc:TaxableAmount>
+        <cbc:TaxAmount currencyID="TRY">10.20</cbc:TaxAmount>
+        <cbc:Percent>1</cbc:Percent>
+        <cac:TaxCategory>
+          <cac:TaxScheme>
+            <cbc:Name>KDV</cbc:Name>
+            <cbc:TaxTypeCode>0015</cbc:TaxTypeCode>
+          </cac:TaxScheme>
+        </cac:TaxCategory>
+      </cac:TaxSubtotal>
+    </cac:TaxTotal>
+    <cac:Item>
+      <cbc:Name>Ayran 200 ml</cbc:Name>
+      <cac:StandardItemIdentification>
+        <cbc:ID schemeID="GTIN">8690000000028</cbc:ID>
+      </cac:StandardItemIdentification>
+    </cac:Item>
+    <cac:Price>
+      <cbc:PriceAmount currencyID="TRY">8.50</cbc:PriceAmount>
+    </cac:Price>
+  </cac:InvoiceLine>
+
+  <!-- 2) Su: 200 x 4,00 = 800,00, %10 iskonto -> 720,00 · KDV %10 -->
+  <cac:InvoiceLine>
+    <cbc:ID>2</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="C62">200</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="TRY">720.00</cbc:LineExtensionAmount>
+    <cac:AllowanceCharge>
+      <cbc:ChargeIndicator>false</cbc:ChargeIndicator>
+      <cbc:MultiplierFactorNumeric>0.10</cbc:MultiplierFactorNumeric>
+      <cbc:Amount currencyID="TRY">80.00</cbc:Amount>
+      <cbc:BaseAmount currencyID="TRY">800.00</cbc:BaseAmount>
+    </cac:AllowanceCharge>
+    <cac:TaxTotal>
+      <cbc:TaxAmount currencyID="TRY">72.00</cbc:TaxAmount>
+      <cac:TaxSubtotal>
+        <cbc:TaxableAmount currencyID="TRY">720.00</cbc:TaxableAmount>
+        <cbc:TaxAmount currencyID="TRY">72.00</cbc:TaxAmount>
+        <cbc:Percent>10</cbc:Percent>
+        <cac:TaxCategory>
+          <cac:TaxScheme>
+            <cbc:Name>KDV</cbc:Name>
+            <cbc:TaxTypeCode>0015</cbc:TaxTypeCode>
+          </cac:TaxScheme>
+        </cac:TaxCategory>
+      </cac:TaxSubtotal>
+    </cac:TaxTotal>
+    <cac:Item>
+      <cbc:Name>Su 500 ml</cbc:Name>
+      <cac:StandardItemIdentification>
+        <cbc:ID schemeID="GTIN">8690000000011</cbc:ID>
+      </cac:StandardItemIdentification>
+      <cac:SellersItemIdentification>
+        <cbc:ID>SU-500</cbc:ID>
+      </cac:SellersItemIdentification>
+    </cac:Item>
+    <cac:Price>
+      <cbc:PriceAmount currencyID="TRY">4.00</cbc:PriceAmount>
+    </cac:Price>
+  </cac:InvoiceLine>
+
+  <!-- 3) Sistemde karşılığı olmayan ürün: eşleşmeyen satır olarak görünmeli -->
+  <cac:InvoiceLine>
+    <cbc:ID>3</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="PK">50</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="TRY">1500.00</cbc:LineExtensionAmount>
+    <cac:TaxTotal>
+      <cbc:TaxAmount currencyID="TRY">150.00</cbc:TaxAmount>
+      <cac:TaxSubtotal>
+        <cbc:TaxableAmount currencyID="TRY">1500.00</cbc:TaxableAmount>
+        <cbc:TaxAmount currencyID="TRY">150.00</cbc:TaxAmount>
+        <cbc:Percent>10</cbc:Percent>
+        <cac:TaxCategory>
+          <cac:TaxScheme>
+            <cbc:Name>KDV</cbc:Name>
+            <cbc:TaxTypeCode>0015</cbc:TaxTypeCode>
+          </cac:TaxScheme>
+        </cac:TaxCategory>
+      </cac:TaxSubtotal>
+    </cac:TaxTotal>
+    <cac:Item>
+      <cbc:Name>Kağıt Havlu 12'li</cbc:Name>
+      <cac:SellersItemIdentification>
+        <cbc:ID>KH-12</cbc:ID>
+      </cac:SellersItemIdentification>
+    </cac:Item>
+    <cac:Price>
+      <cbc:PriceAmount currencyID="TRY">30.00</cbc:PriceAmount>
+    </cac:Price>
+  </cac:InvoiceLine>
+</Invoice>

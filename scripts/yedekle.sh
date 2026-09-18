@@ -4,6 +4,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB="${DB_PATH:-$ROOT/data/kantin.db}"
+# Fatura ekleri veritabaninda DEGIL, diskte durur: veritabani yedegi tek
+# basina yeterli degildir, ekler de alinmalidir.
+FILES="${ATTACHMENTS_DIR:-$ROOT/data/ekler}"
 DEST="${BACKUP_DIR:-$ROOT/backups}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 KEEP="${BACKUP_KEEP:-30}"
@@ -24,8 +27,18 @@ db.close();
 " "$DB" "$OUT" 2>/dev/null
 
 gzip -f "$OUT"
-echo "Yedek alindi: $OUT.gz ($(du -h "$OUT.gz" | cut -f1))"
+echo "Veritabani yedegi: $OUT.gz ($(du -h "$OUT.gz" | cut -f1))"
+
+# Fatura ekleri (PDF / foto / e-Fatura XML)
+if [ -d "$FILES" ] && [ -n "$(ls -A "$FILES" 2>/dev/null)" ]; then
+  FILES_OUT="$DEST/ekler-$STAMP.tar.gz"
+  tar -czf "$FILES_OUT" -C "$(dirname "$FILES")" "$(basename "$FILES")"
+  echo "Fatura ekleri yedegi: $FILES_OUT ($(du -h "$FILES_OUT" | cut -f1))"
+else
+  echo "Fatura eki yok, atlandi: $FILES"
+fi
 
 # Eski yedekleri temizle
 ls -1t "$DEST"/kantin-*.db.gz 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
+ls -1t "$DEST"/ekler-*.tar.gz 2>/dev/null | tail -n +$((KEEP + 1)) | xargs -r rm -f
 echo "Son $KEEP yedek saklaniyor."

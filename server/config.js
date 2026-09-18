@@ -35,6 +35,8 @@ export const config = {
     name: process.env.ADMIN_NAME || 'Sistem Yoneticisi',
   },
   publicDir: path.join(ROOT, 'public'),
+  // Alim belgelerine iliştirilen fatura dosyalari (PDF/foto/XML)
+  attachmentsDir: path.resolve(ROOT, process.env.ATTACHMENTS_DIR || './data/ekler'),
   isProduction: process.env.NODE_ENV === 'production',
 };
 

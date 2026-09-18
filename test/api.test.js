@@ -1014,6 +1014,157 @@ describe('Ciro teslim fisi', () => {
 });
 
 
+/* ------------------- Fatura ekleri ve e-Fatura --------------------- */
+describe('Fatura ekleri', () => {
+  let campusId; let purchaseId; let productId; let supplierId; let staffToken;
+
+  const PDF = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.from('ornek fatura icerigi')]);
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+  const XML = Buffer.from('<?xml version="1.0"?><Invoice><ID>A1</ID></Invoice>', 'utf8');
+  const EXE = Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00]);
+
+  const upload = async (path, buffer, tok = token) => {
+    const res = await fetch(BASE + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', Authorization: `Bearer ${tok}` },
+      body: buffer,
+    });
+    return { status: res.status, data: await res.json().catch(() => ({})) };
+  };
+
+  test('hazirlik: kampus, urun ve alim belgesi', async () => {
+    campusId = (await ok('POST', '/api/campuses', {
+      code: 'EKT', name: 'Ek Belge Test Kampüsü', studentCount: 50,
+    })).id;
+    supplierId = (await ok('GET', '/api/suppliers')).items[0].id;
+    productId = (await ok('POST', '/api/products', {
+      name: 'Ek Test Ürünü', barcode: 'EK-0001', purchasePrice: 10, salePrice: 18, vatRate: 10,
+    })).id;
+    purchaseId = (await ok('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'EK-IRS-1', documentDate: daysAgo(3),
+      lines: [{ productId, quantity: 10, unitPrice: 10, vatRate: 10 }],
+    })).id;
+    assert.ok(purchaseId);
+  });
+
+  test('PDF fatura belgeye eklenir', async () => {
+    const r = await upload(`/api/purchases/${purchaseId}/attachments?filename=fatura.pdf`, PDF);
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.items.length, 1);
+    const [a] = r.data.items;
+    assert.equal(a.file_name, 'fatura.pdf');
+    assert.equal(a.content_type, 'application/pdf');
+    assert.equal(a.byte_size, PDF.length);
+    assert.equal(a.kind, 'BELGE');
+    assert.match(a.sha256, /^[0-9a-f]{64}$/);
+  });
+
+  test('yuklenen dosya geri okunabilir ve birebir aynidir', async () => {
+    const list = await ok('GET', `/api/purchases/${purchaseId}/attachments`);
+    const res = await fetch(`${BASE}/api/purchases/${purchaseId}/attachments/${list.items[0].id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'application/pdf');
+    const body = Buffer.from(await res.arrayBuffer());
+    assert.ok(body.equals(PDF), 'indirilen dosya yuklenenle ayni olmali');
+  });
+
+  test('ayni dosya iki kez eklenemez', async () => {
+    const r = await upload(`/api/purchases/${purchaseId}/attachments?filename=kopya.pdf`, PDF);
+    assert.equal(r.status, 409);
+  });
+
+  test('PNG ve XML kabul edilir, calistirilabilir dosya reddedilir', async () => {
+    assert.equal((await upload(`/api/purchases/${purchaseId}/attachments?filename=foto.png`, PNG)).status, 200);
+    const xml = await upload(`/api/purchases/${purchaseId}/attachments?filename=e.xml&kind=EFATURA_XML`, XML);
+    assert.equal(xml.status, 200);
+    assert.equal(xml.data.items.find((a) => a.file_name === 'e.xml').kind, 'EFATURA_XML');
+
+    const bad = await upload(`/api/purchases/${purchaseId}/attachments?filename=zarar.png`, EXE);
+    assert.equal(bad.status, 400, 'icerik PNG degilse uzanti PNG olsa da reddedilmeli');
+  });
+
+  test('dosya adi dizin disina cikamaz', async () => {
+    const r = await upload(
+      `/api/purchases/${purchaseId}/attachments?filename=${encodeURIComponent('../../../etc/passwd.pdf')}`,
+      Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.from('traversal denemesi')])
+    );
+    assert.equal(r.status, 200);
+    const saved = r.data.items.find((a) => a.byte_size !== PDF.length && a.content_type === 'application/pdf');
+    assert.ok(!saved.file_name.includes('/'), `ad temizlenmeli: ${saved.file_name}`);
+    assert.ok(!saved.file_name.includes('\\'), `ad temizlenmeli: ${saved.file_name}`);
+  });
+
+  test('belge listesinde ek sayisi gorunur', async () => {
+    const list = await ok('GET', `/api/purchases?campusId=${campusId}`);
+    const row = list.items.find((p) => p.id === purchaseId);
+    assert.ok(row.attachment_count >= 4, `ek sayisi: ${row.attachment_count}`);
+  });
+
+  test('baska kampusun gorevlisi eki goremez', async () => {
+    const other = (await ok('POST', '/api/campuses', {
+      code: 'EKX', name: 'Ek Erisim Testi', studentCount: 20,
+    })).id;
+    await ok('POST', '/api/users', {
+      email: 'ek-gorevli@topkapiokullari.com', fullName: 'Ek Görevlisi',
+      role: 'KANTIN_GOREVLISI', campusId: other, password: 'Gorevli12345',
+    });
+    staffToken = (await api('POST', '/api/auth/login',
+      { email: 'ek-gorevli@topkapiokullari.com', password: 'Gorevli12345' }, false)).data.token;
+
+    const res = await fetch(`${BASE}/api/purchases/${purchaseId}/attachments`, {
+      headers: { Authorization: `Bearer ${staffToken}` },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  test('gorevli fatura kanitini silemez, yonetim silebilir', async () => {
+    const list = await ok('GET', `/api/purchases/${purchaseId}/attachments`);
+    const target = list.items.find((a) => a.file_name === 'foto.png');
+
+    const denied = await fetch(`${BASE}/api/purchases/${purchaseId}/attachments/${target.id}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${staffToken}` },
+    });
+    assert.equal(denied.status, 403);
+
+    const removed = await ok('DELETE', `/api/purchases/${purchaseId}/attachments/${target.id}`);
+    assert.ok(!removed.items.some((a) => a.id === target.id));
+
+    const audit = await ok('GET', '/api/audit?limit=100');
+    assert.ok(audit.items.some((i) => i.action === 'ATTACHMENT_DELETE'), 'silme denetim izine yazilmali');
+    assert.ok(audit.items.some((i) => i.action === 'ATTACH'), 'ekleme denetim izine yazilmali');
+  });
+
+  test('ayni e-Fatura ikinci kez aktarilamaz', async () => {
+    const uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const first = await ok('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'EF-001', documentDate: daysAgo(2), efaturaUuid: uuid,
+      lines: [{ productId, quantity: 5, unitPrice: 10, vatRate: 10 }],
+    });
+    assert.ok(first.id);
+
+    const again = await api('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'EF-002', documentDate: daysAgo(1), efaturaUuid: uuid,
+      lines: [{ productId, quantity: 5, unitPrice: 10, vatRate: 10 }],
+    });
+    assert.equal(again.status, 409);
+    assert.match(again.data.error, /zaten sisteme aktarilmis/i);
+  });
+
+  test('iptal edilmis belgeye ek eklenemez', async () => {
+    const p = await ok('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'EK-IPTAL-1', documentDate: daysAgo(1),
+      lines: [{ productId, quantity: 1, unitPrice: 10, vatRate: 10 }],
+    });
+    await ok('POST', `/api/purchases/${p.id}/cancel`);
+    const r = await upload(`/api/purchases/${p.id}/attachments?filename=x.pdf`,
+      Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.from('iptal')]));
+    assert.equal(r.status, 409);
+  });
+});
+
+
 /* --------------------------- Denetim izi --------------------------- */
 describe('Denetim izi', () => {
   test('islemler kayit altina alinir', async () => {

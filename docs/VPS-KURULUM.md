@@ -60,6 +60,7 @@ sudo -u kantin nano .env
 PORT=3000
 HOST=127.0.0.1                 # dışarıdan doğrudan erişilmesin, nginx üzerinden gelsin
 DB_PATH=./data/kantin.db
+ATTACHMENTS_DIR=./data/ekler      # faturaların PDF/XML dosyaları buraya yazılır
 SESSION_SECRET=<yukarıda ürettiğiniz uzun rastgele değer>
 SESSION_TTL_HOURS=12
 ADMIN_EMAIL=mudur@topkapiokullari.com
@@ -184,6 +185,8 @@ sudo systemctl start kantin
 - [ ] HTTPS çalışıyor, `http://` adresi `https://`'e yönleniyor
 - [ ] `ufw status` yalnızca SSH ve Nginx'i gösteriyor
 - [ ] Yedekleme cron'u kuruldu ve bir kez elle denendi
+- [ ] Yedek çıktısında **hem** `kantin-*.db.gz` **hem** `ekler-*.tar.gz` var
+      (fatura dosyaları veritabanının içinde değildir)
 - [ ] Yedekler ikinci bir konuma kopyalanıyor
 - [ ] Her kampüs için kullanıcı açıldı, kimse ortak hesap kullanmıyor
 - [ ] Sunucu saati doğru: `timedatectl` çıktısında `Europe/Istanbul`
@@ -197,5 +200,7 @@ sudo systemctl start kantin
 | "Oturum süresi doldu" döngüsü | `.env` içindeki `SESSION_SECRET` değişti mi? Değişirse tüm oturumlar düşer, yeniden giriş yapın |
 | Giriş yapılamıyor | `sudo journalctl -u kantin -n 50` ile günlüğe bakın |
 | Excel yüklenmiyor | nginx'te `client_max_body_size` yeterli mi (12M ayarlı) |
+| Fatura dosyası yüklenmiyor | Aynı ayar; ayrıca dosya 10 MB'ı aşmamalı ve PDF/JPG/PNG/WEBP/XML olmalı |
+| "Dosya sunucuda bulunamadı" | `data/ekler` klasörü yerinde mi, uygulama kullanıcısının yazma hakkı var mı (`ls -la /opt/kantin/data`) |
 | Tarih/saat kaymış | Sunucu saat dilimi `Europe/Istanbul` olmalı |
 | Disk doldu | `du -sh /opt/kantin/backups` — eski yedekler birikmiş olabilir |

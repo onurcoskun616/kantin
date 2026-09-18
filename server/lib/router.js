@@ -27,23 +27,29 @@ export class Router {
     this.routes = [];
   }
 
-  add(method, pattern, handler) {
+  /**
+   * opts.rawBody: true ise sunucu govdeyi JSON olarak okumaz; handler ham
+   * akisi kendisi okur (dosya yukleme uclari icin).
+   */
+  add(method, pattern, handler, opts = {}) {
     const p = normalize(pattern);
-    this.routes.push({ method, pattern: p, handler, ...compile(p) });
+    this.routes.push({ method, pattern: p, handler, rawBody: !!opts.rawBody, ...compile(p) });
     return this;
   }
 
-  get(p, h) { return this.add('GET', p, h); }
-  post(p, h) { return this.add('POST', p, h); }
-  put(p, h) { return this.add('PUT', p, h); }
-  patch(p, h) { return this.add('PATCH', p, h); }
-  delete(p, h) { return this.add('DELETE', p, h); }
+  get(p, h, o) { return this.add('GET', p, h, o); }
+  post(p, h, o) { return this.add('POST', p, h, o); }
+  put(p, h, o) { return this.add('PUT', p, h, o); }
+  patch(p, h, o) { return this.add('PATCH', p, h, o); }
+  delete(p, h, o) { return this.add('DELETE', p, h, o); }
 
   /** Alt yonlendiriciyi bir on ek altina baglar. */
   use(prefix, subRouter) {
     for (const r of subRouter.routes) {
       const combined = normalize(prefix + (r.pattern === '/' ? '' : r.pattern));
-      this.routes.push({ method: r.method, pattern: combined, handler: r.handler, ...compile(combined) });
+      this.routes.push({
+        method: r.method, pattern: combined, handler: r.handler, rawBody: r.rawBody, ...compile(combined),
+      });
     }
     return this;
   }
@@ -58,7 +64,7 @@ export class Router {
       if (route.method !== method) continue;
       const params = {};
       route.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
-      return { handler: route.handler, params, pattern: route.pattern };
+      return { handler: route.handler, params, pattern: route.pattern, rawBody: route.rawBody };
     }
     if (pathExists) throw new HttpError(405, 'Bu adres icin gecersiz HTTP metodu.');
     throw notFound('Boyle bir API ucu yok.');

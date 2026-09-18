@@ -131,7 +131,7 @@ export function buildDemoData() {
   const db = {
     campuses: [], categories: [], suppliers: [], products: [], campus_products: [],
     movements: [], purchases: [], purchase_lines: [], supplier_payments: [],
-    supplier_returns: [], supplier_return_lines: [],
+    supplier_returns: [], supplier_return_lines: [], purchase_attachments: [],
     waste: [], transfers: [], transfer_lines: [],
     counts: [], count_lines: [], production_sales: [], recipes: [], recipe_items: [],
     revenues: [], revenue_handovers: [], users: [], audit_logs: [], price_history: [],

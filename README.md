@@ -67,6 +67,19 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
 - Fiyat değişiklik geçmişi; alımda %10 üzeri fiyat artışı uyarısı
 - Fiyat denetimi raporu: zararına satış, düşük marj, tavan fiyat aşımı
 
+### Fatura ve belge
+- **e-Fatura / e-Arşiv XML aktarımı** — UBL-TR XML dosyasını yükleyin: tedarikçi (VKN ile),
+  belge no, tarih, vade ve tüm kalemler (miktar, KDV hariç birim fiyat, iskonto, KDV oranı)
+  kendiliğinden dolar. Ürünler barkod veya adla eşlenir
+- Eşleşmeyen kalem sessizce atlanmaz: satır kırmızı işaretlenir, ürün seçilmeden belge kaydedilmez
+- Fatura toplamı satırlarla çapraz kontrol edilir; tutmuyorsa uyarı çıkar
+- Aynı e-Fatura (ETTN) ikinci kez aktarılamaz
+- Adım adım: **[docs/FATURA-GIRISI.md](docs/FATURA-GIRISI.md)**
+- **Fatura dosyası ekleme** — PDF, fotoğraf veya XML belgeye iliştirilir; denetimde
+  "bu rakam nereden geldi" sorusu tek tıkla açılır
+- Her dosyanın SHA-256 özeti saklanır (sonradan değişirse anlaşılır); silme yetkisi
+  genel müdürlüktedir ve denetim izine yazılır
+
 ### Tedarikçi
 - İrsaliye/fatura girişi (iskonto, KDV, SKT alanlarıyla)
 - Mükerrer belge no kontrolü
@@ -143,10 +156,11 @@ docker compose up -d
 ### Testler
 
 ```bash
-npm test        # 75 uçtan uca API testi
+npm test        # 86 uçtan uca API testi
 npm run test:ui # tarayıcı regresyon testleri:
                 #   sayim-akisi  — kör sayım → iki imza → kesinleştirme
                 #   ciro-teslim  — teslim fişi → tutar dondurma → kod ile onay
+                #   fatura-eki   — e-Fatura XML aktarımı → fatura dosyası ekleme
 ```
 
 `test:ui` Playwright gerektirir (`npm i -g playwright && playwright install chromium`)
@@ -237,13 +251,14 @@ server/
   seed.js           İlk kurulum ve demo verisi
   config.js         Ayarlar (.env okuyucu)
   db.js             SQLite erişim katmanı
-  lib/              auth, stok defteri, para/KDV hesapları, denetim izi
+  lib/              auth, stok defteri, para/KDV hesapları, denetim izi, dosya saklama
   routes/           API uçları
 public/
   index.html        Tek sayfa uygulama kabuğu
   css/app.css       Arayüz stilleri (açık/koyu tema)
   js/pages/         Ekranlar
   js/xlsx.js        Tarayıcı içi Excel okuyucu (harici kütüphane yok)
+  js/efatura.js     Tarayıcı içi e-Fatura (UBL-TR) okuyucu
 test/
   api.test.js       Uçtan uca API testleri
   ui/               Tarayıcı regresyon testi
@@ -253,20 +268,33 @@ scripts/
   sablon-olustur.py Excel şablonu üretici
 docs/
   DENETIM-KONTROLLERI.md  Kör sayım, iki imza, üretilen ürün, nokta sayımı, ciro teslim fişi
+  FATURA-GIRISI.md  Tedarikçi faturasını işleme: e-Fatura XML, elle giriş, dosya ekleme
   VPS-KURULUM.md    Sunucu kurulum rehberi
   YOL-HARITASI.md   Atlanan noktalar ve sonraki aşama önerileri
-  sablonlar/        Excel şablonu
+  sablonlar/        Excel şablonu ve örnek e-Fatura XML
 ```
 
 ---
 
 ## Yedekleme
 
-Tüm veri tek dosyadadır: `data/kantin.db`.
+Yedeklenmesi gereken **iki** şey var:
+
+| Ne | Nerede |
+|---|---|
+| Veritabanı (tüm kayıtlar) | `data/kantin.db` |
+| Fatura dosyaları (PDF / foto / XML) | `data/ekler/` |
 
 ```bash
-./scripts/yedekle.sh          # backups/ klasörüne tarihli kopya alır
+./scripts/yedekle.sh          # ikisini de backups/ klasörüne tarihli alır
 ```
 
-Sunucu çalışırken bile güvenlidir (SQLite online backup kullanılır).
-Yedek dosyasını mutlaka **başka bir makinede/bulutta** da saklayın.
+Betik veritabanı için `kantin-<tarih>.db.gz`, fatura ekleri için
+`ekler-<tarih>.tar.gz` üretir. Sunucu çalışırken bile güvenlidir (SQLite online
+backup kullanılır).
+
+> Yalnızca `.db` dosyasını yedeklemek yetmez: fatura dosyaları veritabanının
+> içinde değil, diskte durur. Geri yüklerken **ikisini birlikte** alın, yoksa
+> kayıtlar durur ama faturaların kendisi kaybolur.
+
+Yedekleri mutlaka **başka bir makinede/bulutta** da saklayın.

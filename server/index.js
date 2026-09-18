@@ -62,7 +62,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    const { handler, params } = router.match(req.method, pathname);
+    const { handler, params, rawBody } = router.match(req.method, pathname);
     const routeKey = `${req.method} ${pathname}`;
 
     const token = extractToken(req);
@@ -71,7 +71,10 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 401, { error: 'Oturum suresi doldu. Lutfen tekrar giris yapin.' });
     }
 
-    const body = ['POST', 'PUT', 'PATCH'].includes(req.method) ? await readJsonBody(req) : {};
+    // Dosya yukleme uclari govdeyi kendileri okur (readRawBody)
+    const body = (!rawBody && ['POST', 'PUT', 'PATCH'].includes(req.method))
+      ? await readJsonBody(req)
+      : {};
     const ctx = {
       req, res, user, params, body,
       query: Object.fromEntries(url.searchParams.entries()),
