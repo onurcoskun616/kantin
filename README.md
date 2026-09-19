@@ -74,6 +74,11 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
 - Eşleşmeyen kalem sessizce atlanmaz: satır kırmızı işaretlenir, ürün seçilmeden belge kaydedilmez
 - Fatura toplamı satırlarla çapraz kontrol edilir; tutmuyorsa uyarı çıkar
 - Aynı e-Fatura (ETTN) ikinci kez aktarılamaz
+- **Karekod (QR) okuma** — kâğıt/PDF faturadaki GİB karekodu kamerayla ya da
+  fotoğraftan okunur: tedarikçi, belge no, tarih ve ETTN dolar. Karekodda ürün
+  satırı yoktur (GİB içeriği başlık + toplamlardır), onun yerine **elle girdiğiniz
+  satırlar faturanın KDV oranı başına matrah/KDV toplamlarıyla anlık karşılaştırılır**;
+  fark kalırsa kaydederken onay istenir. XML olmadan da mükerrer fatura koruması çalışır
 - Adım adım: **[docs/FATURA-GIRISI.md](docs/FATURA-GIRISI.md)**
 - **Fatura dosyası ekleme** — PDF, fotoğraf veya XML belgeye iliştirilir; denetimde
   "bu rakam nereden geldi" sorusu tek tıkla açılır
@@ -161,11 +166,12 @@ docker compose up -d
 ### Testler
 
 ```bash
-npm test        # 86 uçtan uca API testi
+npm test        # 102 test: uçtan uca API + karekod çözümleyici
 npm run test:ui # tarayıcı regresyon testleri:
                 #   sayim-akisi  — kör sayım → iki imza → kesinleştirme
                 #   ciro-teslim  — teslim fişi → tutar dondurma → kod ile onay
                 #   fatura-eki   — e-Fatura XML aktarımı → fatura dosyası ekleme
+                #   karekod      — karekod ile başlık + satır/fatura çapraz kontrolü
 ```
 
 `test:ui` Playwright gerektirir (`npm i -g playwright && playwright install chromium`)
@@ -270,8 +276,10 @@ public/
   js/pages/         Ekranlar
   js/xlsx.js        Tarayıcı içi Excel okuyucu (harici kütüphane yok)
   js/efatura.js     Tarayıcı içi e-Fatura (UBL-TR) okuyucu
+  js/karekod.js     Fatura karekodu (GİB QR) çözümleyici + çapraz kontrol
 test/
   api.test.js       Uçtan uca API testleri
+  karekod.test.js   Karekod çözümleyici birim testleri
   ui/               Tarayıcı regresyon testi
 deploy/             systemd, nginx ve cron dosyaları
 scripts/
@@ -281,7 +289,7 @@ scripts/
 docs/
   DENETIM-KONTROLLERI.md  Kör sayım, iki imza, üretilen ürün, nokta sayımı, ciro teslim fişi
   KURULUM-DOCKER-CADDY.md Mevcut Docker + Caddy sunucusuna yan yana kurulum
-  FATURA-GIRISI.md  Tedarikçi faturasını işleme: e-Fatura XML, elle giriş, dosya ekleme
+  FATURA-GIRISI.md  Tedarikçi faturasını işleme: XML, karekod, elle giriş, dosya ekleme
   VPS-KURULUM.md    Sunucu kurulum rehberi
   YOL-HARITASI.md   Atlanan noktalar ve sonraki aşama önerileri
   sablonlar/        Excel şablonu ve örnek e-Fatura XML

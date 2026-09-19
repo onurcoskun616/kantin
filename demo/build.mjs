@@ -21,7 +21,7 @@ const read = (...p) => fs.readFileSync(path.join(ROOT, ...p), 'utf8');
 const write = (rel, content) => fs.writeFileSync(path.join(DIST, rel), content, 'utf8');
 
 /* ------------------- Arayüz dosyalarını kopyala -------------------- */
-for (const file of ['app.js', 'ui.js', 'xlsx.js', 'efatura.js']) {
+for (const file of ['app.js', 'ui.js', 'xlsx.js', 'efatura.js', 'karekod.js', 'karekod-tarayici.js']) {
   let source = read('public', 'js', file);
 
   if (file === 'app.js') {

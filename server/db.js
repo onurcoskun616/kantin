@@ -20,8 +20,15 @@ db.exec('PRAGMA busy_timeout = 5000');
 
 export function migrate() {
   const sql = fs.readFileSync(path.join(ROOT, 'server', 'schema.sql'), 'utf8');
+  // ONCE eksik sutunlar: schema.sql yeni sutunlar uzerinde indeks kurabiliyor
+  // (or. purchases.efatura_uuid). Eski bir veritabaninda tablo zaten var
+  // oldugu icin CREATE TABLE IF NOT EXISTS sutunu eklemez ve indeks
+  // "no such column" ile patlardi. Bos veritabaninda bu cagri hicbir sey
+  // yapmaz (tablolar henuz yok).
+  addMissingColumns();
   db.exec(sql);
   upgradeExistingSchema();
+  repairDanglingReferences();
 }
 
 /* ------------------------- Sema yukseltmeleri ----------------------- */
@@ -31,6 +38,17 @@ export function migrate() {
  * eklemeleri burada, tekrar calistirilabilir bicimde yapilir.
  */
 function upgradeExistingSchema() {
+  addMissingColumns();
+
+  // SQLite CHECK kisitlarini ALTER ile degistiremedigi icin ilgili tablolar
+  // yeniden kurulur. Veri korunur; islem tek transaction icindedir.
+  rebuildIfMissing('counts', "'SAYILDI'");      // TASLAK/KESINLESMIS -> + SAYILDI
+  rebuildIfMissing('products', "'HAMMADDE'");   // SATIN_ALINAN/URETILEN -> + HAMMADDE
+  rebuildIfMissing('users', "'MUHASEBE'");      // roller -> + MUHASEBE (on muhasebe)
+}
+
+/** Eski veritabanlarina sonradan eklenen sutunlar. Tekrar calistirilabilir. */
+function addMissingColumns() {
   addColumn('products', 'product_type', "TEXT NOT NULL DEFAULT 'SATIN_ALINAN'");
   addColumn('counts', 'count_type', "TEXT NOT NULL DEFAULT 'DONEM'");
   addColumn('counts', 'is_blind', 'INTEGER NOT NULL DEFAULT 1');
@@ -42,12 +60,6 @@ function upgradeExistingSchema() {
   addColumn('count_lines', 'recipe_qty', 'REAL NOT NULL DEFAULT 0');
   addColumn('daily_revenues', 'handover_id', 'INTEGER');
   addColumn('purchases', 'efatura_uuid', 'TEXT');
-
-  // SQLite CHECK kisitlarini ALTER ile degistiremedigi icin ilgili tablolar
-  // yeniden kurulur. Veri korunur; islem tek transaction icindedir.
-  rebuildIfMissing('counts', "'SAYILDI'");      // TASLAK/KESINLESMIS -> + SAYILDI
-  rebuildIfMissing('products', "'HAMMADDE'");   // SATIN_ALINAN/URETILEN -> + HAMMADDE
-  rebuildIfMissing('users', "'MUHASEBE'");      // roller -> + MUHASEBE (on muhasebe)
 }
 
 function columnExists(table, column) {
@@ -74,6 +86,21 @@ function rebuildIfMissing(table, sentinel) {
   if (!row || String(row.sql).includes(sentinel)) return;
 
   console.log(`[SEMA] ${table} tablosu yeniden kuruluyor (${sentinel} destegi)...`);
+  rebuildTable(table);
+}
+
+/**
+ * Tabloyu schema.sql'deki guncel tanimiyla yeniden kurar, ortak sutunlardaki
+ * veriyi tasir.
+ *
+ * DIKKAT — `legacy_alter_table` kapali olsaydi SQLite, RENAME sirasinda
+ * DIGER tablolarin yabanci anahtar tanimlarini da yeni ada cevirirdi:
+ * `users` -> `users_eski` yapildiginda `sessions` ve `audit_logs` kalici
+ * olarak `REFERENCES "users_eski"` yazar, gecici tablo silinince de o
+ * tablolara hicbir kayit eklenemezdi (no such table: main.users_eski).
+ * Bu yuzden yeniden kurma suresince eski davranis acilir.
+ */
+function rebuildTable(table) {
   const oldColumns = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
 
   const schema = fs.readFileSync(path.join(ROOT, 'server', 'schema.sql'), 'utf8');
@@ -83,6 +110,7 @@ function rebuildIfMissing(table, sentinel) {
 
   const tempName = `${table}_eski`;
   db.exec('PRAGMA foreign_keys = OFF');
+  db.exec('PRAGMA legacy_alter_table = ON');
   db.exec('BEGIN IMMEDIATE');
   try {
     db.exec(`ALTER TABLE ${table} RENAME TO ${tempName}`);
@@ -98,7 +126,29 @@ function rebuildIfMissing(table, sentinel) {
     db.exec('ROLLBACK');
     throw err;
   } finally {
+    db.exec('PRAGMA legacy_alter_table = OFF');
     db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
+/**
+ * Yukaridaki hatadan zarar gormus veritabanlarini onarir.
+ *
+ * Eski surumlerde tablo yeniden kurma islemi `legacy_alter_table` acmadan
+ * yapiliyordu; boyle bir veritabaninda bazi tablolar artik var olmayan
+ * `<tablo>_eski` tablolarina referans verir ve o tablolara yazilamaz
+ * (or. giris yapilamaz, cunku `sessions` yazilamaz). Bozuk tanimli
+ * tablolari schema.sql'deki dogru tanimlariyla yeniden kurarak duzeltiriz;
+ * veri korunur.
+ */
+function repairDanglingReferences() {
+  const rows = db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table'").all();
+  for (const row of rows) {
+    const refs = [...String(row.sql || '').matchAll(/REFERENCES\s+"?([A-Za-z0-9_]+)_eski"?/g)];
+    // Yalnizca GERCEKTEN var olmayan bir tabloya referans varsa mudahale ederiz
+    if (!refs.length || refs.some((m) => tableExists(`${m[1]}_eski`))) continue;
+    console.log(`[SEMA] ${row.name} tablosundaki bozuk referans onariliyor (${refs[0][1]}_eski).`);
+    rebuildTable(row.name);
   }
 }
 

@@ -2,6 +2,8 @@ import { api } from '../api.js';
 import { state, canWrite } from '../app.js';
 import { el, card, stat, table, fmt, badge, modal, toast, confirmDialog, dateUtil, alertBox, empty, shortName} from '../ui.js';
 import { parseEFatura, matchProducts, matchSupplier } from '../efatura.js';
+import { parseKarekod, compareWithLines } from '../karekod.js';
+import { openKarekodScanner } from '../karekod-tarayici.js';
 
 export async function render(root) {
   const range = { from: dateUtil.thisMonth() + '-01', to: dateUtil.today() };
@@ -135,6 +137,41 @@ async function openPurchaseForm(onDone) {
       el('span', { text: `KDV: ${fmt.money(vat)}` }),
       el('span', { text: `Genel Toplam: ${fmt.money(net + vat)}`, style: 'font-size:15px' }),
     );
+    drawKarekodCheck();
+  }
+
+  /**
+   * Karekod okunduysa girilen satirlari faturanin beyan ettigi tutarlarla
+   * her degisiklikte karsilastirir. Karekodda urun satiri olmadigi icin
+   * asil fayda budur: yanlis yazilmis bir rakam, aylar sonra sayim farki
+   * olarak degil, burada ortaya cikar.
+   */
+  function drawKarekodCheck() {
+    if (!imported.karekod) { karekodBox.replaceChildren(); return; }
+    const rep = compareWithLines(imported.karekod, lines);
+
+    const rows = rep.rows.map((r) => ({
+      ...r,
+      durum: r.ok ? '✓' : (r.diff > 0 ? '▲ fazla' : '▼ eksik'),
+    }));
+
+    karekodBox.replaceChildren(card('Karekodla karşılaştırma', [
+      table([
+        { label: 'Kalem', value: (r) => r.label, wrap: true },
+        { label: 'Faturada', num: true, value: (r) => fmt.money(r.invoice) },
+        { label: 'Girilen', num: true, value: (r) => fmt.money(r.entered) },
+        { label: 'Fark', num: true, value: (r) => (r.diff === 0 ? '—' : fmt.money(r.diff)) },
+        { label: 'Durum', value: (r) => r.durum },
+      ], rows, { rowClass: (r) => (r.ok ? '' : 'is-warn') }),
+    ], {
+      actions: [rep.ok
+        ? badge('Fatura ile birebir uyuşuyor', 'ok')
+        : badge(`${rep.issues.length} kalemde fark var`, 'warn')],
+      note: rep.ok
+        ? 'Girdiğiniz satırlar faturanın toplamlarıyla tutuyor.'
+        : 'Fark varsa: eksik/fazla satır, yanlış miktar veya yanlış KDV oranı olabilir. '
+          + 'Düzeltmeden kaydederseniz uyarı alırsınız.',
+    }));
   }
 
   /**
@@ -218,8 +255,10 @@ async function openPurchaseForm(onDone) {
 
   // e-Fatura aktarimindan gelen bilgiler: ETTN ve dosyanin kendisi.
   // Belge kaydedildikten sonra XML ayrica belgeye eklenir.
-  const imported = { uuid: null, file: null };
+  // karekod: QR'dan okunan fatura ozeti (satir icermez, yalnizca toplamlar).
+  const imported = { uuid: null, file: null, karekod: null };
   const importBox = el('div');
+  const karekodBox = el('div');
 
   const xmlInput = el('input', { type: 'file', accept: '.xml,application/xml,text/xml', style: 'display:none' });
   const importBtn = el('button.btn', { text: '🧾 e-Fatura XML\'den Doldur', onclick: () => xmlInput.click() });
@@ -237,6 +276,21 @@ async function openPurchaseForm(onDone) {
     }
   });
 
+  const qrBtn = el('button.btn', {
+    text: '📷 Karekod Okut',
+    title: 'Kağıt/PDF faturadaki karekodu okuyup başlığı doldurur ve girdiğiniz satırları denetler',
+    onclick: async () => {
+      const raw = await openKarekodScanner();
+      if (!raw) return;
+      try {
+        importFromKarekod(raw);
+      } catch (err) {
+        importBox.replaceChildren(alertBox('danger', 'Karekod okunamadı',
+          err.raw ? `${err.message} Okunan metin: ${err.raw.slice(0, 200)}` : err.message));
+      }
+    },
+  });
+
   const saveBtn = el('button.btn.btn-primary', { text: 'Belgeyi Kaydet' });
   const m = modal({
     title: 'Yeni Mal Girişi (İrsaliye / Fatura)',
@@ -245,9 +299,10 @@ async function openPurchaseForm(onDone) {
       errorBox,
       el('div.row', { style: 'justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap' }, [
         el('small.muted', {
-          text: 'Faturayı elle girebilir veya e-Fatura/e-Arşiv XML dosyasından otomatik doldurabilirsiniz.',
+          text: 'Faturayı elle girebilir, e-Fatura/e-Arşiv XML dosyasından otomatik doldurabilir '
+            + 'ya da kağıt faturadaki karekodu okutabilirsiniz.',
         }),
-        el('div', {}, [importBtn, xmlInput]),
+        el('div.btn-row', {}, [importBtn, qrBtn, xmlInput]),
       ]),
       importBox,
       el('div.grid.grid-3', {}, [
@@ -266,6 +321,8 @@ async function openPurchaseForm(onDone) {
       ])]),
       el('div.btn-row', {}, [el('button.btn.btn-sm', { text: '+ Satır Ekle', onclick: () => addLine() })]),
       totalsBox,
+      // Karsilastirma tam da karsilastirdigi toplamlarin altinda dursun
+      karekodBox,
       el('label.field', {}, [el('span', { text: 'Not' }), noteInput]),
     ],
     actions: [el('button.btn', { text: 'Vazgeç', onclick: () => m.close() }), saveBtn],
@@ -348,6 +405,72 @@ async function openPurchaseForm(onDone) {
     importBox.replaceChildren(el('div.grid', { style: 'gap:8px' }, notes));
   }
 
+  /**
+   * Karekod (QR) ile baslik doldurma.
+   *
+   * Karekodda URUN SATIRI YOKTUR; GIB'in icerigi yalnizca baslik ve
+   * toplamlardir. Bu yuzden satirlara dokunmayiz: kullanici elle girer,
+   * drawKarekodCheck() girilenleri faturanin beyan ettigi matrah/KDV ile
+   * her tus vurusunda karsilastirir.
+   */
+  function importFromKarekod(rawText) {
+    const qr = parseKarekod(rawText);
+    const { supplier, matchedBy } = matchSupplier({ taxNo: qr.taxNo, name: '' }, suppliers.items);
+
+    if (supplier) supplierSelect.value = String(supplier.id);
+    if (qr.documentNo) docNo.value = qr.documentNo;
+    if (qr.issueDate) docDate.value = qr.issueDate;
+
+    const oncekiEttn = imported.uuid;
+    if (qr.uuid) imported.uuid = qr.uuid;
+    imported.karekod = qr;
+
+    const notes = [];
+    notes.push(el('div.alert.alert-success', {}, [
+      el('strong', {
+        text: `Karekod okundu: ${qr.documentNo || '(belge no yok)'}`
+          + `${qr.issueDate ? ' · ' + fmt.date(qr.issueDate) : ''}`,
+      }),
+      `Satici VKN/TCKN ${qr.taxNo || 'yok'}`
+      + `${qr.scenario ? ' · ' + qr.scenario : ''}`
+      + ` · Matrah ${fmt.money(qr.computed.base)} + KDV ${fmt.money(qr.computed.tax)} = `
+      + `${fmt.money(qr.payable ?? qr.computed.gross)}`,
+    ]));
+
+    notes.push(alertBox('info', 'Ürün satırları karekodda yok',
+      'Karekod yalnızca başlığı ve toplamları taşır. Satırları aşağıya elle girin; '
+      + 'girdikleriniz anında faturanın toplamlarıyla karşılaştırılacak. Satırların da '
+      + 'kendiliğinden dolması için faturanın XML dosyası gerekir.'));
+
+    if (!supplier) {
+      notes.push(alertBox('warning', 'Tedarikçi eşleşmedi',
+        `VKN ${qr.taxNo || 'okunamadı'} ile eşleşen tedarikçi bulunamadı. Listeden doğru `
+        + 'tedarikçiyi seçin; tedarikçi kartına VKN yazarsanız bir dahaki sefere kendiliğinden eşleşir.'));
+    } else if (matchedBy === 'VKN') {
+      notes.push(el('p.card-note', { text: `Tedarikçi VKN ile eşleşti: ${supplier.name}` }));
+    }
+
+    if (!qr.uuid) {
+      notes.push(alertBox('warning', 'ETTN okunamadı',
+        'Karekodda fatura numarası (ETTN) yok. Aynı faturanın ikinci kez girilmesini '
+        + 'engelleyen kontrol bu belge için çalışmayacak.'));
+    } else if (oncekiEttn && oncekiEttn !== qr.uuid) {
+      notes.push(alertBox('warning', 'ETTN değişti',
+        `Daha önce ${oncekiEttn} okunmuştu, karekodda ${qr.uuid} yazıyor. `
+        + 'Farklı bir faturanın karekodunu okutmuş olabilirsiniz.'));
+    }
+
+    if (qr.vatByRate.length === 0) {
+      notes.push(alertBox('warning', 'KDV kırılımı yok',
+        'Karekodda KDV matrah/KDV tutarı okunamadı. Karşılaştırma yalnızca genel toplam '
+        + 'üzerinden yapılabilecek.'));
+    }
+    for (const w of qr.warnings) notes.push(alertBox('warning', 'Karekod toplamı', w));
+
+    importBox.replaceChildren(el('div.grid', { style: 'gap:8px' }, notes));
+    recalcTotals();
+  }
+
   addLine();
   recalcTotals();
 
@@ -378,6 +501,29 @@ async function openPurchaseForm(onDone) {
           + 'Faturadaki bu kalemler için ürün seçin veya satırı silin.'
         );
       }
+      // Karekod okunduysa girilen satirlar faturayla tutmali. Tutmuyorsa
+      // kaydi engellemeyiz (faturada kantinle ilgisiz kalem olabilir) ama
+      // kullanici farki gorerek onaylasin.
+      if (imported.karekod) {
+        const rep = compareWithLines(imported.karekod, payload.lines.map((l) => {
+          const net = Math.round(l.quantity * l.unitPrice * (1 - (l.discountPct || 0) / 100) * 100) / 100;
+          return { vatRate: l.vatRate, net, vat: Math.round(net * (l.vatRate / 100) * 100) / 100 };
+        }));
+        if (!rep.ok) {
+          saveBtn.disabled = false;
+          saveBtn.textContent = 'Belgeyi Kaydet';
+          const onay = await confirmDialog(
+            'Girdiğiniz satırlar faturanın karekoduyla uyuşmuyor: '
+            + rep.issues.join(' · ')
+            + '. Yine de kaydedilsin mi?',
+            { title: 'Fatura ile fark var', confirmText: 'Farkı biliyorum, kaydet', danger: true }
+          );
+          if (!onay) return;
+          saveBtn.disabled = true;
+          saveBtn.textContent = 'Kaydediliyor...';
+        }
+      }
+
       const res = await api.post('/api/purchases', payload);
 
       // Aktarimda kullanilan XML belgenin eki olarak saklanir: rakamlarin

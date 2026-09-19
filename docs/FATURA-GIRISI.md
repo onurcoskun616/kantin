@@ -2,9 +2,16 @@
 
 Menüde **Mal Girişi (Alım)** → sağ üstte **“+ Yeni Mal Girişi”**.
 
-Faturayı iki yoldan girebilirsiniz: **elle** ya da **e-Fatura XML dosyasından
-otomatik**. İkisi de aynı belgeyi üretir; XML'den doldurmak yalnızca yazım
-hatasını ve süreyi ortadan kaldırır.
+Faturayı üç yoldan girebilirsiniz; üçü de aynı belgeyi üretir:
+
+| Yol | Elinizde ne var | Ne kadarını doldurur |
+|---|---|---|
+| **1. e-Fatura XML** | Entegratörden inen `.xml` dosyası | Başlık **ve** tüm ürün satırları |
+| **2. Karekod (QR)** | Kâğıt/PDF fatura çıktısı | Başlık + toplamlar; satırları siz girersiniz, sistem denetler |
+| **3. Elle** | Sadece fatura | Hepsini siz girersiniz |
+
+> Elinizde XML varsa onu kullanın: satırları da dolduran tek yol odur.
+> XML yoksa karekod, elle girişi **denetlenir** hale getirir.
 
 ---
 
@@ -62,7 +69,70 @@ ve bilerek eşleşmeyen bir kalem var.
 
 ---
 
-## 2. Elle giriş
+## 2. Karekod (QR) ile giriş
+
+Kâğıt ya da PDF olarak gelen e-Fatura/e-Arşiv faturalarının üzerinde GİB'in
+zorunlu kıldığı bir **karekod** vardır. Formdaki **“📷 Karekod Okut”**
+düğmesiyle okutabilirsiniz.
+
+### Karekodda ne var, ne yok
+
+| Karekodda **VAR** | Karekodda **YOK** |
+|---|---|
+| Satıcı VKN/TCKN | ❌ Ürün adları |
+| Belge numarası ve tarihi | ❌ Miktarlar |
+| ETTN (belge kimliği) | ❌ Birim fiyatlar |
+| Mal/hizmet toplamı | ❌ İskontolar |
+| KDV oranı başına matrah ve KDV | ❌ SKT |
+| Ödenecek tutar | |
+
+Bu GİB'in belirlediği içeriktir; hiçbir yazılım karekoddan ürün satırı okuyamaz.
+**Satırları elle girersiniz.**
+
+### Asıl faydası: çapraz kontrol
+
+Karekodu okuttuktan sonra formda **“Karekodla karşılaştırma”** tablosu açılır ve
+her tuş vuruşunda güncellenir:
+
+| Kalem | Faturada | Girilen | Fark | Durum |
+|---|---|---|---|---|
+| %20 matrah | 1.000,00 ₺ | 960,00 ₺ | -40,00 ₺ | ▼ eksik |
+| %20 KDV | 200,00 ₺ | 192,00 ₺ | -8,00 ₺ | ▼ eksik |
+| Genel toplam | 1.200,00 ₺ | 1.152,00 ₺ | -48,00 ₺ | ▼ eksik |
+
+Fark kalırsa kaydederken **onay istenir**. Böylece yanlış yazılmış bir miktar
+veya KDV oranı, aylar sonra sayım farkı olarak değil, faturayı girerken ortaya
+çıkar. Fark bilerek olabilir (faturada kantinle ilgisiz bir kalem varsa);
+o zaman onaylayıp geçersiniz.
+
+Karekoddan gelen **ETTN** de kaydedilir: aynı fatura ikinci kez girilmek
+istenirse sistem reddeder — XML olmadan da mükerrer fatura koruması çalışır.
+
+### Nasıl okutulur
+
+1. **Kamera** — bilgisayarın webcam'i veya telefonun arka kamerası. Karekodu
+   çerçeveye alın, okunduğu anda pencere kapanır.
+2. **Fotoğraf / ekran görüntüsü** — çekilmiş bir resim dosyası seçilir.
+   PDF doğrudan okunamaz; PDF'i açıp karekodun **ekran görüntüsünü** alın.
+3. **Metni yapıştır** — pencerenin altındaki bölüm.
+
+> **Tarayıcı uyarısı:** karekod okuma **Chrome ve Edge**'de çalışır;
+> **Firefox ve Safari**'de yoktur. iPhone'da Safari zorunlu olduğu için
+> karekodu **Kamera uygulamasıyla** okutup çıkan metni kopyalayın, sonra
+> penceredeki *“Karekod metnini elle yapıştır”* kutusuna yapıştırın —
+> sonuç aynıdır. Kamera ayrıca yalnızca **https** adreste açılır.
+
+### Karekod okunmuyorsa
+
+- Karekodu daha yakından, düz ve net çekin; gölge veya parlama olmasın.
+- Faturanın karekodu yerine kargo/kampanya karekodunu okutmuş olabilirsiniz;
+  sistem bunu söyler ve okuduğu metni gösterir.
+- Hiç okunmuyorsa elle girişe devam edin: karekod bir kolaylıktır, zorunlu
+  değildir.
+
+---
+
+## 3. Elle giriş
 
 ### Fatura başlığı
 
@@ -91,7 +161,7 @@ düzeltirsiniz.
 
 ---
 
-## 3. Faturanın kendisini belgeye iliştirme
+## 4. Faturanın kendisini belgeye iliştirme
 
 Belge kaydedildikten sonra **Mal Girişi → Detay** ekranının altında **Fatura
 Dosyaları** bölümü vardır. **“📎 Fatura Dosyası Ekle”** ile faturanın PDF'ini,
@@ -122,7 +192,7 @@ erişilemez: her açılışta oturum ve kampüs yetkisi kontrol edilir.
 
 ---
 
-## 4. Faturanın devamı: ödeme ve iade
+## 5. Faturanın devamı: ödeme ve iade
 
 - **Ödeme** — Tedarikçiler → tedarikçiye tıklayın → **“+ Ödeme Kaydet”**.
   Bakiye = Alım − İade − Ödeme.
