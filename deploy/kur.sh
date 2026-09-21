@@ -10,6 +10,10 @@
 #   sudo bash kur.sh
 #   sudo ADMIN_EMAIL=mudur@topkapikoleji.org ADMIN_PASSWORD='Parola123!' bash kur.sh
 #
+# Guncelleme icin de ayni betik kullanilir: kodu ceker, imaji yeniden kurar.
+# Konteyneri yeniden kurmadan ONCE yedek alir (sema degisiklikleri geri
+# alinamaz); yedek alinamazsa onay sorar, onay yoksa durur.
+#
 # Bu betik NE YAPMAZ:
 #   - Host'a paket kurmaz (apt install yok)
 #   - ufw kurallarina dokunmaz
@@ -35,7 +39,7 @@ hata()  { printf '\n  \033[31m✗ %s\033[0m\n\n' "$1" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || hata "Bu betik root ile calismali: sudo bash kur.sh"
 
-bilgi "1/6  Ortam kontrolu"
+bilgi "1/8  Ortam kontrolu"
 command -v docker >/dev/null 2>&1 || hata "docker bulunamadi."
 docker compose version >/dev/null 2>&1 || hata "'docker compose' bulunamadi."
 ok "docker ve docker compose var"
@@ -49,7 +53,7 @@ else
      sudo CADDY_NETWORK=<ag-adi> bash kur.sh"
 fi
 
-bilgi "2/6  Kod"
+bilgi "2/8  Kod"
 mkdir -p "$DIZIN"
 if [ -d "$DIZIN/kaynak/.git" ]; then
   git -C "$DIZIN/kaynak" fetch --quiet origin "$DAL"
@@ -71,7 +75,7 @@ mkdir -p "$DIZIN/backups"
 chown -R 1000:1000 "$DIZIN/backups" 2>/dev/null || true
 ok "docker-compose.yml hazir (ag: $AG)"
 
-bilgi "3/6  Ayarlar (.env)"
+bilgi "3/8  Ayarlar (.env)"
 # Konteyner calisirken .env kaybolmus olabilir (or. dizin yanlislikla silindi).
 # Bu durumda YENI anahtar uretmek yanlis olur: calisan konteynerdeki degerleri
 # geri kurtaririz, boylece acik oturumlar ve yonetici parolasi degismez.
@@ -122,12 +126,37 @@ EOF
   fi
 fi
 
-bilgi "4/6  Imaj ve konteyner"
+bilgi "4/8  Guncelleme oncesi yedek"
+# Yeni surum sema degistirebilir (tablo ekleme, indeks yenileme, veri tasima).
+# Bunlar geri alinamaz; bu yuzden KONTEYNERI YENIDEN KURMADAN ONCE yedek
+# aliriz. Betigin sonundaki yedek guncelleme SONRASI durumu saklar; hatali
+# bir yukseltmede ise gereken ONCESIDIR.
+if docker inspect "$KONTEYNER" >/dev/null 2>&1; then
+  if YEDEK_ONCE="$(docker exec "$KONTEYNER" /app/scripts/yedekle.sh 2>&1)"; then
+    ok "Guncelleme oncesi yedek alindi ($DIZIN/backups)"
+    printf '%s\n' "$YEDEK_ONCE" | sed 's/^/     /'
+  else
+    uyari "Guncelleme oncesi yedek ALINAMADI. Hata:"
+    printf '%s\n' "$YEDEK_ONCE" | tail -8 | sed 's/^/     /'
+    printf '\n  Yedeksiz devam etmek risklidir. Devam edilsin mi? [e/H] '
+    read -r CEVAP </dev/tty 2>/dev/null || CEVAP=""
+    case "$CEVAP" in
+      e|E|evet|EVET) uyari "Yedeksiz devam ediliyor." ;;
+      *) hata "Kurulum durduruldu. Once yedek sorununu cozun:
+     docker exec $KONTEYNER /app/scripts/yedekle.sh
+     ls -ld $DIZIN/backups" ;;
+    esac
+  fi
+else
+  ok "Ilk kurulum: yedeklenecek mevcut kurulum yok"
+fi
+
+bilgi "5/8  Imaj ve konteyner"
 cd "$DIZIN"
 docker compose up -d --build
 ok "Konteyner ayakta"
 
-bilgi "5/6  Saglik kontrolu"
+bilgi "6/8  Saglik kontrolu"
 SAGLIK=""
 for i in $(seq 1 20); do
   if SAGLIK="$(docker exec "$KONTEYNER" node -e \
@@ -146,7 +175,7 @@ else
    En sik sebep: .env icinde satir ici yorum."
 fi
 
-bilgi "6/7  Otomatik yedekleme"
+bilgi "7/8  Otomatik yedekleme"
 # Fatura dosyalari veritabaninin ICINDE DEGIL: yedek betigi ikisini de alir.
 CRON=/etc/cron.d/kantin-yedek
 if [ -f "$CRON" ]; then
@@ -165,7 +194,7 @@ fi
 # Ilk yedegi hemen al ki calistigini SIMDI gorelim; yedeksiz uretim olmaz.
 if YEDEK_CIKTI="$(docker exec "$KONTEYNER" /app/scripts/yedekle.sh 2>&1)"; then
   ADET="$(ls -1 "$DIZIN/backups" 2>/dev/null | wc -l)"
-  ok "Ilk yedek alindi ($DIZIN/backups, $ADET dosya)"
+  ok "Guncelleme sonrasi yedek alindi ($DIZIN/backups, $ADET dosya)"
   printf '%s\n' "$YEDEK_CIKTI" | sed 's/^/     /'
   uyari "Yedekleri sunucu DISINA da kopyalayin; sunucu cokerse buradaki de gider"
 else
@@ -175,7 +204,7 @@ else
   printf '     Cozum denemesi: chown -R 1000:1000 %s\n' "$DIZIN/backups"
 fi
 
-bilgi "7/7  Son adim — Caddy kurali (ELLE)"
+bilgi "8/8  Son adim — Caddy kurali (ELLE)"
 cat <<EOF
   Kantin calisiyor ama disaridan erisim icin Caddy'ye tek blok eklemek
   gerekiyor. Bunu BILEREK otomatik yapmiyoruz: hatali bir reload mevcut

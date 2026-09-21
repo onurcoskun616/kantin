@@ -302,16 +302,44 @@ sudo docker start topkapi-kantin
 
 ## Güncelleme
 
+Kurulumla **aynı betik** kullanılır; kodu çeker, imajı yeniden kurar,
+`.env` dosyanıza dokunmaz:
+
 ```bash
-cd /opt/kantin-uygulama
-sudo docker exec topkapi-kantin /app/scripts/yedekle.sh   # önce yedek
-sudo git -C kaynak pull origin main
-sudo docker compose up -d --build
-sudo docker compose logs --tail 20
+curl -fsSL https://raw.githubusercontent.com/onurcoskun616/kantin/main/deploy/kur.sh -o /tmp/kur.sh
+sudo bash /tmp/kur.sh
 ```
 
-Veritabanı şeması geriye dönük uyumludur; eksik tablolar her açılışta eklenir,
-mevcut veriye dokunulmaz.
+> Betiği `/tmp`'ye indirip oradan çalıştırıyoruz. `/opt/kantin-uygulama/kaynak/`
+> içindeki kopyayı doğrudan çalıştırmayın: betik o dizini `git reset --hard`
+> ile tazeliyor, yani **çalışmakta olan dosyanın kendisini** değiştiriyor.
+
+Betik konteyneri yeniden kurmadan **önce yedek alır**. Yedek alınamazsa devam
+etmek için onay ister; onay vermezseniz durur ve hiçbir şey değişmez.
+
+### Şema değişiklikleri
+
+Veritabanı şeması geriye dönük uyumludur: eksik tablolar ve sütunlar her
+açılışta eklenir, mevcut veri korunur. Bazı sürümler veri **taşır** (örneğin
+mevcut satış fiyatlarını tarihli fiyat listesine aktarmak). Bunlar günlükte
+`[SEMA]` satırlarıyla görünür:
+
+```bash
+sudo docker compose -f /opt/kantin-uygulama/docker-compose.yml logs --tail 40 | grep SEMA
+```
+
+### Sorun çıkarsa geri dönüş
+
+```bash
+cd /opt/kantin-uygulama
+ls -lt backups | head                       # en yeni yedek hangisi
+sudo docker compose down
+# .db.gz dosyasını açıp volume'a geri koyun, sonra:
+sudo docker compose up -d
+```
+
+Yedekler `/opt/kantin-uygulama/backups` altındadır ve veritabanının yanında
+**fatura dosyalarını** da içerir.
 
 ---
 
