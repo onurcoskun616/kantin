@@ -30,7 +30,20 @@ async function request(method, path, body) {
 
   const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
 
-  const data = await res.json().catch(() => ({}));
+  // Govde AYRI okunur: basarili bir yanitin coz(umlenememesi ile hatali bir
+  // yanitin bos govdesi ayni sey degildir.
+  //
+  // Onceden ikisi de sessizce {} oluyordu. Boyle bir durumda (or. baglanti
+  // yanit ortasinda kesilirse) sayfa `data.items.find(...)` gibi bir yerde
+  // anlasilmaz bir TypeError ile coküyordu; kullanici ne oldugunu goremiyordu.
+  let data = {};
+  let cozumlemeHatasi = null;
+  try {
+    const metin = await res.text();
+    if (metin) data = JSON.parse(metin);
+  } catch (err) {
+    cozumlemeHatasi = err;
+  }
 
   // Giris denemesindeki 401 "oturum doldu" DEGILDIR: sunucunun gercek
   // mesajini ("E-posta veya parola hatali.") oldugu gibi gostermeliyiz.
@@ -43,6 +56,14 @@ async function request(method, path, body) {
     throw new ApiError(401, data.error || 'Oturum süresi doldu. Lütfen tekrar giriş yapın.');
   }
   if (!res.ok) throw new ApiError(res.status, data.error || `Beklenmeyen hata (${res.status})`, data.details);
+
+  // Basarili gorunen ama okunamayan yanit: yarim kalmis bir aktarim ya da
+  // araya giren bir vekil olabilir. Sessizce bos veri dondurmek yerine
+  // soyleriz; tekrar denemek cogu zaman yeterlidir.
+  if (cozumlemeHatasi) {
+    throw new ApiError(res.status,
+      'Sunucudan geçersiz yanıt alındı (bağlantı yarıda kesilmiş olabilir). Lütfen tekrar deneyin.');
+  }
   return data;
 }
 
@@ -53,8 +74,20 @@ async function upload(path, file, params) {
   const res = await fetch(withQuery(path, { filename: file.name, ...params }), {
     method: 'POST', headers, body: file,
   });
-  const data = await res.json().catch(() => ({}));
+  let data = {};
+  let cozumlemeHatasi = null;
+  try {
+    const metin = await res.text();
+    if (metin) data = JSON.parse(metin);
+  } catch (err) {
+    cozumlemeHatasi = err;
+  }
   if (!res.ok) throw new ApiError(res.status, data.error || `Yükleme başarısız (${res.status})`, data.details);
+  if (cozumlemeHatasi) {
+    throw new ApiError(res.status,
+      'Dosya gönderildi ama sunucunun yanıtı okunamadı. Belgeyi açıp ekin gerçekten '
+      + 'eklendiğini kontrol edin.');
+  }
   return data;
 }
 

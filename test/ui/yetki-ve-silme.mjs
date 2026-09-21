@@ -131,7 +131,38 @@ const silindiMi = await page.evaluate(async (no) => {
 }, belgeNo);
 ok('Belge listeden de gitti', silindiMi === false);
 
-console.log('\n3) On muhasebe rolu: veri girer, onaylamaz');
+console.log('\n3) Rol aciklamalari GERCEK yetkiyle uyusuyor');
+// Bir rolun yetkisi degisip ekrandaki aciklama eski kalirsa kullanici
+// yazanin aksine davranir ya da "boyle bir rol yok" sanir.
+await page.evaluate(() => { location.hash = '#/users'; });
+await page.waitForTimeout(2200);
+const rolKarti = await page.textContent('#pageContent');
+ok('On Muhasebe rolu listede var', /Ön Muhasebe/.test(rolKarti), rolKarti.slice(0, 200));
+ok('"Veri girisi" rolu oldugu yaziyor', /VERİ GİRİŞİ/.test(rolKarti), rolKarti.slice(0, 400));
+ok('Yapabildikleri sayiliyor', /fatura\/mal girişi/.test(rolKarti));
+ok('Yapamadiklari sayiliyor', /sayım açma\/kesinleştirme/.test(rolKarti));
+// Eski "salt okunur" aciklamasi ON MUHASEBE icin KALMAMALI (denetci icin durur)
+const onMuhasebeSatiri = await page.evaluate(() => {
+  const dts = [...document.querySelectorAll('dl.kv dt')];
+  const dt = dts.find((n) => n.textContent.trim() === 'Ön Muhasebe');
+  return dt ? dt.nextElementSibling.textContent : '';
+});
+ok('On Muhasebe artik "salt okunur" DEMIYOR', !/salt okunur/.test(onMuhasebeSatiri), onMuhasebeSatiri.slice(0, 200));
+ok('Denetci hala salt okunur', /salt okunur/.test(rolKarti));
+
+// Kullanici formundaki rol listesinde de gorunmeli
+await page.click('button:has-text("+ Yeni Kullanıcı")');
+await page.waitForSelector('.modal-backdrop');
+await page.waitForTimeout(400);
+const roller = await page.$$eval('.modal select[name=role] option', (ns) => ns.map((n) => n.textContent));
+ok('Rol listesinde On Muhasebe secilebiliyor',
+  roller.some((r) => /Ön Muhasebe/.test(r)), JSON.stringify(roller));
+ok('Etiket ne is yaptigini soyluyor',
+  roller.some((r) => /Ön Muhasebe \(veri girişi\)/.test(r)), JSON.stringify(roller));
+await page.click('.modal-head .icon-btn');
+await page.waitForTimeout(400);
+
+console.log('\n4) On muhasebe rolu: veri girer, onaylamaz');
 await page.evaluate(async ({ eposta, parola }) => {
   const t = localStorage.getItem('kantin_token');
   await fetch('/api/users', {

@@ -72,16 +72,35 @@ export async function renderUsers(root) {
       el('button.btn.btn-primary', { text: '+ Yeni Kullanıcı', onclick: () => openForm(null, campuses.items, draw) }),
     ]));
 
+    // Bu açıklamalar yetkilerle BİRLİKTE güncellenmeli. Bir rolün yetkisi
+    // değişip burası eski kalırsa kullanıcı ekranda yazanın aksine davranır
+    // (ya da "böyle bir rol yok" sanır).
+    const rolAciklama = (baslik, ozet, yapabilir = null, yapamaz = null) => [
+      el('dt', { text: baslik }),
+      el('dd', { style: 'text-align:left;font-weight:400' }, [
+        ozet,
+        yapabilir ? el('div.small', { text: `Yapabilir: ${yapabilir}`, style: 'color:var(--success);margin-top:3px' }) : null,
+        yapamaz ? el('div.small', { text: `Yapamaz: ${yapamaz}`, style: 'color:var(--text-muted);margin-top:2px' }) : null,
+      ]),
+    ];
+
     container.append(card('Rol Açıklamaları', [
       el('dl.kv', {}, [
-        el('dt', { text: 'Sistem Yöneticisi' }), el('dd', { text: 'Tüm yetkiler + kullanıcı yönetimi', style: 'text-align:left;font-weight:400' }),
-        el('dt', { text: 'Genel Müdürlük' }), el('dd', { text: 'Tüm kampüsleri görür ve yönetir', style: 'text-align:left;font-weight:400' }),
-        el('dt', { text: 'Kampüs Yöneticisi' }), el('dd', { text: 'Kendi kampüsü — sayım kesinleştirebilir', style: 'text-align:left;font-weight:400' }),
-        el('dt', { text: 'Kantin Görevlisi' }), el('dd', { text: 'Kendi kampüsü — veri girer, sayım kesinleştiremez', style: 'text-align:left;font-weight:400' }),
-        el('dt', { text: 'Ön Muhasebe' }), el('dd', { text: 'Tüm kampüsler, salt okunur — yalnızca ciro teslim fişini onaylayabilir', style: 'text-align:left;font-weight:400' }),
-        el('dt', { text: 'Denetçi' }), el('dd', { text: 'Tüm kampüsler, salt okunur', style: 'text-align:left;font-weight:400' }),
+        ...rolAciklama('Sistem Yöneticisi', 'Tüm yetkiler + kullanıcı yönetimi'),
+        ...rolAciklama('Genel Müdürlük', 'Tüm kampüsleri görür ve yönetir',
+          null, 'yalnızca kullanıcı tanımlamada sistem yöneticisiyle aynı yetkide değil'),
+        ...rolAciklama('Kampüs Yöneticisi', 'Kendi kampüsü — sayım kesinleştirebilir'),
+        ...rolAciklama('Kantin Görevlisi', 'Kendi kampüsü — veri girer',
+          null, 'sayım kesinleştiremez'),
+        ...rolAciklama('Ön Muhasebe', 'Tüm kampüsler — VERİ GİRİŞİ rolü',
+          'fatura/mal girişi, tedarikçi ve ödemeler, iadeler, ürün kartı ve fiyatlar, '
+          + 'günlük ciro girişi, ciro teslim fişi onayı',
+          'sayım açma/kesinleştirme, stok düzeltme ve fire, reçete, kampüs ve kullanıcı '
+          + 'tanımı, belgeyi kalıcı silme'),
+        ...rolAciklama('Denetçi', 'Tüm kampüsler, salt okunur',
+          null, 'hiçbir kaydı değiştiremez'),
       ]),
-    ]));
+    ], { note: 'Yetkiler sunucuda uygulanır; arayüz yalnızca kullanılamayan düğmeleri gizler.' }));
 
     container.append(card(null, [
       table([

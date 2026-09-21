@@ -204,10 +204,25 @@ açılır; yazdırma onun üstüne gelir.
 
 ### Ön Muhasebe rolü
 
-Bu akış için `MUHASEBE` rolü eklendi. Bu rol **tüm kampüsleri görür ama salt
-okunurdur**: tek yazma yetkisi teslim fişini onaylamaktır. Ciro giremez, stok
-oynayamaz, sayım değiştiremez. Yetki sunucuda `requireWrite` tarafından
-kapatılır, onay ucu ise `requireRole` ile ayrıca açılır.
+`MUHASEBE` rolü **tüm kampüsleri görür** ve bir **veri girişi** rolüdür:
+belge girer, **onaylamaz/kesinleştirmez**.
+
+| Yapabilir | Yapamaz |
+|---|---|
+| Fatura / mal girişi, fatura dosyası ekleme, belge iptali | Sayım açma ve kesinleştirme |
+| Tedarikçi tanımı, ödeme ve iade kaydı | Stok düzeltme, fire, kampüsler arası transfer |
+| Ürün kartı ve satış fiyatı | Reçete tanımı |
+| Günlük ciro girişi | Kampüs ve kullanıcı tanımı |
+| **Ciro teslim fişini onaylama** | Belgeyi **kalıcı silme** (iptal edebilir) |
+
+Yetki sunucuda alan alan verilir (`requireWrite(user, alan)`); teslim fişi
+onayı ayrıca `requireRole` ile açılır. **Varsayılan kapalıdır**: alan adı
+verilmeyen bir uç bu role otomatik açılmaz, böylece sonradan eklenen bir uç
+yanlışlıkla açık kalmaz.
+
+> Sayım kesinleştirme bilerek dışarıdadır: mutabakatın kendisidir, veri
+> girişi değildir. Aynı kişinin hem veriyi girip hem mutabakatı onaylaması
+> denetimin anlamını ortadan kaldırır.
 
 ### Teslim edilmemiş ciro
 
@@ -276,8 +291,14 @@ Süreç önerileri için `docs/YOL-HARITASI.md` dosyasının son bölümüne bak
 | Kilitli sayımı yeniden açma | — | — | ✓ (gerekçeli) | — | — |
 | Kör sayımı kapatma | — | — | ✓ | — | — |
 | Kesinleşmiş sayımı silme | — | — | — | — | — |
-| Ciro girme / düzeltme | ✓ | ✓ | ✓ | — | — |
+| Ciro girme / düzeltme | ✓ | ✓ | ✓ | ✓ | — |
 | Teslim fişi oluşturma (çıktı) | ✓ | ✓ | ✓ | — | — |
+| Fatura / mal girişi | ✓ | ✓ | ✓ | ✓ | — |
+| Belgeyi iptal etme | ✓ | ✓ | ✓ | ✓ | — |
+| Belgeyi kalıcı silme | — | — | ✓ | — | — |
+| Tedarikçi, ödeme, iade | ✓ | ✓ | ✓ | ✓ | — |
+| Ürün kartı ve satış fiyatı | ✓ | ✓ | ✓ | ✓ | — |
+| Stok düzeltme / fire / transfer | ✓ | ✓ | ✓ | — | — |
 | Teslim fişini onaylama (kodla) | — | — | ✓ | ✓ | — |
 | Fişe dahil günün cirosunu değiştirme | — | — | ✓ (fiş "FARKLI" olur) | — | — |
 | Teslim fişini silme | — | — | — | — | — |

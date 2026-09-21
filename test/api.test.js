@@ -1844,3 +1844,31 @@ describe('Toplu yukleme fiyatlari', () => {
     assert.equal(fiyatlar.items[0].sale_price, 16);
   });
 });
+
+/* ===== Istemci: bozuk yanitlar anlasilir hataya donusur ============ */
+describe('Bozuk sunucu yaniti', () => {
+  // Istemci katmani tarayicida calisiyor; burada sunucunun HER ZAMAN
+  // gecerli JSON dondurdugunu dogrularız. Istemci tarafindaki koruma
+  // test/ui/yetki-ve-silme.mjs icinde degil, api.js icinde: 2xx olup
+  // cozumlenemeyen govde sessizce {} olmaz, anlasilir hata firlatir.
+  test('tum basarili uclar gecerli JSON dondurur', async () => {
+    const yollar = [
+      '/api/campuses', '/api/products', '/api/products/categories', '/api/suppliers',
+      '/api/purchases', '/api/purchases/unmatched', '/api/counts', '/api/audit',
+    ];
+    for (const yol of yollar) {
+      const res = await fetch(BASE + yol, { headers: { Authorization: `Bearer ${token}` } });
+      const metin = await res.text();
+      assert.equal(res.status, 200, `${yol} -> ${res.status}`);
+      assert.doesNotThrow(() => JSON.parse(metin), `${yol} gecerli JSON dondurmeli`);
+      assert.match(res.headers.get('content-type') || '', /json/, `${yol} icin content-type`);
+    }
+  });
+
+  test('hata yanitlari da JSON ve "error" alani tasir', async () => {
+    const r = await fetch(`${BASE}/api/products/999999`, { headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(r.status, 404);
+    const data = JSON.parse(await r.text());
+    assert.ok(data.error, JSON.stringify(data));
+  });
+});

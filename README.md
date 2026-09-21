@@ -128,7 +128,8 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
 
 ### Güvenlik ve yönetim
 - 6 rol: Sistem Yöneticisi, Genel Müdürlük, Kampüs Yöneticisi, Kantin Görevlisi,
-  **Ön Muhasebe** (veri girişi), Denetçi (salt okunur)
+  **Ön Muhasebe (veri girişi)**, Denetçi (salt okunur). Kullanıcılar ekranındaki
+  **Rol Açıklamaları** kartı her rolün ne yapıp ne yapamadığını tek tek sayar
 - **Ön muhasebe** bir veri girişi rolüdür: fatura/mal girişi, tedarikçi ve
   ödemeler, iadeler, ürün kartı ve fiyatlar, günlük ciro girer; teslim fişini
   onaylar. Sayım kesinleştiremez, stok düzeltemez, kuruluş tanımlarına
