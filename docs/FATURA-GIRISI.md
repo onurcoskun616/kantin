@@ -15,6 +15,55 @@ Faturayı üç yoldan girebilirsiniz; üçü de aynı belgeyi üretir:
 
 ---
 
+## 0. İlk kurulum: açılış stoğu MU, geçmiş faturalar MI?
+
+> **Bu bölümü atlamayın.** İkisini birden yaparsanız stok iki katına çıkar ve
+> ilk sayımda açıklayamayacağınız bir fark çıkar.
+
+Sistemi kurarken stoğu oluşturmanın iki yolu var. **Birini seçin:**
+
+### Yol A — Açılış stoğu (önerilen)
+
+Bir gün belirleyin (örneğin 1 Ekim). O gün rafları sayın ve **Stok Durumu →
+Açılış Stoğu** ekranından miktarları girin. Maliyet olarak elinizdeki son
+alış fiyatını yazarsınız.
+
+- **Hızlıdır** — bir günlük iş
+- Sayım o günden itibaren tutarlı çalışır
+- O günden **sonraki** faturaları normal şekilde girersiniz
+
+Geçmiş faturaları *kayıt için* saklamak isterseniz girebilirsiniz ama
+**belge tarihini açılış gününden önce** vermeyin — yoksa o alımlar da
+stoğa eklenir.
+
+### Yol B — Geçmiş faturalardan oluşturma
+
+Açılış stoğu **girmezsiniz**. Bunun yerine belirli bir tarihten bugüne kadarki
+tüm alış faturalarını girersiniz; stok bunlardan oluşur.
+
+- Geçmiş maliyetler ve tedarikçi cariniz de doğru oluşur
+- Ama **satışlar sistemde olmadığı için** stok olduğundan yüksek çıkar:
+  sistem malın girdiğini bilir, satıldığını bilmez
+- Bu yüzden ilk sayımı yaptığınızda büyük bir "eksik" farkı görürsünüz —
+  bu fark gerçekte o dönemin satışıdır
+
+Yol B'yi seçerseniz **ilk sayımı bir düzeltme sayımı gibi düşünün**: fark
+normaldir, kesinleştirdiğinizde stok gerçeğe oturur.
+
+### Hangisi?
+
+| | Yol A (açılış stoğu) | Yol B (geçmiş faturalar) |
+|---|---|---|
+| Emek | Bir günlük sayım | Tüm faturaların girişi |
+| Stok doğruluğu | İlk günden doğru | İlk sayıma kadar yüksek |
+| Geçmiş maliyet/cari | Yok | Var |
+| Tavsiye | ✅ | Geçmiş cari hesap gerekiyorsa |
+
+**Karma yapmayın.** Hem açılış stoğu girip hem de o tarihten önceki
+faturaları girerseniz aynı mal iki kez stoğa girer.
+
+---
+
 ## 1. e-Fatura / e-Arşiv XML'den otomatik doldurma
 
 Formun üstündeki **“🧾 e-Fatura XML'den Doldur”** düğmesine basıp entegratörden
@@ -54,6 +103,62 @@ bulabilmeniz için.
 
 > Bu kontroller bilerek var: XML'den gelen rakamı körlemesine kabul etmek,
 > elle girmekten daha tehlikeli olurdu — hatayı kimse görmez.
+
+### Aynı ürün, farklı adlar — sistem bir kez öğrenir
+
+Aynı ürün her faturada aynı adla gelmez:
+
+| Tedarikçi | Faturada yazan |
+|---|---|
+| Anadolu Gıda | `AYRAN 200 ML` |
+| Marmara Dağıtım | `KUTU AYRAN` |
+| Öz Kuruyemiş | `AYRAN PK 200ML` |
+
+Üçü de sizin **Ayran 200 ml** ürününüzdür. Her faturada elle eşleştirmek hem
+zaman kaybı hem hata kaynağıdır: aynı ürün iki ayrı kart olarak açılırsa stok
+ikiye bölünür ve sayım farkı açıklanamaz hale gelir.
+
+**Çözüm: bir kez seçersiniz, sistem öğrenir.** Faturayı kaydettiğinizde
+"bu tedarikçinin bu adla gönderdiği kalem = bizim şu ürünümüz" bilgisi
+saklanır. O tedarikçinin sonraki faturalarında aynı kalem kendiliğinden
+bulunur ve ekranda *“önceki eşleştirmelerden bulundu”* yazar.
+
+- Eşleştirme **tedarikçi bazlıdır**: A'nın "KUTU AYRAN"ı B'yi etkilemez.
+- **Satıcı ürün kodu** varsa o kullanılır — addan daha güvenilirdir.
+- Büyük/küçük harf, fazladan boşluk, noktalama ve Türkçe karakter fark etmez:
+  `KUTU AYRAN 200ML` ile `kutu ayran 200ml.` aynı sayılır.
+- Yanlış eşleşmiş bir satırı formda düzeltirseniz, **düzeltme de öğrenilir**.
+
+### Koli / paket alıyorsanız: çevrim çarpanı
+
+Tedarikçi koli satıyor ama siz adet sayıyorsanız miktarlar tutmaz. Her
+eşleştirmenin bir **çevrim çarpanı** vardır:
+
+> 1 fatura birimi = **24** stok birimi
+
+Fatura `10 koli × 192,00 TL` diyorsa stoğa `240 adet × 8,00 TL` girer.
+**Belge tutarı değişmez**, yalnızca birim çevrilir. Çevrim yapıldığında
+fatura okunurken ekranda söylenir.
+
+Çarpan varsayılan olarak **1**'dir. Koli alıyorsanız ilk faturadan sonra
+**Tedarikçiler → 🔗 Ürün Eşleştirmeleri** ekranından düzeltin.
+
+> Yanlış çarpan stoğu sessizce bozar: 24'lük koliyi 1 adet sayarsanız
+> stok 24 kat eksik görünür ve sayım farkı patlar. İlk faturadan sonra
+> çarpanları bir kez gözden geçirin.
+
+### Eşleştirmeleri görme ve düzeltme
+
+**Tedarikçiler → 🔗 Ürün Eşleştirmeleri** (ya da bir tedarikçinin satırındaki
+**Eşleştirmeler**) ekranı öğrenilen her şeyi listeler: faturadaki ad, satıcı
+kodu, hangi ürüne bağlandığı, çevrim çarpanı, kaç faturada kullanıldığı.
+
+- **Düzelt** — yanlış ürüne bağlanmışsa değiştirin, çarpanı ayarlayın
+- **Sil** — artık kullanılmayan kaydı kaldırın
+
+Silmek **geçmiş belgeleri etkilemez**: kaydedilmiş satırlar zaten ürüne
+bağlıdır. Yalnızca bundan sonraki faturalarda o kalem yeniden elle
+eşleştirilir.
 
 ### Eşleşmeyen kalemi elle bağlama veya yeni ürün açma
 

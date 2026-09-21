@@ -93,6 +93,14 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
   satırlar faturanın KDV oranı başına matrah/KDV toplamlarıyla anlık karşılaştırılır**;
   fark kalırsa kaydederken onay istenir. XML olmadan da mükerrer fatura koruması çalışır
 - Adım adım: **[docs/FATURA-GIRISI.md](docs/FATURA-GIRISI.md)**
+- **Tedarikçi ürün eşleştirmesi (öğrenen)** — aynı ürün her faturada aynı adla
+  gelmez ("AYRAN 200 ML" / "KUTU AYRAN" / "AYRAN PK"). Bir kez eşleştirdiğinizde
+  sistem öğrenir; o tedarikçinin sonraki faturalarında kalem kendiliğinden
+  bulunur. Eşleştirme tedarikçi bazlıdır, satıcı ürün kodu varsa o kullanılır,
+  yazım farkları (harf/boşluk/noktalama/Türkçe) önemsenmez. **Çevrim çarpanı**
+  ile koli/paket alımı adede çevrilir (1 fatura birimi = N stok birimi);
+  belge tutarı değişmez. Tedarikçiler → 🔗 Ürün Eşleştirmeleri ekranından
+  görülüp düzeltilir
 - **Aranabilir ürün seçici** — fatura satırında ürün adını yazdıkça süzülür;
   her satırda barkod ve **mevcut stok** görünür. Türkçe karakter gerekmez
   ("cay" → "Çay"). Listenin sonundan, faturadaki bilgilerle **yerinde yeni
@@ -210,6 +218,7 @@ npm run test:ui # tarayıcı regresyon testleri:
                 #   eslesmeyen-satirlar — kayda alınmayan kalemin izi ve çözümü
                 #   belge-iskontosu — belge geneli iskontonun satırlara dağıtımı
                 #   fiyat-mimarisi — alış faturadan, satış tarih bazlı
+                #   urun-eslestirme — tedarikçi ürün adlarının öğrenilmesi
 ```
 
 `test:ui` Playwright gerektirir (`npm i -g playwright && playwright install chromium`)

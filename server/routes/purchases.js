@@ -7,6 +7,7 @@ import { logAudit } from '../lib/audit.js';
 import { str, num, int, date, arr, today } from '../lib/validate.js';
 import { purchaseLineTotals, round2 } from '../lib/money.js';
 import { addMovement } from '../lib/stock.js';
+import { learnAlias } from './products.js';
 
 export const purchaseRoutes = new Router();
 
@@ -319,6 +320,10 @@ purchaseRoutes.post('/', async (ctx) => {
       expiryDate: date(raw.expiryDate, `Satir ${i + 1} SKT`, { def: null }),
       // Iskonto sonrasi gercek birim maliyet
       effectiveUnitCost: quantity > 0 ? round2(totals.netTotal / quantity) : 0,
+      // Faturada bu kalem hangi ad/kodla geldi? Eslestirme bundan ogrenilir.
+      sourceName: str(raw.sourceName, `Satir ${i + 1} fatura adi`, { max: 300 }),
+      sourceCode: str(raw.sourceCode, `Satir ${i + 1} satici kodu`, { max: 60 }),
+      aliasFactor: num(raw.aliasFactor, `Satir ${i + 1} cevrim carpani`, { min: 0.0001, max: 100000, def: 1 }) ?? 1,
     };
   });
 
@@ -359,6 +364,17 @@ purchaseRoutes.post('/', async (ctx) => {
         );
       }
     }
+    // ESLESTIRMEYI OGREN: faturadaki ad/kod ile secilen urunu baglar.
+    // Ayni tedarikcinin sonraki faturalarinda bu kalem kendiliginden
+    // eslesir; kullanici ayni isi ikinci kez yapmaz.
+    for (const l of prepared) {
+      if (!l.sourceName && !l.sourceCode) continue;
+      learnAlias({
+        productId: l.productId, supplierId, sourceCode: l.sourceCode,
+        sourceName: l.sourceName, factor: l.aliasFactor, userId: ctx.user.id,
+      });
+    }
+
     for (const u of unmatched) {
       const ad = str(u.sourceName, 'Faturadaki ad', { max: 300 });
       if (!ad) continue;
@@ -394,7 +410,11 @@ purchaseRoutes.post('/', async (ctx) => {
       increasePct: round2(((l.effectiveUnitCost - l.product.purchase_price) / l.product.purchase_price) * 100),
     }));
 
-  return { id: purchaseId, netTotal, vatTotal, grossTotal, priceAlerts, unmatchedCount: unmatched.length };
+  return {
+    id: purchaseId, netTotal, vatTotal, grossTotal, priceAlerts,
+    unmatchedCount: unmatched.length,
+    learnedAliases: prepared.filter((l) => l.sourceName || l.sourceCode).length,
+  };
 });
 
 /* ======================= ALIM BELGESI EKLERI ======================= */

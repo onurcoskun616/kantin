@@ -1,7 +1,8 @@
 /** Ürün kataloğu, fiyat/kâr yönetimi ve tedarikçiler. */
 import { api } from '../api.js';
 import { state, canWrite } from '../app.js';
-import { el, card, stat, table, fmt, badge, modal, toast, formModal, deltaCell, alertBox, empty, shortName, dateUtil } from '../ui.js';
+import { el, card, stat, table, fmt, badge, modal, toast, formModal, deltaCell, alertBox, empty, shortName, dateUtil, confirmDialog } from '../ui.js';
+import { createProductPicker } from '../urun-secici.js';
 
 /* ============================== Ürünler ============================= */
 export async function renderProducts(root) {
@@ -368,7 +369,10 @@ export async function renderSuppliers(root) {
 
     container.append(el('div.row', { style: 'justify-content:space-between' }, [
       el('h3', { text: 'Tedarikçiler' }),
-      canWrite("products") ? el('button.btn.btn-primary', { text: '+ Yeni Tedarikçi', onclick: () => openSupplierForm(null, draw) }) : null,
+      el('div.btn-row', {}, [
+        el('button.btn', { text: '🔗 Ürün Eşleştirmeleri', onclick: () => openAliases(null, draw) }),
+        canWrite('products') ? el('button.btn.btn-primary', { text: '+ Yeni Tedarikçi', onclick: () => openSupplierForm(null, draw) }) : null,
+      ]),
     ]));
 
     container.append(card(null, [
@@ -381,12 +385,176 @@ export async function renderSuppliers(root) {
         {
           label: '', render: (r) => el('div.btn-row', {}, [
             el('button.btn.btn-sm', { text: 'Cari Hesap', onclick: () => showSupplier(r.id, draw) }),
-            canWrite("products") ? el('button.btn.btn-sm', { text: 'Düzenle', onclick: () => openSupplierForm(r, draw) }) : null,
+            el('button.btn.btn-sm', { text: '🔗 Eşleştirmeler', onclick: () => openAliases(r, draw) }),
+            canWrite('products') ? el('button.btn.btn-sm', { text: 'Düzenle', onclick: () => openSupplierForm(r, draw) }) : null,
           ]),
         },
       ], data.items, { emptyText: 'Tedarikçi kaydı yok.' }),
     ], { tight: true }));
   }
+}
+
+/**
+ * TEDARİKÇİ ÜRÜN EŞLEŞTİRMELERİ
+ *
+ * Aynı ürün her faturada aynı adla gelmez: bir tedarikçi "AYRAN 200 ML",
+ * öteki "KUTU AYRAN" yazar. Bir kez eşleştirilen ad burada saklanır ve
+ * sonraki faturalarda kendiliğinden bulunur.
+ *
+ * Bu ekran o listeyi gösterir: yanlış bir eşleştirmeyi düzeltmek, koli/paket
+ * çarpanını ayarlamak ve artık kullanılmayan kaydı silmek için.
+ */
+async function openAliases(supplier, onDone) {
+  const govde = el('div');
+  const arama = el('input', { type: 'search', placeholder: 'Faturadaki ad, kod veya ürün ara…' });
+  const products = await api.get('/api/products');
+
+  async function yenile() {
+    const data = await api.get('/api/products/aliases', {
+      supplierId: supplier?.id ?? undefined,
+      search: arama.value.trim() || undefined,
+    });
+
+    govde.replaceChildren(table([
+      {
+        label: 'Faturada geçen ad', wrap: true,
+        render: (r) => el('div', {}, [
+          el('strong', { text: r.source_name || '—' }),
+          r.source_code ? el('small.muted', { text: r.source_code, style: 'display:block' }) : null,
+        ]),
+      },
+      { label: 'Tedarikçi', value: (r) => (r.supplier_name ? shortName(r.supplier_name) : 'Tüm tedarikçiler') },
+      {
+        label: 'Bizdeki ürün', wrap: true,
+        render: (r) => el('div', {}, [
+          el('strong', { text: r.product_name }),
+          r.product_barcode ? el('small.muted', { text: r.product_barcode, style: 'display:block' }) : null,
+        ]),
+      },
+      {
+        label: 'Çevrim', num: true,
+        render: (r) => (Number(r.factor) === 1
+          ? el('span.muted', { text: '1 : 1' })
+          : badge(`1 fatura = ${fmt.num(r.factor)} ${r.product_unit || 'birim'}`, 'warn')),
+      },
+      {
+        // Kac faturada kullanildi + en son ne zaman. Tek sutunda: islem
+        // dugmeleri ekranin disinda kalmasin.
+        label: 'Kullanım', num: true,
+        render: (r) => el('div', {}, [
+          el('strong', { text: fmt.int(r.use_count) }),
+          r.last_used_at
+            ? el('small.muted', { text: fmt.date(r.last_used_at.slice(0, 10)), style: 'display:block' })
+            : null,
+        ]),
+      },
+      {
+        label: '',
+        render: (r) => (canWrite('products')
+          ? el('div.btn-row', {}, [
+            el('button.btn.btn-sm', { text: 'Düzelt', onclick: () => duzelt(r) }),
+            el('button.btn.btn-sm.btn-danger', {
+              text: 'Sil',
+              onclick: async () => {
+                const onay = await confirmDialog(
+                  `"${r.source_name || r.source_code}" → ${r.product_name} eşleştirmesi silinecek. `
+                  + 'Geçmiş belgeler etkilenmez; yalnızca bundan sonraki faturalarda bu kalem '
+                  + 'yeniden elle eşleştirilir.',
+                  { title: 'Eşleştirmeyi Sil', confirmText: 'Sil', danger: true }
+                );
+                if (!onay) return;
+                try {
+                  await api.del(`/api/products/aliases/${r.id}`);
+                  toast('Eşleştirme silindi.');
+                  await yenile();
+                } catch (err) { toast(err.message, 'error'); }
+              },
+            }),
+          ])
+          : el('span.muted', { text: '—' })),
+      },
+    ], data.items, {
+      emptyText: supplier
+        ? 'Bu tedarikçi için henüz eşleştirme öğrenilmedi. İlk faturayı girdiğinizde oluşacak.'
+        : 'Henüz eşleştirme yok. Fatura girdikçe kendiliğinden oluşur.',
+    }));
+  }
+
+  /** Yanlış eşleşen kalemi doğru ürüne bağlar ya da çarpanı düzeltir. */
+  function duzelt(row) {
+    const picker = createProductPicker({
+      products: products.items,
+      value: row.product_id,
+      placeholder: 'Ürün arayın…',
+    });
+    const carpan = el('input.num', { type: 'number', step: '0.01', min: '0.01', value: String(row.factor) });
+    const hata = el('div.alert.alert-danger', { hidden: true });
+    const kaydet = el('button.btn.btn-primary', { text: 'Kaydet' });
+
+    const m2 = modal({
+      title: 'Eşleştirmeyi Düzelt',
+      body: [
+        hata,
+        el('dl.kv', {}, [
+          el('dt', { text: 'Faturada geçen ad' }), el('dd', { text: row.source_name || row.source_code }),
+          el('dt', { text: 'Tedarikçi' }), el('dd', { text: row.supplier_name || 'Tüm tedarikçiler' }),
+        ]),
+        el('label.field', {}, [el('span', { text: 'Bizdeki ürün' }), picker.node]),
+        el('label.field', {}, [
+          el('span', { text: 'Çevrim çarpanı' }),
+          carpan,
+          el('small', {
+            text: '1 fatura birimi kaç stok birimine karşılık geliyor? Tedarikçi koli '
+              + 'satıyor ve 1 koli 24 adetse 24 yazın. Miktar çarpılır, birim fiyat '
+              + 'bölünür; belge tutarı değişmez. Aynı birimse 1 bırakın.',
+          }),
+        ]),
+      ],
+      actions: [el('button.btn', { text: 'Vazgeç', onclick: () => m2.close() }), kaydet],
+    });
+
+    kaydet.addEventListener('click', async () => {
+      hata.hidden = true;
+      if (!picker.getValue()) {
+        hata.textContent = 'Bir ürün seçin.';
+        hata.hidden = false;
+        return;
+      }
+      kaydet.disabled = true;
+      try {
+        await api.put(`/api/products/aliases/${row.id}`, {
+          productId: picker.getValue(),
+          factor: Number(carpan.value) || 1,
+        });
+        m2.close();
+        toast('Eşleştirme güncellendi.');
+        await yenile();
+      } catch (err) {
+        hata.textContent = err.message;
+        hata.hidden = false;
+        kaydet.disabled = false;
+      }
+    });
+  }
+
+  arama.addEventListener('input', () => { clearTimeout(arama.__t); arama.__t = setTimeout(yenile, 300); });
+
+  const m = modal({
+    title: supplier ? `🔗 Ürün Eşleştirmeleri — ${supplier.name}` : '🔗 Tedarikçi Ürün Eşleştirmeleri',
+    wide: true,
+    body: [
+      alertBox('info', 'Eşleştirme bir kez yapılır',
+        'Aynı ürün her faturada aynı adla gelmez — bir tedarikçi "AYRAN 200 ML", '
+        + 'öteki "KUTU AYRAN" yazabilir. Fatura girerken doğru ürünü bir kez '
+        + 'seçtiğinizde sistem bunu öğrenir; o tedarikçinin sonraki faturalarında '
+        + 'aynı kalem kendiliğinden bulunur. Burası öğrenilenlerin listesidir.'),
+      el('label.field', {}, [el('span', { text: 'Ara' }), arama]),
+      govde,
+    ],
+    actions: [el('button.btn', { text: 'Kapat', onclick: () => { m.close(); onDone?.(); } })],
+  });
+
+  await yenile();
 }
 
 async function showSupplier(id, onDone) {

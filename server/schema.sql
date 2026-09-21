@@ -256,6 +256,51 @@ CREATE TABLE IF NOT EXISTS purchases (
   created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+-- TEDARIKCI URUN ESLESTIRMELERI (ogrenilen takma adlar)
+--
+-- Ayni urun her faturada ayni adla gelmez:
+--   Tedarikci A : "AYRAN 200 ML"
+--   Tedarikci B : "KUTU AYRAN"
+--   Tedarikci C : "AYRAN PK 200ML"
+-- Hepsi bizim "Ayran 200 ml" urunumuzdur. Her faturada elle eslestirmek
+-- hem zaman kaybi hem hata kaynagidir: ayni urun iki ayri kart olarak
+-- acilirsa stok ikiye bolunur ve sayim farki aciklanamaz hale gelir.
+--
+-- Cozum: eslestirme BIR KEZ yapilir ve burada saklanir. Ayni tedarikcinin
+-- sonraki faturalarinda ayni ad/kod kendiliginden eslesir.
+--
+-- supplier_id NULL = tum tedarikciler icin gecerli genel takma ad
+--
+-- factor: FATURA BIRIMI -> STOK BIRIMI cevrimi. Tedarikci koli satiyorsa
+-- (1 koli = 24 adet) factor 24'tur; 1 fatura birimi kac stok birimine
+-- karsilik geliyorsa o yazilir. Miktar carpilir, birim fiyat bolunur.
+-- Yanlis birim stogu sessizce bozar; bu yuzden ayri bir alan.
+CREATE TABLE IF NOT EXISTS product_aliases (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id       INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  supplier_id      INTEGER REFERENCES suppliers(id) ON DELETE CASCADE,
+  source_code      TEXT,          -- satici urun kodu / barkod (en guvenilir)
+  source_name      TEXT,          -- faturada yazan ad (gosterim icin)
+  source_name_norm TEXT,          -- eslestirme icin sadelestirilmis hali
+  factor           REAL    NOT NULL DEFAULT 1 CHECK (factor > 0),
+  use_count        INTEGER NOT NULL DEFAULT 0,
+  last_used_at     TEXT,
+  created_by       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+-- Ayni tedarikci + ayni kod/ad ikinci bir urune baglanamaz: aksi halde
+-- hangi urune gidecegi belirsiz olur. supplier_id NULL olabildigi ve
+-- SQLite'ta NULL'lar esit sayilmadigi icin dort ayri indeks gerekir.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alias_sup_code
+  ON product_aliases(supplier_id, source_code) WHERE supplier_id IS NOT NULL AND source_code IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alias_sup_name
+  ON product_aliases(supplier_id, source_name_norm) WHERE supplier_id IS NOT NULL AND source_name_norm IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alias_gen_code
+  ON product_aliases(source_code) WHERE supplier_id IS NULL AND source_code IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_alias_gen_name
+  ON product_aliases(source_name_norm) WHERE supplier_id IS NULL AND source_name_norm IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_alias_product ON product_aliases(product_id);
+
 -- FATURADA OLUP KAYITLARA ALINMAYAN SATIRLAR
 --
 -- e-Fatura XML'i aktarilirken bazi kalemler sistemde karsilik bulamaz

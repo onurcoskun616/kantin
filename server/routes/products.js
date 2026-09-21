@@ -6,6 +6,7 @@ import { logAudit } from '../lib/audit.js';
 import { str, num, int, bool, date, today, oneOf } from '../lib/validate.js';
 import { productProfit } from '../lib/money.js';
 import { lastPurchaseSql, salePriceSql } from '../lib/stock.js';
+import { normalizeTr } from '../lib/metin.js';
 
 export const productRoutes = new Router();
 
@@ -86,6 +87,145 @@ productRoutes.get('/', async (ctx) => {
     ]));
   }
   return { items };
+});
+
+/* ================= TEDARIKCI URUN ESLESTIRMELERI ================== */
+/**
+ * Ogrenilen takma adi kaydeder (ya da mevcut olani gunceller).
+ *
+ * Ayni tedarikci + ayni kod/ad ikinci bir urune baglanamaz (benzersiz
+ * indeks). Kullanici eslestirmeyi degistirmek isterse yeni urun yazilir,
+ * eski kayit uzerine gecer.
+ *
+ * @returns yazilan satir, ya da eslestirilecek bir sey yoksa null
+ */
+export function learnAlias({ productId, supplierId = null, sourceCode = null, sourceName = null, factor = 1, userId = null }) {
+  const kod = String(sourceCode || '').trim() || null;
+  const ad = String(sourceName || '').trim() || null;
+  const adNorm = ad ? normalizeTr(ad) : null;
+  // Ne kod ne ad varsa ogrenecek bir sey yok
+  if (!kod && !adNorm) return null;
+
+  const mevcut = get(
+    supplierId
+      ? `SELECT * FROM product_aliases
+          WHERE supplier_id = ? AND ((source_code IS NOT NULL AND source_code = ?)
+                                  OR (source_name_norm IS NOT NULL AND source_name_norm = ?))
+          LIMIT 1`
+      : `SELECT * FROM product_aliases
+          WHERE supplier_id IS NULL AND ((source_code IS NOT NULL AND source_code = ?)
+                                      OR (source_name_norm IS NOT NULL AND source_name_norm = ?))
+          LIMIT 1`,
+    supplierId ? [supplierId, kod, adNorm] : [kod, adNorm]
+  );
+
+  if (mevcut) {
+    run(
+      `UPDATE product_aliases
+          SET product_id = ?, source_code = COALESCE(?, source_code),
+              source_name = COALESCE(?, source_name), source_name_norm = COALESCE(?, source_name_norm),
+              factor = ?, use_count = use_count + 1, last_used_at = datetime('now')
+        WHERE id = ?`,
+      [productId, kod, ad, adNorm, factor, mevcut.id]
+    );
+    return get('SELECT * FROM product_aliases WHERE id = ?', [mevcut.id]);
+  }
+
+  const id = insert(
+    `INSERT INTO product_aliases (product_id, supplier_id, source_code, source_name, source_name_norm,
+                                  factor, use_count, last_used_at, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, 1, datetime('now'), ?)`,
+    [productId, supplierId, kod, ad, adNorm, factor, userId]
+  );
+  return get('SELECT * FROM product_aliases WHERE id = ?', [id]);
+}
+
+/**
+ * Eslestirme listesi. Fatura aktariminda tarayiciya verilir; tedarikci
+ * secildiginde o tedarikcinin kayitlari + genel kayitlar gelir.
+ */
+productRoutes.get('/aliases', async (ctx) => {
+  const supplierId = ctx.query.supplierId ? Number(ctx.query.supplierId) : null;
+  const where = [];
+  const params = [];
+  if (supplierId) { where.push('(a.supplier_id = ? OR a.supplier_id IS NULL)'); params.push(supplierId); }
+  if (ctx.query.productId) { where.push('a.product_id = ?'); params.push(Number(ctx.query.productId)); }
+  if (ctx.query.search) {
+    where.push('(a.source_name LIKE ? OR a.source_code LIKE ? OR p.name LIKE ?)');
+    const q = `%${ctx.query.search}%`;
+    params.push(q, q, q);
+  }
+
+  const items = all(
+    `SELECT a.*, p.name AS product_name, p.unit AS product_unit, p.barcode AS product_barcode,
+            s.name AS supplier_name, u.full_name AS created_by_name
+       FROM product_aliases a
+       JOIN products p ON p.id = a.product_id
+       LEFT JOIN suppliers s ON s.id = a.supplier_id
+       LEFT JOIN users u ON u.id = a.created_by
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY s.name COLLATE NOCASE, a.source_name COLLATE NOCASE
+      LIMIT 2000`,
+    params
+  );
+  return { items };
+});
+
+/** Elle eslestirme tanimlar (ya da duzeltir). */
+productRoutes.post('/aliases', async (ctx) => {
+  requireWrite(ctx.user, 'products');
+  const productId = int(ctx.body.productId, 'Urun', { required: true });
+  if (!get('SELECT id FROM products WHERE id = ?', [productId])) throw notFound('Urun bulunamadi.');
+  const supplierId = ctx.body.supplierId ? int(ctx.body.supplierId, 'Tedarikci') : null;
+  if (supplierId && !get('SELECT id FROM suppliers WHERE id = ?', [supplierId])) {
+    throw notFound('Tedarikci bulunamadi.');
+  }
+  const sourceName = str(ctx.body.sourceName, 'Faturadaki ad', { max: 300 });
+  const sourceCode = str(ctx.body.sourceCode, 'Satici urun kodu', { max: 60 });
+  if (!sourceName && !sourceCode) throw badRequest('Faturadaki ad ya da satici urun kodu girmelisiniz.');
+  const factor = num(ctx.body.factor, 'Cevrim carpani', { min: 0.0001, max: 100000, def: 1 }) ?? 1;
+
+  const row = learnAlias({ productId, supplierId, sourceCode, sourceName, factor, userId: ctx.user.id });
+  logAudit({
+    user: ctx.user, action: 'CREATE', entity: 'product_aliases', entityId: row.id,
+    detail: { productId, supplierId, sourceName, sourceCode, factor }, ip: ctx.ip,
+  });
+  return row;
+});
+
+/** Cevrim carpanini gunceller (koli -> adet gibi). */
+productRoutes.put('/aliases/:id', async (ctx) => {
+  requireWrite(ctx.user, 'products');
+  const row = get('SELECT * FROM product_aliases WHERE id = ?', [Number(ctx.params.id)]);
+  if (!row) throw notFound('Eslestirme bulunamadi.');
+  const productId = ctx.body.productId ? int(ctx.body.productId, 'Urun') : row.product_id;
+  if (!get('SELECT id FROM products WHERE id = ?', [productId])) throw badRequest('Urun bulunamadi.');
+  const factor = num(ctx.body.factor, 'Cevrim carpani', { min: 0.0001, max: 100000, def: row.factor }) ?? row.factor;
+
+  run('UPDATE product_aliases SET product_id = ?, factor = ? WHERE id = ?', [productId, factor, row.id]);
+  logAudit({
+    user: ctx.user, action: 'UPDATE', entity: 'product_aliases', entityId: row.id,
+    detail: { onceki: { productId: row.product_id, factor: row.factor }, yeni: { productId, factor } }, ip: ctx.ip,
+  });
+  return get('SELECT * FROM product_aliases WHERE id = ?', [row.id]);
+});
+
+/**
+ * Eslestirmeyi siler.
+ *
+ * Gecmis belgeler etkilenmez: eslestirme yalnizca YENI faturalar okunurken
+ * kullanilir, kaydedilmis satirlar zaten urune baglidir.
+ */
+productRoutes.delete('/aliases/:id', async (ctx) => {
+  requireWrite(ctx.user, 'products');
+  const row = get('SELECT * FROM product_aliases WHERE id = ?', [Number(ctx.params.id)]);
+  if (!row) throw notFound('Eslestirme bulunamadi.');
+  run('DELETE FROM product_aliases WHERE id = ?', [row.id]);
+  logAudit({
+    user: ctx.user, action: 'DELETE', entity: 'product_aliases', entityId: row.id,
+    detail: { productId: row.product_id, supplierId: row.supplier_id, sourceName: row.source_name }, ip: ctx.ip,
+  });
+  return { ok: true };
 });
 
 productRoutes.get('/:id', async (ctx) => {

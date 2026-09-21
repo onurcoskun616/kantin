@@ -14,7 +14,7 @@
     "reset": "node server/seed.js --reset",
     "test": "node --test test/*.test.js",
     "demo:build": "node demo/build.mjs",
-    "test:ui": "node test/ui/sayim-akisi.mjs && node test/ui/ciro-teslim.mjs && node test/ui/fatura-eki.mjs && node test/ui/karekod.mjs && node test/ui/yetki-ve-silme.mjs && node test/ui/eslesmeyen-satirlar.mjs && node test/ui/belge-iskontosu.mjs && node test/ui/fiyat-mimarisi.mjs"
+    "test:ui": "node test/ui/sayim-akisi.mjs && node test/ui/ciro-teslim.mjs && node test/ui/fatura-eki.mjs && node test/ui/karekod.mjs && node test/ui/yetki-ve-silme.mjs && node test/ui/eslesmeyen-satirlar.mjs && node test/ui/belge-iskontosu.mjs && node test/ui/fiyat-mimarisi.mjs && node test/ui/urun-eslestirme.mjs"
   },
   "dependencies": {},
   "license": "UNLICENSED"

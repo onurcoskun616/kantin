@@ -1872,3 +1872,144 @@ describe('Bozuk sunucu yaniti', () => {
     assert.ok(data.error, JSON.stringify(data));
   });
 });
+
+/* ======= Tedarikci urun eslestirmeleri (ogrenilen adlar) ========== */
+describe('Urun eslestirme ogrenme', () => {
+  let campusId; let tedA; let tedB; let ayranId; let suId;
+
+  before(async () => {
+    campusId = (await ok('POST', '/api/campuses', { name: 'Eşleştirme Kampüsü', code: 'ESK' })).id;
+    tedA = (await ok('POST', '/api/suppliers', { name: 'Eşleştirme A', taxNo: '1313131313' })).id;
+    tedB = (await ok('POST', '/api/suppliers', { name: 'Eşleştirme B', taxNo: '1414141414' })).id;
+    ayranId = (await ok('POST', '/api/products',
+      { name: 'Ayran 200 ml (eşleştirme)', salePrice: 15, vatRate: 1, unit: 'ADET' })).id;
+    suId = (await ok('POST', '/api/products',
+      { name: 'Su 500 ml (eşleştirme)', salePrice: 10, vatRate: 1, unit: 'ADET' })).id;
+  });
+
+  const alim = (supplierId, no, lines) => ok('POST', '/api/purchases', {
+    campusId, supplierId, documentNo: no, documentDate: daysAgo(1), lines,
+  });
+
+  test('fatura kaydedilince eslestirme ogrenilir', async () => {
+    const r = await alim(tedA, 'ESK-001', [
+      { productId: ayranId, quantity: 100, unitPrice: 8, vatRate: 1, sourceName: 'KUTU AYRAN 200ML' },
+    ]);
+    assert.equal(r.learnedAliases, 1);
+
+    const liste = await ok('GET', `/api/products/aliases?supplierId=${tedA}`);
+    const kayit = liste.items.find((a) => a.source_name === 'KUTU AYRAN 200ML');
+    assert.ok(kayit, JSON.stringify(liste.items));
+    assert.equal(kayit.product_id, ayranId);
+    assert.equal(kayit.source_name_norm, 'kutu ayran 200ml', 'sadelestirilmis hali saklanmali');
+    assert.equal(kayit.factor, 1);
+  });
+
+  test('ayni ad tekrar gelince kullanim sayaci artar, kayit COGALMAZ', async () => {
+    await alim(tedA, 'ESK-002', [
+      { productId: ayranId, quantity: 50, unitPrice: 8, vatRate: 1, sourceName: 'KUTU AYRAN 200ML' },
+    ]);
+    const liste = await ok('GET', `/api/products/aliases?supplierId=${tedA}`);
+    const kayitlar = liste.items.filter((a) => a.source_name === 'KUTU AYRAN 200ML');
+    assert.equal(kayitlar.length, 1, 'ayni ad icin tek kayit olmali');
+    assert.equal(kayitlar[0].use_count, 2);
+  });
+
+  test('buyuk/kucuk harf ve Turkce fark etmez', async () => {
+    await alim(tedA, 'ESK-003', [
+      { productId: ayranId, quantity: 10, unitPrice: 8, vatRate: 1, sourceName: 'kutu  ayran 200ml.' },
+    ]);
+    const liste = await ok('GET', `/api/products/aliases?supplierId=${tedA}`);
+    const kayitlar = liste.items.filter((a) => a.source_name_norm === 'kutu ayran 200ml');
+    assert.equal(kayitlar.length, 1, 'noktalama/bosluk/harf farki yeni kayit acmamali');
+    assert.equal(kayitlar[0].use_count, 3);
+  });
+
+  test('FARKLI tedarikci AYNI urunu baska adla eslestirebilir', async () => {
+    await alim(tedB, 'ESK-004', [
+      { productId: ayranId, quantity: 30, unitPrice: 7.5, vatRate: 1, sourceName: 'AYRAN PK' },
+    ]);
+    const a = await ok('GET', `/api/products/aliases?supplierId=${tedA}`);
+    const b = await ok('GET', `/api/products/aliases?supplierId=${tedB}`);
+    // source_name EN SON gelen yazimi tutar; kalici anahtar source_name_norm
+    assert.ok(a.items.some((x) => x.source_name_norm === 'kutu ayran 200ml' && x.product_id === ayranId));
+    assert.ok(b.items.some((x) => x.source_name === 'AYRAN PK' && x.product_id === ayranId));
+    // A tedarikcisinin listesinde B'nin kaydi GORUNMEMELI
+    assert.ok(!a.items.some((x) => x.source_name === 'AYRAN PK'),
+      'tedarikciye ozel kayit digerine sizmamali');
+  });
+
+  test('satici urun kodu da ogrenilir ve daha guclu bir anahtardir', async () => {
+    await alim(tedB, 'ESK-005', [
+      { productId: suId, quantity: 20, unitPrice: 4, vatRate: 1, sourceName: 'SU', sourceCode: 'SU-500-B' },
+    ]);
+    const liste = await ok('GET', `/api/products/aliases?supplierId=${tedB}`);
+    const kayit = liste.items.find((a) => a.source_code === 'SU-500-B');
+    assert.ok(kayit);
+    assert.equal(kayit.product_id, suId);
+  });
+
+  test('yanlis eslestirme duzeltilebilir', async () => {
+    const liste = await ok('GET', `/api/products/aliases?supplierId=${tedA}`);
+    const kayit = liste.items.find((a) => a.source_name_norm === 'kutu ayran 200ml');
+    await ok('PUT', `/api/products/aliases/${kayit.id}`, { productId: suId });
+    const sonra = await ok('GET', `/api/products/aliases?supplierId=${tedA}`);
+    assert.equal(sonra.items.find((a) => a.id === kayit.id).product_id, suId);
+    // Geri al
+    await ok('PUT', `/api/products/aliases/${kayit.id}`, { productId: ayranId });
+  });
+
+  test('koli/paket icin cevrim carpani tanimlanabilir', async () => {
+    const liste = await ok('GET', `/api/products/aliases?supplierId=${tedB}`);
+    const kayit = liste.items.find((a) => a.source_name === 'AYRAN PK');
+    await ok('PUT', `/api/products/aliases/${kayit.id}`, { factor: 24 });
+    const sonra = await ok('GET', `/api/products/aliases?supplierId=${tedB}`);
+    assert.equal(sonra.items.find((a) => a.id === kayit.id).factor, 24);
+  });
+
+  test('ayni ad ayni tedarikcide IKI urune baglanamaz', async () => {
+    // Ikinci bir faturada ayni ad baska urune baglanirsa eslestirme GUNCELLENIR,
+    // iki kayit olusmaz: hangisine gidecegi belirsiz kalmamali.
+    await alim(tedA, 'ESK-006', [
+      { productId: suId, quantity: 5, unitPrice: 4, vatRate: 1, sourceName: 'KUTU AYRAN 200ML' },
+    ]);
+    const liste = await ok('GET', `/api/products/aliases?supplierId=${tedA}`);
+    const kayitlar = liste.items.filter((a) => a.source_name_norm === 'kutu ayran 200ml');
+    assert.equal(kayitlar.length, 1);
+    assert.equal(kayitlar[0].product_id, suId, 'son secim gecerli olmali');
+  });
+
+  test('eslestirme silinince gecmis belgeler etkilenmez', async () => {
+    const liste = await ok('GET', `/api/products/aliases?supplierId=${tedA}`);
+    const kayit = liste.items.find((a) => a.source_name_norm === 'kutu ayran 200ml');
+    await ok('DELETE', `/api/products/aliases/${kayit.id}`);
+
+    const sonra = await ok('GET', `/api/products/aliases?supplierId=${tedA}`);
+    assert.ok(!sonra.items.some((a) => a.id === kayit.id));
+
+    // Belge ve satirlari yerinde duruyor
+    const belgeler = await ok('GET', '/api/purchases?from=2000-01-01&to=2099-12-31&campusId=' + campusId);
+    const belge = belgeler.items.find((p) => p.document_no === 'ESK-001');
+    assert.ok(belge, 'belge silinmemeli');
+    const detay = await ok('GET', `/api/purchases/${belge.id}`);
+    assert.equal(detay.lines.length, 1);
+  });
+
+  test('elle eslestirme tanimlanabilir (fatura beklemeden)', async () => {
+    const r = await ok('POST', '/api/products/aliases', {
+      productId: ayranId, supplierId: tedA, sourceName: 'AYRAN KUTU 200', factor: 12,
+    });
+    assert.equal(r.product_id, ayranId);
+    assert.equal(r.factor, 12);
+    const bos = await api('POST', '/api/products/aliases', { productId: ayranId, supplierId: tedA });
+    assert.equal(bos.status, 400, 'ad ya da kod olmadan tanimlanamaz');
+  });
+
+  test('TUM tedarikciler icin genel eslestirme tanimlanabilir', async () => {
+    await ok('POST', '/api/products/aliases', { productId: suId, sourceName: 'DOGAL KAYNAK SUYU' });
+    const a = await ok('GET', `/api/products/aliases?supplierId=${tedA}`);
+    const b = await ok('GET', `/api/products/aliases?supplierId=${tedB}`);
+    assert.ok(a.items.some((x) => x.source_name === 'DOGAL KAYNAK SUYU'), 'genel kayit A"da gorunmeli');
+    assert.ok(b.items.some((x) => x.source_name === 'DOGAL KAYNAK SUYU'), 'genel kayit B"de de gorunmeli');
+  });
+});

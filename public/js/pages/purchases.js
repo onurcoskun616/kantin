@@ -201,6 +201,21 @@ async function openPurchaseForm(onDone) {
     api.get('/api/stock', { campusId: state.campusId }).catch(() => ({ items: [] })),
   ]);
 
+  /**
+   * Seçili tedarikçinin ÖĞRENİLMİŞ ürün eşleştirmeleri.
+   *
+   * Aynı ürün her faturada aynı adla gelmiyor ("AYRAN 200 ML" / "KUTU
+   * AYRAN"). Bir kez eşleştirilen ad burada saklı; sonraki faturalarda
+   * kendiliğinden bulunur. Tedarikçi değişince liste yenilenir.
+   */
+  let aliases = [];
+  async function loadAliases() {
+    if (!supplierSelect.value) { aliases = []; return; }
+    try {
+      aliases = (await api.get('/api/products/aliases', { supplierId: supplierSelect.value })).items;
+    } catch { aliases = []; }
+  }
+
   const productMap = new Map(products.items.map((p) => [p.id, p]));
   const stockByProduct = new Map(stock.items.map((r) => [r.product_id, r.stock_qty]));
   const pickers = [];          // satırlardaki seçiciler: yeni ürün hepsine eklenir
@@ -243,6 +258,8 @@ async function openPurchaseForm(onDone) {
       },
     });
   }
+
+  supplierSelect.addEventListener('change', loadAliases);
 
   const newSupplierBtn = el('button.btn.btn-sm', {
     type: 'button', text: '+ Yeni', title: 'Listede olmayan tedarikçiyi buradan ekleyin',
@@ -318,10 +335,13 @@ async function openPurchaseForm(onDone) {
       discountPct: p0.discountPct ?? 0,
       net: 0, vat: 0,
       // Faturadan gelen ham bilgiler: eşleşmeyen satır ürün olarak
-      // tanımlanırken bunlar forma önden yazılır (10. madde)
+      // tanımlanırken bunlar forma önden yazılır (10. madde) ve belge
+      // kaydedilirken eşleştirme bunlardan öğrenilir.
       sourceName: p0.sourceName || null,
       sourceBarcode: p0.sourceBarcode || null,
       sourceUnit: p0.sourceUnit || null,
+      aliasFactor: p0.aliasFactor ?? 1,
+      matchedBy: p0.matchedBy || null,
     };
 
     // Ürün seçimi: yazdıkça süzen, stoğu gösteren ve yerinde ürün
@@ -372,7 +392,19 @@ async function openPurchaseForm(onDone) {
     const tr = el('tr', {}, [
       el('td', { style: 'min-width:240px' }, [
         picker.node,
-        line.sourceName ? el('small.muted', { text: `Faturada: ${line.sourceName}`, style: 'display:block;margin-top:2px' }) : null,
+        line.sourceName
+          ? el('small.muted', { style: 'display:block;margin-top:2px' }, [
+            `Faturada: ${line.sourceName}`,
+            // Öğrenilmiş bir eşleştirmeyle bulunduysa söyle: kullanıcı
+            // "bunu ben seçmedim, nereden geldi" diye tereddüt etmesin.
+            /öğrenilmiş/.test(line.matchedBy || '')
+              ? el('span', { text: ' · öğrenilmiş eşleştirme', style: 'color:var(--success)' })
+              : null,
+            line.aliasFactor !== 1
+              ? el('span', { text: ` · ×${line.aliasFactor} çevrildi`, style: 'color:var(--warning)' })
+              : null,
+          ])
+          : null,
       ]),
       el('td', {}, [qty]), el('td', {}, [price]), el('td', {}, [disc]), el('td', {}, [vatIn]),
       el('td', {}, [expiry]), totalCell,
@@ -557,11 +589,15 @@ async function openPurchaseForm(onDone) {
    */
   async function importFromXml(file) {
     const invoice = parseEFatura(await file.text());
-    const matchedLines = matchProducts(invoice.lines, products.items);
     const { supplier, matchedBy } = matchSupplier(invoice.supplier, suppliers.items);
 
-    // Baslik alanlari
-    if (supplier) supplierSelect.value = String(supplier.id);
+    // Baslik alanlari — ESLESTIRMEDEN ONCE tedarikci secilir ki o
+    // tedarikcinin ogrenilmis ad eslestirmeleri kullanilabilsin.
+    if (supplier) {
+      supplierSelect.value = String(supplier.id);
+      await loadAliases();
+    }
+    const matchedLines = matchProducts(invoice.lines, products.items, aliases);
     if (invoice.documentNo) docNo.value = invoice.documentNo;
     if (invoice.issueDate) docDate.value = invoice.issueDate;
     if (invoice.dueDate) dueDate.value = invoice.dueDate;
@@ -578,9 +614,14 @@ async function openPurchaseForm(onDone) {
         unitPrice: line.unitPrice,
         discountPct: line.discountPct,
         vatRate: line.vatRate,
-        sourceName: line.product ? null : line.name,
+        // Faturadaki ad/kod HER SATIRDA taşınır (eşleşmiş olsa bile):
+        // kaydederken eşleştirme bundan öğrenilir/tazelenir.
+        sourceName: line.name,
         sourceBarcode: line.codes[0] || null,
         sourceUnit: unitFromCode(line.unitCode),
+        aliasFactor: line.aliasFactor,
+        matchedBy: line.matchedBy,
+        unmatched: !line.product,
       });
     }
     recalcTotals();
@@ -588,6 +629,8 @@ async function openPurchaseForm(onDone) {
     // Ozet ve uyarilar
     const unmatched = matchedLines.filter((l) => !l.product);
     const mismatched = matchedLines.filter((l) => l.mismatch);
+    const ogrenilmis = matchedLines.filter((l) => /öğrenilmiş/.test(l.matchedBy || ''));
+    const cevrilen = matchedLines.filter((l) => l.convertedByFactor);
     const notes = [];
 
     notes.push(el('div.alert.alert-success', {}, [
@@ -626,12 +669,29 @@ async function openPurchaseForm(onDone) {
         + `${invoice.supplier.taxNo || 'VKN'} yazmanız daha güvenlidir.`));
     }
 
+    if (ogrenilmis.length) {
+      notes.push(alertBox('success', `${ogrenilmis.length} kalem önceki eşleştirmelerden bulundu`,
+        'Bu tedarikçinin bu ürünleri daha önce eşleştirilmişti; faturadaki adları '
+        + 'farklı olsa da doğru ürüne bağlandı. Yanlış bir eşleştirme görürseniz '
+        + 'satırdan düzeltin — düzeltme de öğrenilir.'));
+    }
+
+    if (cevrilen.length) {
+      notes.push(alertBox('warning', `${cevrilen.length} kalemde birim çevrimi yapıldı`,
+        cevrilen.map((l) => `"${l.name}": faturada ${fmt.num(l.sourceQuantity)} × `
+          + `${fmt.money(l.sourceUnitPrice)} → stokta ${fmt.num(l.quantity)} × ${fmt.money(l.unitPrice)}`).join(' · ')
+        + '. Tedarikçi koli/paket satıyor, stok birimine çevrildi. Tutar değişmedi. '
+        + 'Çarpan yanlışsa Tedarikçiler → Ürün Eşleştirmeleri ekranından düzeltin.'));
+    }
+
     if (unmatched.length) {
       notes.push(alertBox('warning', `${unmatched.length} kalem eşleşmedi`,
         `Şu ürünler sistemde bulunamadı: ${unmatched.map((l) => `"${l.name}"`).join(', ')}. `
         + 'Aşağıdaki kırmızı satırlarda ürün kutusuna tıklayın: arayarak seçebilir ya da '
         + 'listenin sonundaki "+ yeni ürün tanımla" ile faturadaki bilgilerle kart açabilirsiniz. '
-        + 'Kaleme karşılık gelen bir ürün yoksa satırı silin.'));
+        + 'Kaleme karşılık gelen bir ürün yoksa satırı silin. '
+        + 'BİR KEZ seçmeniz yeterli: belge kaydedilince eşleştirme öğrenilir ve bu '
+        + 'tedarikçinin sonraki faturalarında bu kalem kendiliğinden bulunur.'));
     }
     if (mismatched.length) {
       notes.push(alertBox('warning', 'Satır tutarı uyuşmuyor',
@@ -738,6 +798,8 @@ async function openPurchaseForm(onDone) {
         lines: lines.filter((l) => l.quantity > 0 && l.productId).map((l) => ({
           productId: l.productId, quantity: l.quantity, unitPrice: l.unitPrice,
           vatRate: l.vatRate, discountPct: l.discountPct, expiryDate: l.expiryDate,
+          // Eşleştirmenin öğrenilmesi için: faturada bu kalem ne diyordu?
+          sourceName: l.sourceName, sourceCode: l.sourceBarcode, aliasFactor: l.aliasFactor,
         })),
       };
       if (!payload.lines.length) throw new Error('En az bir ürün satırı girmelisiniz.');
@@ -787,11 +849,14 @@ async function openPurchaseForm(onDone) {
       m.close();
       toast(
         `Mal girişi kaydedildi. Toplam ${fmt.money(res.grossTotal)}`
+        + (res.learnedAliases
+          ? ` · ${res.learnedAliases} ürün eşleştirmesi öğrenildi; bu tedarikçinin sonraki faturalarında kendiliğinden bulunacak.`
+          : '')
         + (res.unmatchedCount
           ? ` · Faturadan ${res.unmatchedCount} kalem kayda alınmadı, "Eşleşmeyen Fatura Satırları" panelinde bekliyor.`
           : ''),
         res.unmatchedCount ? 'warning' : 'success',
-        res.unmatchedCount ? 9000 : 4000,
+        res.unmatchedCount || res.learnedAliases ? 9000 : 4000,
       );
       if (res.priceAlerts?.length) {
         modal({

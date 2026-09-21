@@ -280,9 +280,23 @@ function readVatRate(node) {
 
 /**
  * Fatura satırlarını sistemdeki ürünlerle eşler.
- * Sıra: barkod/kod tam eşleşme → ürün adı tam eşleşme → ad içerme.
+ *
+ * SIRA ÖNEMLİ — en güvenilirden en zayıfa:
+ *   1. Öğrenilmiş eşleştirme, satıcı ürün koduyla    (kesin)
+ *   2. Öğrenilmiş eşleştirme, faturadaki adla        (kesin)
+ *   3. Barkod                                        (kesin)
+ *   4. Ürün adı birebir                              (güçlü)
+ *   5. Ad içerme, TEK aday varsa                     (zayıf — kullanıcı görür)
+ *
+ * Öğrenilmiş eşleştirmeler (`aliases`) önce gelir, çünkü bir insan onları
+ * bir kez bakıp onaylamıştır: "bu tedarikçinin KUTU AYRAN dediği şey bizim
+ * Ayran 200 ml ürünümüz". Tahmine dayalı yöntemler bunun önüne geçmemeli.
+ *
+ * @param aliases [{ product_id, supplier_id, source_code, source_name_norm, factor }]
+ *        Tedarikçiye ait VE genel (supplier_id null) kayıtlar birlikte verilir.
  */
-export function matchProducts(lines, products) {
+export function matchProducts(lines, products, aliases = []) {
+  const byId = new Map(products.map((p) => [p.id, p]));
   const byCode = new Map();
   const byName = new Map();
   for (const p of products) {
@@ -290,13 +304,35 @@ export function matchProducts(lines, products) {
     byName.set(normalize(p.name), p);
   }
 
+  // Tedarikçiye özel kayıt, genel kaydı EZER: aynı ad iki yerde varsa
+  // tedarikçinin kendi tanımı daha doğrudur.
+  const aliasByCode = new Map();
+  const aliasByName = new Map();
+  const sirali = [...aliases].sort((a, b) => (a.supplier_id ? 1 : 0) - (b.supplier_id ? 1 : 0));
+  for (const a of sirali) {
+    if (!byId.has(a.product_id)) continue;          // silinmiş ürüne bağlı kayıt
+    if (a.source_code) aliasByCode.set(String(a.source_code).trim(), a);
+    if (a.source_name_norm) aliasByName.set(a.source_name_norm, a);
+  }
+
   return lines.map((line) => {
     let product = null;
     let how = null;
+    let alias = null;
 
     for (const code of line.codes) {
-      const hit = byCode.get(String(code).trim());
-      if (hit) { product = hit; how = 'barkod'; break; }
+      const hit = aliasByCode.get(String(code).trim());
+      if (hit) { alias = hit; product = byId.get(hit.product_id); how = 'öğrenilmiş kod'; break; }
+    }
+    if (!product) {
+      const hit = aliasByName.get(normalize(line.name));
+      if (hit) { alias = hit; product = byId.get(hit.product_id); how = 'öğrenilmiş ad'; }
+    }
+    if (!product) {
+      for (const code of line.codes) {
+        const hit = byCode.get(String(code).trim());
+        if (hit) { product = hit; how = 'barkod'; break; }
+      }
     }
     if (!product) {
       const hit = byName.get(normalize(line.name));
@@ -313,7 +349,23 @@ export function matchProducts(lines, products) {
         if (partial.length === 1) { product = partial[0]; how = 'benzer ad'; }
       }
     }
-    return { ...line, product, matchedBy: how };
+
+    // Çevrim çarpanı: tedarikçi koli satıyorsa 1 fatura birimi N stok birimi.
+    // Miktar çarpılır, birim fiyat bölünür — tutar değişmez.
+    const factor = alias && alias.factor > 0 ? Number(alias.factor) : 1;
+    const cevrildi = factor !== 1;
+    return {
+      ...line,
+      product,
+      matchedBy: how,
+      aliasFactor: factor,
+      convertedByFactor: cevrildi,
+      quantity: cevrildi ? round4(line.quantity * factor) : line.quantity,
+      unitPrice: cevrildi ? round4(line.unitPrice / factor) : line.unitPrice,
+      // Faturadaki hâli gösterim ve denetim için saklanır
+      sourceQuantity: line.quantity,
+      sourceUnitPrice: line.unitPrice,
+    };
   });
 }
 
