@@ -224,8 +224,10 @@ CREATE TABLE IF NOT EXISTS purchases (
   created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+-- Ayni e-Fatura iki kez girilemez. IPTAL edilen belge haric: iptal edilmis
+-- (veya tedarikcinin iptal ettigi) bir fatura yeniden girilebilmelidir.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_purchases_efatura
-  ON purchases(efatura_uuid) WHERE efatura_uuid IS NOT NULL;
+  ON purchases(efatura_uuid) WHERE efatura_uuid IS NOT NULL AND status <> 'IPTAL';
 CREATE INDEX IF NOT EXISTS idx_purchases_campus_date ON purchases(campus_id, document_date);
 CREATE INDEX IF NOT EXISTS idx_purchases_supplier ON purchases(supplier_id);
 

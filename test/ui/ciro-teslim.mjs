@@ -202,10 +202,14 @@ try {
   const detailText = await page.textContent('.content').catch(() => '');
   check('Ekranda fark uyarisi gorunuyor', detailText.includes('Kâğıttaki tutar ile sistemdeki tutar farklı'));
 
-  console.log('\n7) On muhasebe kodla onaylar, baska yere yazamaz');
+  console.log('\n7) On muhasebe kodla onaylar, onay disina cikamaz');
   await login(ACCOUNTING);
+  // On muhasebe bir VERI GIRISI rolu: ciro girebilir. Sayim kesinlestirme ve
+  // stok duzeltme yine kapalidir (test/api.test.js "On muhasebe yetkileri").
   const accWrite = await call('POST', '/api/revenues', { campusId, revenueDate: daysAgo(1), cashAmount: 500 });
-  check('On muhasebe ciro giremez (403)', accWrite.status === 403, String(accWrite.status));
+  check('On muhasebe ciro girebiliyor', accWrite.status === 200, String(accWrite.status));
+  const accCount = await call('POST', '/api/counts', { campusId, countDate: daysAgo(1) });
+  check('On muhasebe sayim acamiyor (403)', accCount.status === 403, String(accCount.status));
 
   await page.goto(`${BASE}/#/handoverDetail/${handover.id}`);
   await page.waitForTimeout(1500);

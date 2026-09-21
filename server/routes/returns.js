@@ -94,7 +94,7 @@ returnRoutes.get('/:id', async (ctx) => {
 
 /* --------------------------- Yeni iade ----------------------------- */
 returnRoutes.post('/', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'returns');
   const campusId = assertCampusAccess(ctx.user, ctx.body.campusId);
   const supplierId = int(ctx.body.supplierId, 'Tedarikci', { required: true });
   if (!get('SELECT id FROM suppliers WHERE id = ?', [supplierId])) throw badRequest('Tedarikci bulunamadi.');
@@ -186,7 +186,7 @@ returnRoutes.post('/', async (ctx) => {
 
 /* ------------------------------ Silme ------------------------------ */
 returnRoutes.delete('/:id', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'returns');
   const header = get('SELECT * FROM supplier_returns WHERE id = ?', [Number(ctx.params.id)]);
   if (!header) throw notFound('Iade belgesi bulunamadi.');
   assertCampusAccess(ctx.user, header.campus_id);

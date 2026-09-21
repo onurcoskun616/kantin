@@ -16,8 +16,8 @@ export async function render(root) {
   root.append(el('div.row', { style: 'justify-content:space-between' }, [
     el('label.inline-field', {}, [el('span', { text: 'Dönem' }), monthInput]),
     el('div.btn-row', {}, [
-      canWrite() ? el('button.btn.btn-primary', { text: '+ Ciro Gir', onclick: () => openForm(root, dateUtil.today()) }) : null,
-      canWrite() ? el('button.btn', { text: '⚡ Toplu Giriş', onclick: () => openBulk(root, calendar) }) : null,
+      canWrite("revenues") ? el('button.btn.btn-primary', { text: '+ Ciro Gir', onclick: () => openForm(root, dateUtil.today()) }) : null,
+      canWrite("revenues") ? el('button.btn', { text: '⚡ Toplu Giriş', onclick: () => openBulk(root, calendar) }) : null,
       el('button.btn', { text: '⬇ Excel (CSV)', onclick: () => api.download('/api/revenues', { campusId: state.campusId, month }) }),
     ]),
   ]));
@@ -77,7 +77,7 @@ export async function render(root) {
       },
       {
         label: '', render: (r) => {
-          if (!canWrite()) return '—';
+          if (!canWrite("revenues")) return '—';
           // Imzali fise dahil gunu yalnizca genel mudurluk degistirebilir
           const locked = !!r.handover_no && !['ADMIN', 'GENEL_MUDURLUK'].includes(state.user.role);
           if (locked) return el('span.muted', { text: '🔒 imzalı', title: `${r.handover_no} numaralı teslim fişine dahil` });
@@ -109,7 +109,7 @@ function buildCalendar(root, calendar) {
       style: `border:1px solid ${border};background:${bg};border-radius:8px;padding:7px 6px;cursor:pointer;
               text-align:left;font-family:inherit;display:grid;gap:2px;min-height:62px;color:var(--text);opacity:${day.isWeekend && !day.entry ? .5 : 1}`,
       title: day.missing ? 'Ciro girilmemiş' : '',
-      onclick: () => (canWrite() ? openForm(root, day.date, day.entry) : null),
+      onclick: () => (canWrite("revenues") ? openForm(root, day.date, day.entry) : null),
     }, [
       el('div', { text: String(Number(day.date.slice(8, 10))), style: 'font-weight:700;font-size:13px' }),
       el('div.small', {

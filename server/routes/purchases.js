@@ -50,7 +50,7 @@ purchaseRoutes.get('/:id', async (ctx) => {
 });
 
 purchaseRoutes.post('/', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'purchases');
   const campusId = assertCampusAccess(ctx.user, ctx.body.campusId);
   const supplierId = int(ctx.body.supplierId, 'Tedarikci', { required: true });
   if (!get('SELECT id FROM suppliers WHERE id = ?', [supplierId])) throw badRequest('Tedarikci bulunamadi.');
@@ -63,12 +63,17 @@ purchaseRoutes.post('/', async (ctx) => {
   const efaturaUuid = str(ctx.body.efaturaUuid, 'e-Fatura ETTN', { max: 60 });
   const lines = arr(ctx.body.lines, 'Satirlar', { required: true, min: 1 });
 
-  // Ayni e-Fatura ikinci kez aktarilmasin (kampus fark etmeksizin: ETTN tekildir)
+  // Ayni e-Fatura ikinci kez aktarilmasin (kampus fark etmeksizin: ETTN tekildir).
+  // IPTAL edilmis belge engel degildir: tedarikci faturayi iptal edip yeniden
+  // duzenlemis olabilir, ya da hatali giris iptal edilip tekrar girilecektir.
   if (efaturaUuid) {
-    const dupEf = get('SELECT id, document_no FROM purchases WHERE efatura_uuid = ?', [efaturaUuid]);
+    const dupEf = get(
+      "SELECT id, document_no FROM purchases WHERE efatura_uuid = ? AND status <> 'IPTAL'", [efaturaUuid]
+    );
     if (dupEf) {
       throw conflict(
-        `Bu e-Fatura zaten sisteme aktarilmis (Belge #${dupEf.id}${dupEf.document_no ? ' / ' + dupEf.document_no : ''}).`
+        `Bu e-Fatura zaten sisteme aktarilmis (Belge #${dupEf.id}${dupEf.document_no ? ' / ' + dupEf.document_no : ''}). `
+        + 'Yanlis girildiyse once o belgeyi iptal edin, sonra yeniden aktarin.'
       );
     }
   }
@@ -158,36 +163,101 @@ purchaseRoutes.post('/', async (ctx) => {
   return { id: purchaseId, netTotal, vatTotal, grossTotal, priceAlerts };
 });
 
-purchaseRoutes.post('/:id/cancel', async (ctx) => {
-  requireWrite(ctx.user);
-  const id = Number(ctx.params.id);
-  const header = get('SELECT * FROM purchases WHERE id = ?', [id]);
-  if (!header) throw notFound('Alim belgesi bulunamadi.');
-  assertCampusAccess(ctx.user, header.campus_id);
-  if (header.status === 'IPTAL') throw conflict('Belge zaten iptal edilmis.');
-
-  // Kesinlesmis bir sayimdan once yapilan alim iptal edilemez (mutabakat bozulur)
+/**
+ * Bir alim belgesine dokunulabilir mi?
+ *
+ * Iki durumda dokunulamaz; ikisi de mutabakati bozar:
+ *   1. Belge tarihinden SONRA kesinlesmis bir donem sayimi varsa. O sayim
+ *      bu alimi stoga dahil ederek fark hesapladi; belgeyi geri almak
+ *      kesinlesmis sayimi gecmise donuk yanlis hale getirir.
+ *   2. Belgeye dayanan bir iade kaydi varsa. Once iade cozulmelidir.
+ */
+function assertPurchaseMutable(header, eylem) {
   const laterCount = get(
     `SELECT id, count_date FROM counts
       WHERE campus_id = ? AND status = 'KESINLESMIS' AND count_type = 'DONEM' AND count_date >= ? LIMIT 1`,
     [header.campus_id, header.document_date]
   );
   if (laterCount) {
-    throw conflict(`Bu belge ${laterCount.count_date} tarihli kesinlesmis sayima dahil oldugu icin iptal edilemez. Duzeltme kaydi giriniz.`);
+    throw conflict(
+      `Bu belge ${laterCount.count_date} tarihli kesinlesmis sayima dahil oldugu icin ${eylem}. `
+      + 'Duzeltme kaydi giriniz.'
+    );
   }
-
-  // Bu belgeye dayanan iade varsa once o cozulmelidir
-  const linkedReturn = get('SELECT id FROM supplier_returns WHERE purchase_id = ? LIMIT 1', [id]);
+  const linkedReturn = get('SELECT id FROM supplier_returns WHERE purchase_id = ? LIMIT 1', [header.id]);
   if (linkedReturn) {
     throw conflict(`Bu belgeye bagli bir iade kaydi var (#${linkedReturn.id}). Once iadeyi silin.`);
   }
+}
+
+purchaseRoutes.post('/:id/cancel', async (ctx) => {
+  requireWrite(ctx.user, 'purchases');
+  const id = Number(ctx.params.id);
+  const header = get('SELECT * FROM purchases WHERE id = ?', [id]);
+  if (!header) throw notFound('Alim belgesi bulunamadi.');
+  assertCampusAccess(ctx.user, header.campus_id);
+  if (header.status === 'IPTAL') throw conflict('Belge zaten iptal edilmis.');
+  assertPurchaseMutable(header, 'iptal edilemez');
 
   tx(() => {
     run("UPDATE purchases SET status = 'IPTAL' WHERE id = ?", [id]);
     run("DELETE FROM stock_movements WHERE ref_type = 'purchase' AND ref_id = ?", [id]);
   });
-  logAudit({ user: ctx.user, action: 'CANCEL', entity: 'purchases', entityId: id, campusId: header.campus_id, ip: ctx.ip });
+  logAudit({
+    user: ctx.user, action: 'CANCEL', entity: 'purchases', entityId: id, campusId: header.campus_id,
+    detail: { documentNo: header.document_no, efaturaUuid: header.efatura_uuid || undefined },
+    ip: ctx.ip,
+  });
   return { ok: true };
+});
+
+/**
+ * Belgeyi ve BAGLI HER SEYI kalici olarak siler: satirlar, stok hareketleri,
+ * fatura dosyalari (diskten de), fiyat gecmisi kaydi.
+ *
+ * Iptal ile farki: iptal belgeyi kayitta birakir (denetim izi kalir), silme
+ * hic olmamis sayar. Bu yuzden yalnizca ADMIN ve GENEL_MUDURLUK yapabilir ve
+ * silinen belgenin tam icerigi denetim gunlugune yazilir.
+ */
+purchaseRoutes.delete('/:id', async (ctx) => {
+  requireRole(ctx.user, 'ADMIN', 'GENEL_MUDURLUK');
+  const id = Number(ctx.params.id);
+  const header = get('SELECT * FROM purchases WHERE id = ?', [id]);
+  if (!header) throw notFound('Alim belgesi bulunamadi.');
+  assertCampusAccess(ctx.user, header.campus_id);
+  assertPurchaseMutable(header, 'silinemez');
+
+  const lines = all(
+    `SELECT pl.*, pr.name AS product_name FROM purchase_lines pl
+       JOIN products pr ON pr.id = pl.product_id WHERE pl.purchase_id = ?`, [id]
+  );
+  const attachments = all('SELECT * FROM purchase_attachments WHERE purchase_id = ?', [id]);
+
+  // Once veritabani (geri alinabilir), sonra dosyalar (geri alinamaz).
+  tx(() => {
+    run("DELETE FROM stock_movements WHERE ref_type = 'purchase' AND ref_id = ?", [id]);
+    run('DELETE FROM purchase_attachments WHERE purchase_id = ?', [id]);
+    run('DELETE FROM purchase_lines WHERE purchase_id = ?', [id]);
+    run('DELETE FROM purchases WHERE id = ?', [id]);
+  });
+  for (const a of attachments) deleteFile(a.stored_name);
+
+  // Silinen belge geri getirilemez; ne oldugu gunlukte tam kalsin.
+  logAudit({
+    user: ctx.user, action: 'DELETE', entity: 'purchases', entityId: id, campusId: header.campus_id,
+    detail: {
+      documentNo: header.document_no, documentDate: header.document_date,
+      supplierId: header.supplier_id, grossTotal: header.gross_total,
+      efaturaUuid: header.efatura_uuid || undefined,
+      lines: lines.map((l) => ({
+        urun: l.product_name, miktar: l.quantity, birimFiyat: l.unit_price,
+        iskonto: l.discount_pct, kdv: l.vat_rate, tutar: l.gross_total,
+      })),
+      silinenDosyalar: attachments.map((a) => a.file_name),
+    },
+    ip: ctx.ip,
+  });
+  return { ok: true, deletedLines: lines.length, deletedFiles: attachments.length };
 });
 
 /* ======================= ALIM BELGESI EKLERI ======================= */
@@ -199,7 +269,7 @@ purchaseRoutes.post('/:id/cancel', async (ctx) => {
  * TUR ICERIKTEN DOGRULANIR — bkz. lib/uploads.js.
  */
 purchaseRoutes.post('/:id/attachments', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'purchases');
   const header = purchaseFor(ctx, Number(ctx.params.id));
   if (header.status === 'IPTAL') throw conflict('Iptal edilmis belgeye ek eklenemez.');
 

@@ -113,7 +113,7 @@ revenueRoutes.get('/calendar', async (ctx) => {
 });
 
 revenueRoutes.post('/', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'revenues');
   const d = parseRevenue(ctx.user, ctx.body);
   const existing = get('SELECT * FROM daily_revenues WHERE campus_id = ? AND revenue_date = ?', [d.campusId, d.revenueDate]);
   if (existing && !ctx.body.overwrite) {
@@ -156,7 +156,7 @@ revenueRoutes.post('/', async (ctx) => {
 
 /** Toplu giris - bir haftalik/aylik ciroyu tek seferde girmek icin. */
 revenueRoutes.post('/bulk', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'revenues');
   const items = arr(ctx.body.items, 'Kayitlar', { required: true, min: 1 });
   const result = { saved: 0, errors: [] };
   for (const [i, raw] of items.entries()) {
@@ -193,7 +193,7 @@ revenueRoutes.post('/bulk', async (ctx) => {
 });
 
 revenueRoutes.delete('/:id', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'revenues');
   const id = Number(ctx.params.id);
   const row = get('SELECT * FROM daily_revenues WHERE id = ?', [id]);
   if (!row) throw notFound('Ciro kaydi bulunamadi.');

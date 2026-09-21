@@ -191,6 +191,34 @@ html[data-theme="dark"] .nav-item.active { color: #93c5fd; }
 /* Fatura satirinda urun secilmemis: kaydetmeden once doldurulmali */
 select.needs-pick { border-color: var(--danger); background: var(--danger-soft); }
 
+/* ---------------------- Aranabilir ürün seçici --------------------- */
+.picker { position: relative; }
+.picker .picker-input { width: 100%; }
+.picker.needs-pick .picker-input { border-color: var(--danger); background: var(--danger-soft); }
+.picker-list {
+  position: absolute; z-index: 60; left: 0; right: 0; top: calc(100% + 2px);
+  max-height: 280px; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  /* Satır dar olabilir; liste okunabilir kalsın */
+  min-width: 260px;
+}
+.picker-item {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+  padding: 7px 10px; cursor: pointer; font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.picker-item:last-child { border-bottom: 0; }
+.picker-item:hover, .picker-item.on { background: var(--surface-2); }
+.picker-name { flex: 1; min-width: 0; }
+.picker-meta { color: var(--text-muted); font-size: 11.5px; white-space: nowrap; }
+.picker-new { color: var(--brand-600); font-weight: 600; position: sticky; bottom: 0; background: var(--surface); }
+.picker-empty { padding: 10px; font-size: 12.5px; color: var(--text-muted); }
+
+/* Açılır liste kaydırılan bir tablonun içindeyse kırpılmasın:
+   konumu JS hesaplar (bkz. urun-secici.js), burada sadece sabitleriz. */
+.picker-list.floating { position: fixed; left: auto; right: auto; }
+
 /* Sayfa kabi: grid'i bozmamasi icin kendi kutusunu olusturmaz */
 .page-host { display: contents; }
 .grid > *, .content > *, .page-host > *, .modal-body > * { min-width: 0; }

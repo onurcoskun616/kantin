@@ -256,9 +256,27 @@ export function campusName(id = state.campusId) {
 }
 
 /** Kullanici yazma yetkisine sahip mi? */
-export function canWrite() {
-  // ON MUHASEBE de salt okunurdur; tek istisnasi teslim fisini onaylamaktir.
-  return state.user && !['DENETCI', 'MUHASEBE'].includes(state.user.role);
+/**
+ * Kullanici verilen alana yazabilir mi?
+ *
+ * Sunucudaki `requireWrite(user, area)` ile AYNI kurallari uygular; burasi
+ * yalnizca arayuzu sadelestirir, guvenlik sunucudadir.
+ *
+ * ON MUHASEBE bir veri girisi rolu: fatura, tedarikci, iade, urun ve ciro
+ * girebilir; sayim kesinlestiremez, stok duzeltemez, tanim degistiremez.
+ * Alan adi verilmezse muhasebe icin KAPALI sayilir - guvenli varsayilan.
+ */
+const MUHASEBE_ALANLARI = ['purchases', 'suppliers', 'returns', 'products', 'revenues'];
+
+export function canWrite(area = null) {
+  if (!state.user || state.user.role === 'DENETCI') return false;
+  if (state.user.role === 'MUHASEBE') return !!area && MUHASEBE_ALANLARI.includes(area);
+  return true;
+}
+
+/** Alim belgesini KALICI silebilen roller (iptal etmek yetmediginde). */
+export function canDeleteDocuments() {
+  return state.user && ['ADMIN', 'GENEL_MUDURLUK'].includes(state.user.role);
 }
 
 /** Teslim fisini sistemde onaylayabilen roller. */

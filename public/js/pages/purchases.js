@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { state, canWrite } from '../app.js';
+import { state, canWrite, canDeleteDocuments } from '../app.js';
 import { el, card, stat, table, fmt, badge, modal, toast, confirmDialog, dateUtil, alertBox, empty, shortName} from '../ui.js';
 import { parseEFatura, matchProducts, matchSupplier } from '../efatura.js';
 import { parseKarekod, compareWithLines } from '../karekod.js';
@@ -28,7 +28,7 @@ export async function render(root) {
         el('label.field', {}, [el('span', { text: 'Bitiş' }), toInput]),
       ]),
       el('div.btn-row', {}, [
-        canWrite() ? el('button.btn.btn-primary', { text: '+ Yeni Mal Girişi', onclick: () => openPurchaseForm(draw) }) : null,
+        canWrite("purchases") ? el('button.btn.btn-primary', { text: '+ Yeni Mal Girişi', onclick: () => openPurchaseForm(draw) }) : null,
       ]),
     ]));
 
@@ -87,13 +87,17 @@ async function showDetail(id, onChange) {
       data.note ? el('p.card-note', { text: `Not: ${data.note}` }) : null,
       attachmentsSection(data),
     ],
-    actions: canWrite() && data.status !== 'IPTAL' ? [
-      el('button.btn.btn-danger', {
+    actions: [
+      // İptal: belge kayıtta kalır, stok hareketi geri alınır. Düzeltme yolu.
+      canWrite('purchases') && data.status !== 'IPTAL' ? el('button.btn', {
         text: 'Belgeyi İptal Et',
         onclick: async () => {
-          const ok = await confirmDialog('Belge iptal edilecek ve stok hareketleri geri alınacak. Emin misiniz?',
-            { title: 'Belgeyi İptal Et', confirmText: 'İptal Et', danger: true });
-          if (!ok) return;
+          const onay = await confirmDialog(
+            'Belge iptal edilecek ve stok hareketleri geri alınacak. Belge listede '
+            + '"İPTAL" olarak kalacak, e-Fatura numarası (ETTN) yeniden girilebilir hale gelecek.',
+            { title: 'Belgeyi İptal Et', confirmText: 'İptal Et', danger: true }
+          );
+          if (!onay) return;
           try {
             await api.post(`/api/purchases/${data.id}/cancel`);
             toast('Belge iptal edildi.');
@@ -101,8 +105,80 @@ async function showDetail(id, onChange) {
             onChange();
           } catch (err) { toast(err.message, 'error'); }
         },
+      }) : null,
+      // Kalıcı silme: geri alınamaz, yalnızca yönetim.
+      canDeleteDocuments() ? el('button.btn.btn-danger', {
+        text: '🗑️ Kalıcı Olarak Sil',
+        onclick: () => confirmDelete(data, onChange),
+      }) : null,
+    ].filter(Boolean),
+  });
+}
+
+/**
+ * Kalıcı silme onayı.
+ *
+ * Basit bir "emin misiniz?" yetmez: silme geri alınamaz ve faturanın
+ * kendisi de diskten gider. Bu yüzden ne kaybedileceğini TEK TEK sayar ve
+ * kullanıcıdan belge numarasını yazmasını ister.
+ */
+function confirmDelete(data, onChange) {
+  const ekSayisi = data.attachments?.length ?? 0;
+  const dogrulama = el('input', { placeholder: data.document_no || String(data.id) });
+  const hata = el('div.alert.alert-danger', { hidden: true });
+  const silBtn = el('button.btn.btn-danger', { text: 'Kalıcı Olarak Sil' });
+
+  const m = modal({
+    title: '🗑️ Belgeyi Kalıcı Olarak Sil',
+    body: [
+      hata,
+      alertBox('danger', 'Bu işlem geri alınamaz',
+        'Belge, satırları, stok hareketleri ve iliştirilmiş fatura dosyaları kalıcı olarak silinir. '
+        + 'Yalnızca denetim günlüğünde bir kayıt kalır.'),
+      el('p', { text: 'Silinecekler:' }),
+      el('ul', { style: 'margin:0 0 12px;padding-left:18px;display:grid;gap:4px;font-size:13px' }, [
+        el('li', { text: `Belge #${data.id}${data.document_no ? ' / ' + data.document_no : ''} — ${fmt.money(data.gross_total)}` }),
+        el('li', { text: `${data.lines.length} ürün satırı ve bunların stok hareketleri` }),
+        ekSayisi
+          ? el('li', { text: `${ekSayisi} fatura dosyası (PDF/fotoğraf/XML) — diskten de silinir` })
+          : el('li.muted', { text: 'İliştirilmiş fatura dosyası yok' }),
+        data.efatura_uuid
+          ? el('li', { text: 'e-Fatura numarası (ETTN) serbest kalır; aynı fatura yeniden girilebilir' })
+          : null,
+      ].filter(Boolean)),
+      el('p.card-note', {
+        text: 'Kayıt izini korumak istiyorsanız silmek yerine "Belgeyi İptal Et" kullanın.',
       }),
-    ] : [],
+      el('label.field', {}, [
+        el('span', { text: `Onaylamak için belge numarasını yazın: ${data.document_no || data.id}` }),
+        dogrulama,
+      ]),
+    ],
+    actions: [el('button.btn', { text: 'Vazgeç', onclick: () => m.close() }), silBtn],
+  });
+
+  silBtn.addEventListener('click', async () => {
+    const beklenen = String(data.document_no || data.id).trim();
+    if (dogrulama.value.trim() !== beklenen) {
+      hata.textContent = `Belge numarası eşleşmedi. "${beklenen}" yazmalısınız.`;
+      hata.hidden = false;
+      dogrulama.focus();
+      return;
+    }
+    silBtn.disabled = true;
+    silBtn.textContent = 'Siliniyor...';
+    try {
+      const r = await api.del(`/api/purchases/${data.id}`);
+      m.close();
+      document.querySelectorAll('.modal-backdrop').forEach((n) => n.remove());
+      toast(`Belge silindi (${r.deletedLines} satır, ${r.deletedFiles} dosya).`);
+      onChange();
+    } catch (err) {
+      hata.textContent = err.message;
+      hata.hidden = false;
+      silBtn.disabled = false;
+      silBtn.textContent = 'Kalıcı Olarak Sil';
+    }
   });
 }
 
@@ -637,7 +713,7 @@ function attachmentsSection(purchase) {
   return el('div', { style: 'margin-top:14px' }, [
     el('div.row', { style: 'justify-content:space-between;align-items:center;margin-bottom:8px' }, [
       el('strong', { text: 'Fatura Dosyaları', style: 'font-size:13px' }),
-      canWrite() && purchase.status !== 'IPTAL' ? el('div', {}, [uploadBtn, fileInput]) : null,
+      canWrite("purchases") && purchase.status !== 'IPTAL' ? el('div', {}, [uploadBtn, fileInput]) : null,
     ]),
     listBox,
   ]);

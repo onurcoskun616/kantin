@@ -14,7 +14,7 @@ productRoutes.get('/categories', async () => ({
 }));
 
 productRoutes.post('/categories', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'products');
   const name = str(ctx.body.name, 'Kategori adi', { required: true, max: 80 });
   if (get('SELECT id FROM categories WHERE name = ?', [name])) throw conflict('Bu kategori zaten var.');
   const id = insert('INSERT INTO categories (name, sort_order) VALUES (?, ?)', [
@@ -25,7 +25,7 @@ productRoutes.post('/categories', async (ctx) => {
 });
 
 productRoutes.put('/categories/:id', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'products');
   const id = Number(ctx.params.id);
   if (!get('SELECT id FROM categories WHERE id = ?', [id])) throw notFound('Kategori bulunamadi.');
   const name = str(ctx.body.name, 'Kategori adi', { required: true, max: 80 });
@@ -98,7 +98,7 @@ productRoutes.get('/:id', async (ctx) => {
 });
 
 productRoutes.post('/', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'products');
   const data = parseProduct(ctx.body);
   if (data.barcode && get('SELECT id FROM products WHERE barcode = ?', [data.barcode])) {
     throw conflict('Bu barkod baska bir urunde kayitli.');
@@ -121,7 +121,7 @@ productRoutes.post('/', async (ctx) => {
 });
 
 productRoutes.put('/:id', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'products');
   const id = Number(ctx.params.id);
   const existing = get('SELECT * FROM products WHERE id = ?', [id]);
   if (!existing) throw notFound('Urun bulunamadi.');
@@ -154,7 +154,7 @@ productRoutes.put('/:id', async (ctx) => {
 });
 
 productRoutes.delete('/:id', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'products');
   const id = Number(ctx.params.id);
   if (!get('SELECT id FROM products WHERE id = ?', [id])) throw notFound('Urun bulunamadi.');
   // Hareket gormus urunler silinmez, pasife alinir (izlenebilirlik korunur)
@@ -165,7 +165,7 @@ productRoutes.delete('/:id', async (ctx) => {
 
 /* ------------------- Kampus bazli fiyat istisnasi ------------------- */
 productRoutes.put('/:id/campus-price/:campusId', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'products');
   const productId = Number(ctx.params.id);
   const campusId = assertCampusAccess(ctx.user, ctx.params.campusId);
   const product = get('SELECT * FROM products WHERE id = ?', [productId]);
@@ -200,7 +200,7 @@ productRoutes.put('/:id/campus-price/:campusId', async (ctx) => {
 
 /* -------------------------- Toplu iceri alma ------------------------ */
 productRoutes.post('/bulk-import', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'products');
   const rows = Array.isArray(ctx.body.items) ? ctx.body.items : null;
   if (!rows || !rows.length) throw badRequest('Iceri aktarilacak satir bulunamadi.');
   if (rows.length > 5000) throw badRequest('Tek seferde en fazla 5000 satir aktarilabilir.');

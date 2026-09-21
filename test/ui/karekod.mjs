@@ -99,19 +99,22 @@ await page.click('button[type=submit]');
 await page.waitForSelector('#app:not([hidden])');
 await page.waitForTimeout(1500);
 
-// Tedarikciye VKN yaz ki karekod eslessin
+// Karekoddaki VKN bir tedarikciye bagli olmali ki eslesme calissin.
+// VKN artik TEKIL: numarayi zaten tasiyan kart varsa o kullanilir.
 const supplier = await page.evaluate(async (vkn) => {
   const t = localStorage.getItem('kantin_token');
-  const r = await fetch('/api/suppliers', { headers: { Authorization: `Bearer ${t}` } });
-  const s = (await r.json()).items[0];
-  await fetch(`/api/suppliers/${s.id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` },
+  const h = { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` };
+  const list = (await (await fetch('/api/suppliers', { headers: h })).json()).items;
+  const zaten = list.find((x) => String(x.tax_no || '').trim() === vkn);
+  if (zaten) return { ...zaten, yazildi: true };
+  const s = list[0];
+  const r = await fetch(`/api/suppliers/${s.id}`, {
+    method: 'PUT', headers: h,
     body: JSON.stringify({ name: s.name, taxNo: vkn, taxOffice: 'Beşiktaş', phone: s.phone }),
   });
-  return s;
+  return { ...s, yazildi: r.ok, error: r.ok ? null : (await r.json()).error };
 }, VKN);
-ok('Tedarikciye VKN yazildi', !!supplier?.id);
+ok('Tedarikciye VKN yazildi', supplier?.yazildi === true, supplier?.error);
 
 // Test KENDI urununu kullanir. Ortak bir urunu 5,00 TL'ye almak, sonraki
 // testlerin ayni urunu daha pahaliya almasi durumunda "alis fiyati artti"

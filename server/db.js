@@ -26,9 +26,31 @@ export function migrate() {
   // "no such column" ile patlardi. Bos veritabaninda bu cagri hicbir sey
   // yapmaz (tablolar henuz yok).
   addMissingColumns();
+  dropOutdatedIndexes();
   db.exec(sql);
   upgradeExistingSchema();
   repairDanglingReferences();
+}
+
+/**
+ * Tanimi degisen indeksler.
+ *
+ * `CREATE INDEX IF NOT EXISTS` var olan bir indeksi GUNCELLEMEZ; tanim
+ * degistiyse eskisi once dusurulmelidir. Dusurulen indeks hemen ardindan
+ * schema.sql tarafindan yeni tanimiyla kurulur.
+ */
+function dropOutdatedIndexes() {
+  // Iptal edilen fatura tekillik kisitindan cikarildi (IPTAL belgenin ETTN'si
+  // yeniden girilebilmeli). Eski tanimda bu kosul yok.
+  dropIndexUnless('idx_purchases_efatura', 'IPTAL');
+}
+
+/** Saklanan tanimda `mustContain` yoksa indeksi dusurur. */
+function dropIndexUnless(name, mustContain) {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(name);
+  if (!row || String(row.sql || '').includes(mustContain)) return;
+  db.exec(`DROP INDEX IF EXISTS ${name}`);
+  console.log(`[SEMA] ${name} indeksi yeni tanimiyla kurulacak.`);
 }
 
 /* ------------------------- Sema yukseltmeleri ----------------------- */

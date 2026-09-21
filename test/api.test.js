@@ -971,11 +971,13 @@ describe('Ciro teslim fisi', () => {
     assert.match(r.data.error, /eslesmiyor/i);
   });
 
-  test('on muhasebe kodu dogru girerse onaylar, baska yere yazamaz', async () => {
+  test('on muhasebe kodu dogru girerse onaylar, onay disina cikamaz', async () => {
+    // On muhasebe bir VERI GIRISI rolu: ciro girebilir ama sayim
+    // kesinlestiremez, stok duzeltemez, kullanici tanimlayamaz.
     const write = await asUser(accountingToken, 'POST', '/api/revenues', {
       campusId, revenueDate: daysAgo(1), cashAmount: 500,
     });
-    assert.equal(write.status, 403, 'on muhasebe ciro giremez');
+    assert.equal(write.status, 200, 'on muhasebe ciro girebilmeli');
 
     const r = await asUser(accountingToken, 'POST', `/api/handovers/${handover.id}/confirm`,
       { verificationCode: handover.verification_code });
@@ -1199,5 +1201,248 @@ describe('Denetim izi', () => {
     assert.ok(actions.includes('FINALIZE'), 'sayim kesinlestirme kaydedilmeli');
     assert.ok(actions.includes('LOGIN_FAILED'), 'basarisiz giris kaydedilmeli');
     assert.ok(actions.includes('CREATE'));
+  });
+});
+
+/* ============ Tedarikci vergi numarasi (zorunlu + tekil) ============ */
+describe('Tedarikci vergi numarasi', () => {
+  test('VKN olmadan tedarikci acilamaz', async () => {
+    const r = await api('POST', '/api/suppliers', { name: 'VKN Yok Ltd.' });
+    assert.equal(r.status, 400);
+    assert.match(r.data.error, /Vergi\/TC no/i);
+  });
+
+  test('gecersiz uzunluktaki numara reddedilir', async () => {
+    for (const bad of ['12345', '123456789012', 'abcdefghij']) {
+      const r = await api('POST', '/api/suppliers', { name: `Hatali ${bad}`, taxNo: bad });
+      assert.equal(r.status, 400, `"${bad}" kabul edilmemeli`);
+      assert.match(r.data.error, /10 haneli|11 haneli/);
+    }
+  });
+
+  test('bosluk ve tire temizlenir, 10 ve 11 hane kabul edilir', async () => {
+    const a = await ok('POST', '/api/suppliers', { name: 'Bosluklu A.Ş.', taxNo: '123 456 78 90' });
+    assert.equal(a.tax_no, '1234567890');
+    const b = await ok('POST', '/api/suppliers', { name: 'Sahis Isletmesi', taxNo: '12345678901' });
+    assert.equal(b.tax_no, '12345678901');
+  });
+
+  test('ayni VKN ikinci firmaya verilemez ve firma adi soylenir', async () => {
+    await ok('POST', '/api/suppliers', { name: 'Tekil Gıda A.Ş.', taxNo: '9988776655' });
+    const r = await api('POST', '/api/suppliers', { name: 'Baska Firma', taxNo: '9988776655' });
+    assert.equal(r.status, 409);
+    assert.match(r.data.error, /9988776655/);
+    assert.match(r.data.error, /Tekil Gıda A\.Ş\./);
+  });
+
+  test('firma kendi VKN"siyle guncellenebilir', async () => {
+    const s = await ok('POST', '/api/suppliers', { name: 'Guncellenecek Ltd.', taxNo: '5544332211' });
+    const r = await ok('PUT', `/api/suppliers/${s.id}`,
+      { name: 'Guncellenecek Ltd. Şti.', taxNo: '5544332211' });
+    assert.equal(r.name, 'Guncellenecek Ltd. Şti.');
+  });
+});
+
+/* ============== Alim belgesi: iptal ve kalici silme =============== */
+describe('Alim belgesi iptal ve silme', () => {
+  let campusId; let supplierId; let productId;
+  const ETTN = 'cccccccc-dddd-4eee-8fff-000011112222';
+
+  before(async () => {
+    campusId = (await ok('POST', '/api/campuses', { name: 'İptal Test Kampüsü', code: 'IPT' })).id;
+    supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'İptal Test Tedarikçi', taxNo: '7070707070' })).id;
+    productId = (await ok('POST', '/api/products',
+      { name: 'İptal Test Ürünü', purchasePrice: 10, salePrice: 20, vatRate: 10 })).id;
+  });
+
+  const belgeAc = (documentNo, efaturaUuid) => ok('POST', '/api/purchases', {
+    campusId, supplierId, documentNo, documentDate: daysAgo(1), efaturaUuid,
+    lines: [{ productId, quantity: 5, unitPrice: 10, vatRate: 10 }],
+  });
+
+  test('ayni ETTN ikinci kez kabul edilmez', async () => {
+    await belgeAc('IPT-001', ETTN);
+    const r = await api('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'IPT-002', documentDate: daysAgo(1), efaturaUuid: ETTN,
+      lines: [{ productId, quantity: 1, unitPrice: 10, vatRate: 10 }],
+    });
+    assert.equal(r.status, 409);
+    assert.match(r.data.error, /zaten sisteme aktarilmis/i);
+  });
+
+  test('IPTAL edilen belgenin ETTN"si yeniden girilebilir', async () => {
+    const list = await ok('GET', `/api/purchases?campusId=${campusId}`);
+    const ilk = list.items.find((p) => p.document_no === 'IPT-001');
+    await ok('POST', `/api/purchases/${ilk.id}/cancel`);
+
+    // Ayni ETTN artik serbest: tedarikci faturayi iptal edip yeniden
+    // duzenlemis olabilir.
+    const yeni = await belgeAc('IPT-003', ETTN);
+    assert.ok(yeni.id, 'iptal sonrasi ayni ETTN yeniden girilebilmeli');
+  });
+
+  test('iptal stok hareketini geri alir, belgeyi kayitta birakir', async () => {
+    const b = await belgeAc('IPT-004', null);
+    const oncesi = await ok('GET', `/api/stock?campusId=${campusId}`);
+    const oncekiMiktar = oncesi.items.find((r) => r.product_id === productId)?.stock_qty ?? 0;
+
+    await ok('POST', `/api/purchases/${b.id}/cancel`);
+
+    const sonrasi = await ok('GET', `/api/stock?campusId=${campusId}`);
+    const sonrakiMiktar = sonrasi.items.find((r) => r.product_id === productId)?.stock_qty ?? 0;
+    assert.equal(sonrakiMiktar, oncekiMiktar - 5, 'iptal 5 adedi stoktan dusmeli');
+
+    const liste = await ok('GET', `/api/purchases?campusId=${campusId}`);
+    const kalan = liste.items.find((p) => p.id === b.id);
+    assert.ok(kalan, 'iptal edilen belge listede kalmali (denetim izi)');
+    assert.equal(kalan.status, 'IPTAL');
+  });
+
+  test('ayni belge iki kez iptal edilemez', async () => {
+    const b = await belgeAc('IPT-005', null);
+    await ok('POST', `/api/purchases/${b.id}/cancel`);
+    const r = await api('POST', `/api/purchases/${b.id}/cancel`);
+    assert.equal(r.status, 409);
+  });
+
+  test('kalici silme belgeyi, satirlarini ve stok hareketini yok eder', async () => {
+    const b = await belgeAc('IPT-006', null);
+    const oncesi = await ok('GET', `/api/stock?campusId=${campusId}`);
+    const oncekiMiktar = oncesi.items.find((r) => r.product_id === productId)?.stock_qty ?? 0;
+
+    const sonuc = await ok('DELETE', `/api/purchases/${b.id}`);
+    assert.equal(sonuc.deletedLines, 1);
+
+    const detay = await api('GET', `/api/purchases/${b.id}`);
+    assert.equal(detay.status, 404, 'silinen belge artik yok');
+
+    const sonrasi = await ok('GET', `/api/stock?campusId=${campusId}`);
+    const sonrakiMiktar = sonrasi.items.find((r) => r.product_id === productId)?.stock_qty ?? 0;
+    assert.equal(sonrakiMiktar, oncekiMiktar - 5, 'silme de stogu geri almali');
+  });
+
+  test('silinen belgenin icerigi denetim gunlugune yazilir', async () => {
+    const b = await belgeAc('IPT-007', null);
+    await ok('DELETE', `/api/purchases/${b.id}`);
+    const log = await ok('GET', '/api/audit?entity=purchases&action=DELETE');
+    const kayit = log.items.find((r) => r.entity_id === b.id);
+    assert.ok(kayit, 'silme denetim gunlugunde olmali');
+    const detay = JSON.parse(kayit.detail);
+    assert.equal(detay.documentNo, 'IPT-007');
+    assert.equal(detay.lines.length, 1, 'silinen satirlar gunlukte durmali');
+    assert.equal(detay.lines[0].urun, 'İptal Test Ürünü');
+  });
+
+  test('silinen belgenin ETTN"si de serbest kalir', async () => {
+    const ettn = 'aaaa1111-bbbb-4ccc-8ddd-eeee22223333';
+    const b = await belgeAc('IPT-008', ettn);
+    await ok('DELETE', `/api/purchases/${b.id}`);
+    const yeni = await belgeAc('IPT-009', ettn);
+    assert.ok(yeni.id);
+  });
+});
+
+/* ================= On muhasebe rolunun yazma sinirlari ============= */
+describe('On muhasebe yetkileri', () => {
+  let tok; let campusId; let supplierId; let productId;
+  const asAcc = async (method, pathname, body) => {
+    const res = await fetch(BASE + pathname, {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { status: res.status, data: await res.json().catch(() => ({})) };
+  };
+
+  before(async () => {
+    campusId = (await ok('POST', '/api/campuses', { name: 'Muhasebe Test Kampüsü', code: 'MUH' })).id;
+    supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'Muhasebe Test Tedarikçi', taxNo: '3131313131' })).id;
+    productId = (await ok('POST', '/api/products',
+      { name: 'Muhasebe Test Ürünü', purchasePrice: 8, salePrice: 15, vatRate: 10 })).id;
+    await ok('POST', '/api/users', {
+      email: 'yetki-muhasebe@topkapiokullari.com', fullName: 'Yetki Muhasebe',
+      role: 'MUHASEBE', password: 'Muhasebe12345',
+    });
+    tok = (await api('POST', '/api/auth/login',
+      { email: 'yetki-muhasebe@topkapiokullari.com', password: 'Muhasebe12345' }, false)).data.token;
+    assert.ok(tok);
+  });
+
+  test('YAPABILIR: fatura / mal girisi', async () => {
+    const r = await asAcc('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'MUH-001', documentDate: daysAgo(1),
+      lines: [{ productId, quantity: 3, unitPrice: 8, vatRate: 10 }],
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+  });
+
+  test('YAPABILIR: tedarikci tanimi ve odeme', async () => {
+    const s = await asAcc('POST', '/api/suppliers', { name: 'Muhasebenin Açtığı', taxNo: '4242424242' });
+    assert.equal(s.status, 200, JSON.stringify(s.data));
+    const p = await asAcc('POST', `/api/suppliers/${supplierId}/payments`,
+      { amount: 100, paymentDate: daysAgo(1), method: 'HAVALE' });
+    assert.equal(p.status, 200, JSON.stringify(p.data));
+  });
+
+  test('YAPABILIR: urun karti ve gunluk ciro', async () => {
+    const u = await asAcc('POST', '/api/products',
+      { name: 'Muhasebenin Ürünü', purchasePrice: 5, salePrice: 10, vatRate: 10 });
+    assert.equal(u.status, 200, JSON.stringify(u.data));
+    const c = await asAcc('POST', '/api/revenues',
+      { campusId, revenueDate: daysAgo(2), cashAmount: 250 });
+    assert.equal(c.status, 200, JSON.stringify(c.data));
+  });
+
+  test('YAPAMAZ: sayim acma ve kesinlestirme', async () => {
+    const r = await asAcc('POST', '/api/counts', { campusId, countDate: daysAgo(1) });
+    assert.equal(r.status, 403, 'sayim mutabakatin kendisidir, veri girisi degildir');
+    assert.match(r.data.error, /On muhasebe/i);
+  });
+
+  test('YAPAMAZ: stok duzeltme / fire', async () => {
+    const r = await asAcc('POST', '/api/waste',
+      { campusId, productId, quantity: 1, reason: 'KIRILMA', wasteDate: daysAgo(1) });
+    assert.equal(r.status, 403);
+  });
+
+  test('YAPAMAZ: kampus ve kullanici tanimi', async () => {
+    const k = await asAcc('POST', '/api/campuses', { name: 'Olmayan Kampüs', code: 'XXX' });
+    assert.equal(k.status, 403);
+    const u = await asAcc('POST', '/api/users', {
+      email: 'olmaz@topkapiokullari.com', fullName: 'Olmaz', role: 'ADMIN', password: 'Parola123456',
+    });
+    assert.equal(u.status, 403);
+  });
+
+  test('YAPAMAZ: belgeyi kalici silme (yalnizca yonetim)', async () => {
+    const b = await ok('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'MUH-002', documentDate: daysAgo(1),
+      lines: [{ productId, quantity: 1, unitPrice: 8, vatRate: 10 }],
+    });
+    const sil = await asAcc('DELETE', `/api/purchases/${b.id}`);
+    assert.equal(sil.status, 403, 'silme geri alinamaz, yonetim yetkisi ister');
+    // Ama iptal edebilir: bu bir veri girisi duzeltmesidir
+    const iptal = await asAcc('POST', `/api/purchases/${b.id}/cancel`);
+    assert.equal(iptal.status, 200, JSON.stringify(iptal.data));
+  });
+
+  test('denetci hicbirini yapamaz', async () => {
+    await ok('POST', '/api/users', {
+      email: 'yetki-denetci@topkapiokullari.com', fullName: 'Yetki Denetçi',
+      role: 'DENETCI', password: 'Denetci12345',
+    });
+    const dTok = (await api('POST', '/api/auth/login',
+      { email: 'yetki-denetci@topkapiokullari.com', password: 'Denetci12345' }, false)).data.token;
+    const r = await fetch(`${BASE}/api/purchases`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${dTok}` },
+      body: JSON.stringify({
+        campusId, supplierId, documentNo: 'DEN-001', documentDate: daysAgo(1),
+        lines: [{ productId, quantity: 1, unitPrice: 8, vatRate: 10 }],
+      }),
+    });
+    assert.equal(r.status, 403);
   });
 });

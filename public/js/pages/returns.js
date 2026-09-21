@@ -40,7 +40,7 @@ export async function render(root) {
         el('label.field', {}, [el('span', { text: 'Başlangıç' }), fromInput]),
         el('label.field', {}, [el('span', { text: 'Bitiş' }), toInput]),
       ]),
-      canWrite() ? el('button.btn.btn-primary', { text: '+ Yeni İade', onclick: () => openForm(draw) }) : null,
+      canWrite("returns") ? el('button.btn.btn-primary', { text: '+ Yeni İade', onclick: () => openForm(draw) }) : null,
     ]));
 
     container.append(alertBox('info', 'İade mi, fire mi?',
@@ -113,7 +113,7 @@ async function showDetail(id, onChange) {
       ], data.lines),
       data.note ? el('p.card-note', { text: `Not: ${data.note}` }) : null,
     ],
-    actions: canWrite() ? [
+    actions: canWrite("returns") ? [
       el('button.btn.btn-danger', {
         text: 'Belgeyi Sil',
         onclick: async () => {

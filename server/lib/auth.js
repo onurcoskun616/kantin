@@ -95,10 +95,26 @@ export const ROLES = [
 ];
 
 const ALL_CAMPUS_ROLES = ['ADMIN', 'GENEL_MUDURLUK', 'MUHASEBE', 'DENETCI'];
-// Bu roller genel yazma yetkisine sahip degildir. MUHASEBE'nin yapabildigi
-// iki istisna (teslim fisi onayi, tedarikci odemesi) ilgili uclarda
-// requireRole ile ACIKCA verilir; burada varsayilan kapalidir.
-const READ_ONLY_ROLES = ['DENETCI', 'MUHASEBE'];
+
+// DENETCI hicbir kaydi degistiremez.
+const READ_ONLY_ROLES = ['DENETCI'];
+
+/**
+ * ON MUHASEBE (MUHASEBE) rolu "veri girisi" rolusdur: belge girer, ONAYLAMAZ.
+ *
+ * Yazabilecegi alanlar burada ACIKCA sayilir. Varsayilan KAPALIDIR: bir uc
+ * `requireWrite(user)` derken alan adi vermezse MUHASEBE oraya yazamaz.
+ * Boylece sonradan eklenen bir uc yanlislikla acilmis olmaz.
+ *
+ * Bilerek DISARIDA birakilanlar:
+ *   counts    - sayim kesinlestirme mutabakatin kendisidir
+ *   stock     - stok duzeltme/fire/transfer bir duzeltmedir, veri girisi degil
+ *   recipes   - urun receteleri maliyeti belirler
+ *   campuses  - kurulus tanimi
+ *   handovers - teslim fisi OLUSTURMA kantinin isidir; MUHASEBE yalnizca
+ *               ONAYLAR ve bu yetki ilgili ucta requireRole ile verilir
+ */
+const MUHASEBE_WRITE_AREAS = ['purchases', 'suppliers', 'returns', 'products', 'revenues'];
 
 /** Kullanici tum kampusleri gorebiliyor mu? */
 export function seesAllCampuses(user) {
@@ -116,15 +132,33 @@ export function requireRole(user, ...roles) {
   return user;
 }
 
-/** Yazma yetkisi kontrolu (DENETCI salt okunurdur). */
-export function requireWrite(user) {
+/**
+ * Yazma yetkisi kontrolu.
+ *
+ * @param user
+ * @param area MUHASEBE rolunun yazabilecegi alan adi (bkz. MUHASEBE_WRITE_AREAS).
+ *             Verilmezse MUHASEBE reddedilir - guvenli varsayilan.
+ */
+export function requireWrite(user, area = null) {
   requireAuth(user);
   if (READ_ONLY_ROLES.includes(user.role)) {
-    throw forbidden(user.role === 'MUHASEBE'
-      ? 'On muhasebe rolu bu kaydi degistiremez; yalnizca teslim fisi onayi ve tedarikci odemesi girebilir.'
-      : 'Denetci rolu salt okunurdur, kayit degistiremez.');
+    throw forbidden('Denetci rolu salt okunurdur, kayit degistiremez.');
+  }
+  if (user.role === 'MUHASEBE' && !(area && MUHASEBE_WRITE_AREAS.includes(area))) {
+    throw forbidden(
+      'On muhasebe rolu bu kaydi degistiremez. Yetkiniz: fatura/mal girisi, '
+      + 'tedarikci ve odemeler, iadeler, urun karti ve fiyatlar, gunluk ciro girisi. '
+      + 'Sayim kesinlestirme, stok duzeltme ve tanimlar disaridadir.'
+    );
   }
   return user;
+}
+
+/** Bir rolun verilen alana yazip yazamayacagi (arayuzu gizlemek icin). */
+export function canWriteArea(user, area) {
+  if (!user || READ_ONLY_ROLES.includes(user.role)) return false;
+  if (user.role === 'MUHASEBE') return MUHASEBE_WRITE_AREAS.includes(area);
+  return true;
 }
 
 /**

@@ -29,15 +29,15 @@ export async function renderProducts(root) {
     container.append(el('div.filter-bar', {}, [
       searchInput, catSelect,
       el('div', { style: 'flex:1' }),
-      canWrite() ? el('button.btn.btn-primary', { text: '+ Yeni Ürün', onclick: () => openProductForm(cats.items, null, draw) }) : null,
-      canWrite() ? el('button.btn', {
+      canWrite("products") ? el('button.btn.btn-primary', { text: '+ Yeni Ürün', onclick: () => openProductForm(cats.items, null, draw) }) : null,
+      canWrite("products") ? el('button.btn', {
         text: '📊 Excel\'den Aktar',
         onclick: async () => {
           const { openImportWizard } = await import('./import.js');
           openImportWizard(draw);
         },
       }) : null,
-      canWrite() ? el('button.btn', { text: '🏷️ Kategoriler', onclick: () => openCategories(cats.items, draw) }) : null,
+      canWrite("products") ? el('button.btn', { text: '🏷️ Kategoriler', onclick: () => openCategories(cats.items, draw) }) : null,
       el('button.btn', { text: '⬇ Excel (CSV)', onclick: () => api.download('/api/products', { campusId: state.campusId, ...filters }) }),
     ]));
 
@@ -79,7 +79,7 @@ export async function renderProducts(root) {
         { label: 'Kampüs Fiyatı', render: (r) => (r.campus_sale_price !== null && r.campus_sale_price !== undefined ? badge('Özel', 'info') : el('span.muted', { text: '—' })) },
         { label: 'Durum', render: (r) => (r.is_active ? badge('Aktif', 'ok') : badge('Pasif')) },
         {
-          label: '', render: (r) => (canWrite() ? el('div.btn-row', {}, [
+          label: '', render: (r) => (canWrite("products") ? el('div.btn-row', {}, [
             el('button.btn.btn-sm', { text: 'Düzenle', onclick: () => openProductForm(cats.items, r, draw) }),
             el('button.btn.btn-sm', { text: 'Kampüs Fiyatı', onclick: () => openCampusPrice(r, draw) }),
             r.product_type === 'URETILEN' ? el('button.btn.btn-sm', {
@@ -179,7 +179,7 @@ function openCategories(categories, onDone) {
   const refresh = () => {
     list.replaceChildren(...categories.map((c) => el('div.row', { style: 'justify-content:space-between;align-items:center' }, [
       el('span', { text: c.name }),
-      canWrite() ? el('button.btn.btn-sm', {
+      canWrite("products") ? el('button.btn.btn-sm', {
         text: 'Yeniden adlandır',
         onclick: () => formModal({
           title: 'Kategori Düzenle',
@@ -195,7 +195,7 @@ function openCategories(categories, onDone) {
     title: 'Kategoriler',
     body: [
       list,
-      canWrite() ? el('button.btn.btn-primary', {
+      canWrite("products") ? el('button.btn.btn-primary', {
         text: '+ Kategori Ekle',
         onclick: () => formModal({
           title: 'Yeni Kategori',
@@ -219,7 +219,7 @@ export async function renderSuppliers(root) {
 
     container.append(el('div.row', { style: 'justify-content:space-between' }, [
       el('h3', { text: 'Tedarikçiler' }),
-      canWrite() ? el('button.btn.btn-primary', { text: '+ Yeni Tedarikçi', onclick: () => openSupplierForm(null, draw) }) : null,
+      canWrite("products") ? el('button.btn.btn-primary', { text: '+ Yeni Tedarikçi', onclick: () => openSupplierForm(null, draw) }) : null,
     ]));
 
     container.append(card(null, [
@@ -232,7 +232,7 @@ export async function renderSuppliers(root) {
         {
           label: '', render: (r) => el('div.btn-row', {}, [
             el('button.btn.btn-sm', { text: 'Cari Hesap', onclick: () => showSupplier(r.id, draw) }),
-            canWrite() ? el('button.btn.btn-sm', { text: 'Düzenle', onclick: () => openSupplierForm(r, draw) }) : null,
+            canWrite("products") ? el('button.btn.btn-sm', { text: 'Düzenle', onclick: () => openSupplierForm(r, draw) }) : null,
           ]),
         },
       ], data.items, { emptyText: 'Tedarikçi kaydı yok.' }),
@@ -256,7 +256,7 @@ async function showSupplier(id, onDone) {
         stat('Bakiye (Borç)', fmt.money(data.balance.debt), { tone: data.balance.debt > 0 ? 'warn' : 'ok' }),
       ]),
       el('p.card-note', { text: 'Bakiye = Alım − İade − Ödeme. İade edilen mal borçtan düşülür.' }),
-      canWrite() ? el('button.btn.btn-primary', {
+      canWrite("products") ? el('button.btn.btn-primary', {
         text: '+ Ödeme Kaydet',
         onclick: () => formModal({
           title: 'Tedarikçiye Ödeme',
@@ -307,10 +307,15 @@ function openSupplierForm(supplier, onDone) {
     title: supplier ? 'Tedarikçi Düzenle' : 'Yeni Tedarikçi',
     fields: [
       { name: 'name', label: 'Firma adı', value: supplier?.name ?? '', required: true },
+      // VKN zorunlu: e-Fatura eşleştirmesi ve mükerrer firma engeli buna dayanır
+      {
+        name: 'taxNo', label: 'Vergi / TC no', value: supplier?.tax_no ?? '', required: true,
+        hint: 'Zorunlu — 10 hane VKN veya 11 hane TCKN. Faturalar bu numarayla '
+          + 'eşleşir; aynı numara ikinci bir firmaya verilemez.',
+      },
+      { name: 'taxOffice', label: 'Vergi dairesi', value: supplier?.tax_office ?? '' },
       { name: 'phone', label: 'Telefon', value: supplier?.phone ?? '' },
       { name: 'email', label: 'E-posta', type: 'email', value: supplier?.email ?? '' },
-      { name: 'taxOffice', label: 'Vergi dairesi', value: supplier?.tax_office ?? '' },
-      { name: 'taxNo', label: 'Vergi / TC no', value: supplier?.tax_no ?? '' },
       { name: 'address', label: 'Adres', type: 'textarea', value: supplier?.address ?? '' },
       { name: 'note', label: 'Not', type: 'textarea', value: supplier?.note ?? '' },
       { name: 'isActive', label: 'Aktif', type: 'checkbox', value: supplier ? !!supplier.is_active : true },

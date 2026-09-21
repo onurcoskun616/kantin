@@ -6,6 +6,8 @@
  * Mevcut veriyi asla ezmez; yalnizca eksikse ekler.
  * `node server/seed.js --demo` ile ornek hareket verisi de uretir.
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import { config } from './config.js';
 import { db, get, all, insert, run, migrate, tx } from './db.js';
 import { hashPassword } from './lib/auth.js';
@@ -234,15 +236,36 @@ function generateDemo() {
 if (process.argv[1] && process.argv[1].endsWith('seed.js')) {
   migrate();
   if (process.argv.includes('--reset')) {
-    const tables = ['audit_logs', 'sessions', 'count_lines', 'counts', 'transfer_lines', 'transfers',
-      'waste_records', 'supplier_payments', 'purchase_lines', 'purchases', 'stock_movements',
-      'daily_revenues', 'price_history', 'campus_products', 'products', 'categories', 'suppliers',
-      'campuses', 'users', 'settings'];
+    // Tablo listesi ELLE YAZILMAZ: veritabanindan okunur.
+    //
+    // Once elle yazilmisti ve zamanla eksik kaldi (production_sales,
+    // supplier_returns, recipes, revenue_handovers, purchase_attachments...).
+    // Sonuc sessiz bir bozulmaydi: sqlite_sequence sifirlandigi icin yeni
+    // kayitlar 1'den basliyor ama silinmemis cocuk satirlar eski id'lere
+    // bagli duruyordu; ilk sayim "UNIQUE constraint failed" ile patliyordu.
+    const tables = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+    ).all().map((r) => r.name);
+
     db.exec('PRAGMA foreign_keys = OFF');
     for (const t of tables) run(`DELETE FROM ${t}`);
-    run("DELETE FROM sqlite_sequence");
+    run('DELETE FROM sqlite_sequence');
     db.exec('PRAGMA foreign_keys = ON');
-    console.log('[RESET] Tum veriler silindi.');
+    console.log(`[RESET] ${tables.length} tablodaki tum veriler silindi.`);
+
+    // Fatura dosyalari veritabaninin ICINDE degil. Silinmezlerse "tum veriler
+    // silindi" yalan olur: kayitlar gider, faturalarin kendisi diskte kalir.
+    let silinen = 0;
+    try {
+      for (const f of fs.readdirSync(config.attachmentsDir)) {
+        if (!/^[0-9a-f]{32}\.[a-z0-9]{2,5}$/.test(f)) continue;   // yalnizca bizim urettigimiz adlar
+        fs.unlinkSync(path.join(config.attachmentsDir, f));
+        silinen++;
+      }
+    } catch (err) {
+      if (err.code !== 'ENOENT') console.log(`[RESET] Fatura dosyalari silinemedi: ${err.message}`);
+    }
+    if (silinen) console.log(`[RESET] ${silinen} fatura dosyasi da diskten silindi.`);
   }
   const withExamples = !process.argv.includes('--bos');
   ensureSeedData({ withExamples });

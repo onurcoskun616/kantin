@@ -49,17 +49,25 @@ await page.click('button[type=submit]');
 await page.waitForSelector('#app:not([hidden])');
 await page.waitForTimeout(1500);
 
-// Tedarikciye VKN yaz ki e-fatura eslessin
-const supplierId = await page.evaluate(async()=>{
-  const t=localStorage.getItem('kantin_token');
-  const r=await fetch('/api/suppliers',{headers:{Authorization:`Bearer ${t}`}});
-  const s=(await r.json()).items[0];
-  await fetch(`/api/suppliers/${s.id}`,{method:'PUT',
-    headers:{'Content-Type':'application/json',Authorization:`Bearer ${t}`},
-    body:JSON.stringify({name:s.name, taxNo:'1234567890', taxOffice:'Beşiktaş', phone:s.phone})});
-  return s.id;
-});
-ok('Tedarikciye VKN yazildi', !!supplierId);
+// Ornek XML'deki VKN bir tedarikciye bagli olmali ki eslesme calissin.
+// VKN artik TEKIL: numarayi zaten tasiyan bir kart varsa onu kullaniriz,
+// yoksa ilk tedarikciye yazariz. PUT sessizce basarisiz olursa test
+// "eslesmedi" diye degil, burada anlasilir sekilde patlar.
+const vknSonuc = await page.evaluate(async (vkn) => {
+  const t = localStorage.getItem('kantin_token');
+  const h = { 'Content-Type': 'application/json', Authorization: `Bearer ${t}` };
+  const list = (await (await fetch('/api/suppliers', { headers: h })).json()).items;
+  const zaten = list.find((x) => String(x.tax_no || '').trim() === vkn);
+  if (zaten) return { id: zaten.id, ok: true };
+  const s = list[0];
+  const r = await fetch(`/api/suppliers/${s.id}`, {
+    method: 'PUT', headers: h,
+    body: JSON.stringify({ name: s.name, taxNo: vkn, taxOffice: 'Beşiktaş', phone: s.phone }),
+  });
+  return { id: s.id, ok: r.ok, error: r.ok ? null : (await r.json()).error };
+}, '1234567890');
+const supplierId = vknSonuc.id;
+ok('Tedarikciye VKN yazildi', vknSonuc.ok, vknSonuc.error);
 
 await page.evaluate(()=>{location.hash='#/purchases';});
 await page.waitForTimeout(2000);

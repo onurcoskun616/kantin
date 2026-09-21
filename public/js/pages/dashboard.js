@@ -95,16 +95,15 @@ export async function render(root) {
   }
 
   /* --- Hızlı işlemler --- */
-  if (canWrite()) {
-    root.append(card('Hızlı İşlemler', [
-      el('div.btn-row', {}, [
-        el('button.btn.btn-primary', { text: '💰 Günlük Ciro Gir', onclick: () => navigate('revenues') }),
-        el('button.btn', { text: '🚚 Mal Girişi Yap', onclick: () => navigate('purchases') }),
-        el('button.btn', { text: '🧾 Sayım Başlat', onclick: () => navigate('counts') }),
-        el('button.btn', { text: '🗑️ Fire Kaydı', onclick: () => navigate('waste') }),
-        el('button.btn', { text: '📈 Raporlar', onclick: () => navigate('reports') }),
-      ]),
-    ]));
-  }
+  // Her düğme kendi yetkisine bakar: ön muhasebe ciro ve mal girişi görür,
+  // sayım ve fire görmez.
+  const quick = [
+    canWrite('revenues') ? el('button.btn.btn-primary', { text: '💰 Günlük Ciro Gir', onclick: () => navigate('revenues') }) : null,
+    canWrite('purchases') ? el('button.btn', { text: '🚚 Mal Girişi Yap', onclick: () => navigate('purchases') }) : null,
+    canWrite() ? el('button.btn', { text: '🧾 Sayım Başlat', onclick: () => navigate('counts') }) : null,
+    canWrite() ? el('button.btn', { text: '🗑️ Fire Kaydı', onclick: () => navigate('waste') }) : null,
+    el('button.btn', { text: '📈 Raporlar', onclick: () => navigate('reports') }),
+  ].filter(Boolean);
+  if (quick.length > 1) root.append(card('Hızlı İşlemler', [el('div.btn-row', {}, quick)]));
 }
 

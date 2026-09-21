@@ -1,6 +1,6 @@
 import { Router } from '../lib/router.js';
 import { all, get, insert, run } from '../db.js';
-import { notFound } from '../lib/http.js';
+import { notFound, conflict, badRequest } from '../lib/http.js';
 import { requireWrite, campusFilter, assertCampusAccess } from '../lib/auth.js';
 import { logAudit } from '../lib/audit.js';
 import { str, num, bool, date, today } from '../lib/validate.js';
@@ -61,8 +61,9 @@ supplierRoutes.get('/:id', async (ctx) => {
 });
 
 supplierRoutes.post('/', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'suppliers');
   const d = parse(ctx.body);
+  assertTaxNoFree(d.taxNo, null);
   const id = insert(
     `INSERT INTO suppliers (name, tax_office, tax_no, phone, email, address, note, is_active)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -73,10 +74,11 @@ supplierRoutes.post('/', async (ctx) => {
 });
 
 supplierRoutes.put('/:id', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'suppliers');
   const id = Number(ctx.params.id);
   if (!get('SELECT id FROM suppliers WHERE id = ?', [id])) throw notFound('Tedarikci bulunamadi.');
   const d = parse(ctx.body);
+  assertTaxNoFree(d.taxNo, id);
   run(
     `UPDATE suppliers SET name = ?, tax_office = ?, tax_no = ?, phone = ?, email = ?, address = ?, note = ?, is_active = ?
       WHERE id = ?`,
@@ -88,7 +90,7 @@ supplierRoutes.put('/:id', async (ctx) => {
 
 /* --------------------------- Odemeler ----------------------------- */
 supplierRoutes.post('/:id/payments', async (ctx) => {
-  requireWrite(ctx.user);
+  requireWrite(ctx.user, 'suppliers');
   const supplierId = Number(ctx.params.id);
   if (!get('SELECT id FROM suppliers WHERE id = ?', [supplierId])) throw notFound('Tedarikci bulunamadi.');
   const campusId = ctx.body.campusId ? assertCampusAccess(ctx.user, ctx.body.campusId) : null;
@@ -109,11 +111,42 @@ supplierRoutes.post('/:id/payments', async (ctx) => {
   return get('SELECT * FROM supplier_payments WHERE id = ?', [id]);
 });
 
+/**
+ * Ayni vergi numarasi iki tedarikciye verilemez.
+ *
+ * Mukerrer tedarikci karti sessiz bir hatadir: fatura bazen birine bazen
+ * otekine yazilir, tedarikci borcu ikiye bolunur ve hicbiri dogru cikmaz.
+ * e-Fatura eslestirmesi de VKN uzerinden yapildigi icin hangi kartin
+ * secilecegi belirsizlesir.
+ */
+function assertTaxNoFree(taxNo, selfId) {
+  const clean = String(taxNo || '').trim();
+  if (!clean) return;
+  const rows = all('SELECT id, name FROM suppliers WHERE REPLACE(TRIM(tax_no), \' \', \'\') = ?', [clean]);
+  const hit = rows.find((r) => r.id !== selfId);
+  if (hit) {
+    throw conflict(`VKN ${clean} numarali "${hit.name}" firmasi zaten tanimlidir (#${hit.id}).`);
+  }
+}
+
+/** VKN 10, TCKN 11 hanedir; arada bosluk/tire olabilir, temizleriz. */
+function parseTaxNo(value) {
+  const raw = str(value, 'Vergi/TC no', { required: true, max: 20 });
+  const clean = String(raw).replace(/[\s-.]/g, '');
+  if (!/^\d{10}$|^\d{11}$/.test(clean)) {
+    throw badRequest(
+      `Vergi numarasi 10 haneli (VKN) veya 11 haneli (TCKN) olmalidir. Girilen: "${raw}"`
+    );
+  }
+  return clean;
+}
+
 function parse(body) {
   return {
     name: str(body.name, 'Tedarikci adi', { required: true, max: 200 }),
     taxOffice: str(body.taxOffice, 'Vergi dairesi', { max: 100 }),
-    taxNo: str(body.taxNo, 'Vergi/TC no', { max: 20 }),
+    // ZORUNLU: fatura eslestirmesi ve mukerrer kayit engeli buna dayanir
+    taxNo: parseTaxNo(body.taxNo),
     phone: str(body.phone, 'Telefon', { max: 40 }),
     email: str(body.email, 'E-posta', { max: 160 }),
     address: str(body.address, 'Adres', { max: 500 }),
