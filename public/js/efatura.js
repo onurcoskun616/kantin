@@ -15,6 +15,10 @@
  * Uygulamanın alım satırı da KDV hariç birim fiyat beklediği için ikisi
  * birebir örtüşür.
  */
+// Faturadaki ad ile katalogdaki ad Türkçe karakterlerde ayrışabiliyor
+// (entegratörler çoğu zaman "CIKOLATALI GOFRET" yazıyor). Ortak
+// sadeleştirme ikisini de ASCII'ye indirir.
+import { normalizeTr as normalize } from './ui.js';
 
 /* ----------------------------- XML gezinme -------------------------- */
 /** Çocuklar arasında verilen adı taşıyanları döndürür (ad alanı fark etmez). */
@@ -97,6 +101,11 @@ export function parseEFatura(xmlText) {
       lineTotal: number(at(inv, 'LegalMonetaryTotal'), 'LineExtensionAmount'),
       taxTotal: number(at(inv, 'TaxTotal'), 'TaxAmount'),
       payable: number(at(inv, 'LegalMonetaryTotal'), 'PayableAmount'),
+      // BELGE GENELI iskonto ve masraf. Satır iskontosundan ayrıdır: satır
+      // fiyatlarına yansımaz, yalnızca ödenecek tutarı değiştirir. Okunmazsa
+      // maliyet olduğundan yüksek kaydedilir.
+      allowanceTotal: number(at(inv, 'LegalMonetaryTotal'), 'AllowanceTotalAmount') ?? 0,
+      chargeTotal: number(at(inv, 'LegalMonetaryTotal'), 'ChargeTotalAmount') ?? 0,
     },
     warnings: [],
   };
@@ -120,9 +129,46 @@ export function parseEFatura(xmlText) {
       + `(${invoice.declared.lineTotal.toFixed(2)}) uyuşmuyor. Satırları kontrol edin.`
     );
   }
-  if (invoice.declared.taxTotal !== null && Math.abs(invoice.declared.taxTotal - computedVat) > 0.05) {
+  // Belge geneli iskonto varsa satırlara DAĞITILIR: gerçekten ödenen tutar
+  // budur ve stok maliyeti buna göre oluşmalıdır. Dağıtım satırların mal
+  // bedeline orantılıdır; kuruş farkı son satırda kapatılır.
+  if (invoice.declared.allowanceTotal > 0 && computedNet > 0) {
+    const kalanOran = (computedNet - invoice.declared.allowanceTotal) / computedNet;
+    if (kalanOran > 0 && kalanOran < 1) {
+      for (const l of invoice.lines) {
+        const eskiNet = l.netTotal;
+        // Mevcut satır iskontosunun üzerine belge iskontosu eklenir
+        l.discountPct = round4(100 - (100 - l.discountPct) * kalanOran);
+        l.netTotal = round2(eskiNet * kalanOran);
+        l.vatTotal = round2(l.netTotal * (l.vatRate / 100));
+        l.grossTotal = round2(l.netTotal + l.vatTotal);
+        l.documentDiscount = true;
+      }
+      invoice.warnings.push(
+        `Faturada ${invoice.declared.allowanceTotal.toFixed(2)} TL belge geneli iskonto var. `
+        + 'Satırlara mal bedeline orantılı dağıtıldı; iskonto sütununda bunu göreceksiniz. '
+        + 'Tedarikçi farklı dağıtmış olabilir, satır tutarlarını kontrol edin.'
+      );
+    }
+  }
+  if (invoice.declared.chargeTotal > 0) {
     invoice.warnings.push(
-      `Hesaplanan KDV (${computedVat.toFixed(2)}) faturanın yazdığı KDV'den `
+      `Faturada ${invoice.declared.chargeTotal.toFixed(2)} TL belge geneli masraf var (nakliye, ambalaj vb.). `
+      + 'Bu tutar satırlara DAĞITILMADI: ürün maliyetine eklenip eklenmeyeceği sizin kararınız. '
+      + 'Eklemek isterseniz satır fiyatlarını elle artırın.'
+    );
+  }
+
+  // Satır toplamları yukarıda değişmiş olabilir; kontroller güncel değerlerle
+  const netSonrasi = round2(invoice.lines.reduce((s, l) => s + l.netTotal, 0));
+  const kdvSonrasi = round2(invoice.lines.reduce((s, l) => s + l.vatTotal, 0));
+  invoice.computed = { netTotal: netSonrasi, vatTotal: kdvSonrasi, grossTotal: round2(netSonrasi + kdvSonrasi) };
+
+  // Belge iskontosu KDV'yi de düşürür: karşılaştırma DAĞITIM SONRASI
+  // değerle yapılmalı, yoksa iskontolu her faturada boş yere uyarı çıkar.
+  if (invoice.declared.taxTotal !== null && Math.abs(invoice.declared.taxTotal - kdvSonrasi) > 0.05) {
+    invoice.warnings.push(
+      `Hesaplanan KDV (${kdvSonrasi.toFixed(2)}) faturanın yazdığı KDV'den `
       + `(${invoice.declared.taxTotal.toFixed(2)}) farklı. Faturada KDV dışı vergi (ÖTV vb.) olabilir.`
     );
   }
@@ -231,14 +277,6 @@ function readVatRate(node) {
 }
 
 /* --------------------------- Eşleştirme ----------------------------- */
-/** Karşılaştırma için sadeleştirir: Türkçe harfler, boşluk ve noktalama. */
-function normalize(s) {
-  return String(s || '')
-    .toLocaleLowerCase('tr')
-    .replace(/ı/g, 'i').replace(/İ/g, 'i')
-    .replace(/[^a-z0-9ğüşöç]+/g, ' ')
-    .trim();
-}
 
 /**
  * Fatura satırlarını sistemdeki ürünlerle eşler.
@@ -292,4 +330,26 @@ export function matchSupplier(party, suppliers) {
     if (hit) return { supplier: hit, matchedBy: 'unvan' };
   }
   return { supplier: null, matchedBy: null };
+}
+
+/* --------------------------- Birim kodları --------------------------- */
+/**
+ * UBL-TR birim kodunu uygulamanın birim listesine çevirir.
+ *
+ * Faturada birim UN/ECE Recommendation 20 koduyla gelir (`C62` = adet,
+ * `KGM` = kilogram...). Eşleşmeyen bir kod için ADET'e düşeriz: yanlış bir
+ * birim uydurmaktansa kullanıcının düzeltmesi daha doğrudur.
+ */
+const BIRIM_KODLARI = {
+  C62: 'ADET', H87: 'ADET', EA: 'ADET', NIU: 'ADET', PCE: 'ADET',
+  KGM: 'KG', GRM: 'KG', KG: 'KG',
+  LTR: 'LT', MLT: 'LT', L: 'LT',
+  PK: 'PAKET', XPK: 'PAKET', PA: 'PAKET',
+  BX: 'KUTU', XBX: 'KUTU', CT: 'KUTU', CS: 'KUTU',
+  PR: 'PORSIYON',
+};
+
+export function unitFromCode(code) {
+  if (!code) return null;
+  return BIRIM_KODLARI[String(code).trim().toUpperCase()] || null;
 }

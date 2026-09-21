@@ -1446,3 +1446,124 @@ describe('On muhasebe yetkileri', () => {
     assert.equal(r.status, 403);
   });
 });
+
+/* ====== Faturada olup kayda alinmayan satirlar (uyari paneli) ====== */
+describe('Eslesmeyen fatura satirlari', () => {
+  let campusId; let supplierId; let productId;
+
+  before(async () => {
+    campusId = (await ok('POST', '/api/campuses', { name: 'Eşleşmeyen Kampüsü', code: 'ESL' })).id;
+    supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'Eşleşmeyen Tedarikçi', taxNo: '6060606060' })).id;
+    productId = (await ok('POST', '/api/products',
+      { name: 'Eşleşen Ürün', purchasePrice: 10, salePrice: 20, vatRate: 10 })).id;
+  });
+
+  /** Biri eslesen, ikisi eslesmeyen kalemli bir fatura kaydeder. */
+  const belgeAc = (no) => ok('POST', '/api/purchases', {
+    campusId, supplierId, documentNo: no, documentDate: daysAgo(1),
+    lines: [{ productId, quantity: 10, unitPrice: 10, vatRate: 10 }],
+    unmatchedLines: [
+      { sourceName: 'KARGO VE NAKLIYE BEDELI', quantity: 1, unitPrice: 150, vatRate: 20 },
+      { sourceName: 'ÇİKOLATALI GOFRET 40G', sourceCode: '8690000009999', quantity: 24, unitPrice: 7.5, vatRate: 10, unitCode: 'C62' },
+    ],
+  });
+
+  test('kayda alinmayan kalemler belgeyle birlikte saklanir', async () => {
+    const b = await belgeAc('ESL-001');
+    assert.equal(b.unmatchedCount, 2);
+
+    const liste = await ok('GET', `/api/purchases/unmatched?campusId=${campusId}`);
+    const bizimkiler = liste.items.filter((r) => r.document_no === 'ESL-001');
+    assert.equal(bizimkiler.length, 2);
+    const gofret = bizimkiler.find((r) => r.source_name.includes('GOFRET'));
+    assert.equal(gofret.status, 'ACIK');
+    assert.equal(gofret.source_code, '8690000009999');
+    assert.equal(gofret.quantity, 24);
+    // 24 x 7,50 = 180 + %10 KDV = 198
+    assert.equal(gofret.net_total, 180);
+    assert.equal(gofret.gross_total, 198);
+    assert.equal(gofret.supplier_name, 'Eşleşmeyen Tedarikçi');
+  });
+
+  test('acik kalem sayisi ve tutari ozetlenir', async () => {
+    const liste = await ok('GET', '/api/purchases/unmatched');
+    assert.ok(liste.openCount >= 2, String(liste.openCount));
+    assert.ok(liste.openTotal > 0, String(liste.openTotal));
+  });
+
+  test('kalem bir urune baglanip belgeye eklenebilir; stok ve belge toplami artar', async () => {
+    const b = await belgeAc('ESL-002');
+    const liste = await ok('GET', `/api/purchases/unmatched?campusId=${campusId}`);
+    const kalem = liste.items.find((r) => r.document_no === 'ESL-002' && r.source_name.includes('GOFRET'));
+
+    const stokOnce = (await ok('GET', `/api/stock?campusId=${campusId}`))
+      .items.find((r) => r.product_id === productId).stock_qty;
+    const belgeOnce = await ok('GET', `/api/purchases/${b.id}`);
+
+    const r = await ok('POST', `/api/purchases/unmatched/${kalem.id}/resolve`, { productId });
+    assert.equal(r.status, 'COZULDU');
+
+    const stokSonra = (await ok('GET', `/api/stock?campusId=${campusId}`))
+      .items.find((r2) => r2.product_id === productId).stock_qty;
+    assert.equal(stokSonra - stokOnce, 24, '24 adet stoga girmeli');
+
+    const belgeSonra = await ok('GET', `/api/purchases/${b.id}`);
+    assert.equal(belgeSonra.lines.length, belgeOnce.lines.length + 1, 'belgeye satir eklenmeli');
+    assert.ok(Math.abs(belgeSonra.gross_total - (belgeOnce.gross_total + 198)) < 0.01,
+      `${belgeSonra.gross_total} vs ${belgeOnce.gross_total}`);
+  });
+
+  test('cozulen kalem ikinci kez sonuclandirilamaz', async () => {
+    const liste = await ok('GET', `/api/purchases/unmatched?campusId=${campusId}&status=COZULDU`);
+    const kalem = liste.items[0];
+    assert.ok(kalem, 'cozulmus kalem olmali');
+    const r = await api('POST', `/api/purchases/unmatched/${kalem.id}/resolve`, { productId });
+    assert.equal(r.status, 409);
+  });
+
+  test('kalem sebep yazilarak yok sayilabilir; sebep zorunludur', async () => {
+    const b = await belgeAc('ESL-003');
+    assert.ok(b.id);
+    const liste = await ok('GET', `/api/purchases/unmatched?campusId=${campusId}`);
+    const kargo = liste.items.find((r) => r.document_no === 'ESL-003' && r.source_name.includes('KARGO'));
+
+    const sebepsiz = await api('POST', `/api/purchases/unmatched/${kargo.id}/resolve`, { ignore: true });
+    assert.equal(sebepsiz.status, 400, 'sebep yazilmadan yok sayilamaz');
+
+    const r = await ok('POST', `/api/purchases/unmatched/${kargo.id}/resolve`,
+      { ignore: true, note: 'Nakliye bedeli, stok kalemi değil.' });
+    assert.equal(r.status, 'YOKSAYILDI');
+
+    const sonra = await ok('GET', `/api/purchases/unmatched?campusId=${campusId}&status=YOKSAYILDI`);
+    const kayit = sonra.items.find((r2) => r2.id === kargo.id);
+    assert.match(kayit.resolution_note, /Nakliye bedeli/);
+  });
+
+  test('yok sayilan kalem acik listesinde gorunmez', async () => {
+    const acik = await ok('GET', `/api/purchases/unmatched?campusId=${campusId}`);
+    assert.ok(acik.items.every((r) => r.status === 'ACIK'));
+  });
+
+  test('belge silinince kalemleri de gider', async () => {
+    const b = await belgeAc('ESL-004');
+    const once = await ok('GET', `/api/purchases/unmatched?campusId=${campusId}`);
+    assert.ok(once.items.some((r) => r.document_no === 'ESL-004'));
+
+    await ok('DELETE', `/api/purchases/${b.id}`);
+
+    const sonra = await ok('GET', `/api/purchases/unmatched?campusId=${campusId}`);
+    assert.ok(!sonra.items.some((r) => r.document_no === 'ESL-004'),
+      'silinen belgenin kalemleri de silinmeli');
+  });
+
+  test('iptal edilmis belgeye satir eklenemez', async () => {
+    const b = await belgeAc('ESL-005');
+    const liste = await ok('GET', `/api/purchases/unmatched?campusId=${campusId}`);
+    const kalem = liste.items.find((r) => r.document_no === 'ESL-005');
+    await ok('POST', `/api/purchases/${b.id}/cancel`);
+    const r = await api('POST', `/api/purchases/unmatched/${kalem.id}/resolve`, { productId });
+    assert.equal(r.status, 409);
+    assert.match(r.data.error, /Iptal edilmis/i);
+  });
+});

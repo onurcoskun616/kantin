@@ -43,6 +43,25 @@ export const dateUtil = {
 };
 
 /** Kampüs adından kurum ön ekini atar: "Topkapı Okulları - Merkez Kampüs" -> "Merkez Kampüs" */
+/**
+ * Arama ve eşleştirme için metni sadeleştirir.
+ *
+ * Türkçe harfler ASCII karşılıklarına indirgenir (ç→c, ş→s, ğ→g, ı/İ→i,
+ * ö→o, ü→u). Sebebi pratik: kullanıcı "cay" yazıp "Çay"ı bulamazsa arama
+ * kutusu işe yaramaz — özellikle telefonda kimse Türkçe klavyeye geçmez.
+ * Aynı indirgeme faturadaki "CIKOLATA" ile katalogdaki "Çikolata"yı da
+ * eşleştirir.
+ */
+const TR_HARFLER = { ç: 'c', Ç: 'c', ğ: 'g', Ğ: 'g', ı: 'i', İ: 'i', ö: 'o', Ö: 'o', ş: 's', Ş: 's', ü: 'u', Ü: 'u', â: 'a', î: 'i', û: 'u' };
+
+export function normalizeTr(s) {
+  return String(s || '')
+    .replace(/[çÇğĞıİöÖşŞüÜâîû]/g, (c) => TR_HARFLER[c] || c)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
 export function shortName(name) {
   return String(name ?? '').replace(/^\s*Topkap[ıi]\s+Okullar[ıi]\s*[-–—]\s*/i, '').trim();
 }

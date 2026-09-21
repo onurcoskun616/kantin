@@ -6,10 +6,13 @@ export async function render(root) {
   const monthInput = el('input', { type: 'month', value: state.month, style: 'width:170px' });
   monthInput.addEventListener('change', () => { state.month = monthInput.value; render(root); });
 
-  const [data, pendingHandovers] = await Promise.all([
+  const [data, pendingHandovers, unmatched] = await Promise.all([
     api.get('/api/reports/dashboard', { month: state.month }),
     // Teslim edilmemis ciro, sayimla denetlenemeyen tek kalemdir: kasada bekleyen nakit
     api.get('/api/handovers/pending').catch(() => ({ items: [], totalPending: 0 })),
+    // Faturada olup kayda alinmayan kalemler: cozulmedikce fatura ile belge
+    // tutari arasindaki fark aciklanamaz kalir
+    api.get('/api/purchases/unmatched').catch(() => ({ openCount: 0, openTotal: 0 })),
   ]);
   root.replaceChildren();
 
@@ -45,6 +48,12 @@ export async function render(root) {
       warnings.push(`${shortName(p.campusName)}: ${p.dayCount} günün cirosu (${fmt.money(p.total)}) `
         + `${p.waitingDays} gündür ön muhasebeye teslim edilmemiş.`);
     }
+  }
+  if (unmatched.openCount > 0) {
+    warnings.push(
+      `${unmatched.openCount} fatura kalemi (toplam ${fmt.money(unmatched.openTotal)}) kayda alınmadan bekliyor. `
+      + 'Mal Girişi ekranındaki "Eşleşmeyen Fatura Satırları" panelinden sonuçlandırın.'
+    );
   }
   if (warnings.length) {
     root.append(card('Dikkat Edilmesi Gerekenler', [

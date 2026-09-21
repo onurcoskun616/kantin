@@ -55,17 +55,60 @@ bulabilmeniz için.
 > Bu kontroller bilerek var: XML'den gelen rakamı körlemesine kabul etmek,
 > elle girmekten daha tehlikeli olurdu — hatayı kimse görmez.
 
+### Eşleşmeyen kalemi elle bağlama veya yeni ürün açma
+
+Satırdaki ürün kutusuna tıklayın: **yazdıkça süzen** bir liste açılır. Her
+satırda ürünün **barkodu ve mevcut stoğu** görünür, böylece "bu ürün zaten
+var mıydı" sorusunun cevabı ekranda durur.
+
+- Türkçe karakter yazmanıza gerek yok: **"cay"** yazınca **"Çay"** gelir.
+- Barkodu okutup doğrudan seçebilirsiniz.
+- Listenin sonundaki **“+ … adıyla yeni ürün tanımla”** ile kalemi oracıkta
+  ürün olarak açarsınız. Ad, barkod, birim, KDV oranı ve **iskonto düşülmüş
+  birim maliyet faturadan gelir**; siz yalnızca satış fiyatını ve kategoriyi
+  girersiniz. Ürün eklenir eklenmez satıra bağlanır.
+
+### Tedarikçi sistemde yoksa
+
+Fatura eşleşmediğinde uyarının altında **“+ … tedarikçi olarak ekle”** düğmesi
+çıkar. Unvan ve VKN faturadan gelir; kaydettiğiniz an seçili hale gelir ve o
+firmanın sonraki faturaları VKN ile kendiliğinden eşleşir.
+
 ### Aynı fatura iki kez girilemez
 
 Her e-Faturanın ETTN'si tekildir ve belgeye yazılır. Aynı XML ikinci kez
 aktarılmak istenirse sistem hangi belgeye girildiğini söyleyerek reddeder.
 (Ayrıca aynı tedarikçiye aynı belge no da ikinci kez girilemez.)
 
+### İskontolar
+
+İki tür iskonto vardır ve ikisi de işlenir:
+
+| Tür | Faturada nerede | Ne yapılır |
+|---|---|---|
+| **Satır iskontosu** | `InvoiceLine` içindeki `AllowanceCharge` | Satırın İsk % sütununa yazılır. Birim fiyat **iskonto öncesi** kalır (faturadaki gibi), tutar iskontolu hesaplanır |
+| **Belge geneli iskonto** | `LegalMonetaryTotal/AllowanceTotalAmount` (ciro primi vb.) | Satırlara **mal bedeline orantılı dağıtılır** ve İsk % sütununa eklenir |
+
+Belge geneli iskonto satır fiyatlarına yansımaz; yalnızca ödenecek tutarı
+düşürür. Dağıtılmazsa **stok maliyeti gerçekten ödenenden yüksek kaydedilir**
+ve kâr olduğundan düşük görünür. Dağıtım yapıldığında ekranda söylenir;
+tedarikçi farklı dağıtmış olabileceği için satır tutarlarını kontrol edin.
+
+> **Belge geneli masraf** (nakliye, ambalaj) dağıtılmaz. Ürün maliyetine
+> eklenip eklenmeyeceği sizin kararınızdır; uyarı çıkar, eklemek isterseniz
+> satır fiyatlarını elle artırırsınız.
+
+Stok maliyeti her zaman **iskonto düşülmüş gerçek birim maliyettir**
+(satır neti ÷ miktar), faturadaki liste fiyatı değil.
+
 ### Denemek için
 
-`docs/sablonlar/ornek-efatura.xml` — gerçek yapıda, uydurma bilgilerle
-hazırlanmış örnek bir e-Fatura. İçinde farklı KDV oranları, iskontolu bir satır
-ve bilerek eşleşmeyen bir kalem var.
+| Dosya | İçeriği |
+|---|---|
+| `docs/sablonlar/ornek-efatura.xml` | Farklı KDV oranları, iskontolu bir satır ve bilerek eşleşmeyen bir kalem |
+| `docs/sablonlar/ornek-efatura-iskontolu.xml` | Yukarıdakinin **%10 belge geneli iskontolu** hâli — dağıtımın nasıl çalıştığını görmek için |
+
+İkisi de gerçek yapıda, uydurma bilgilerle hazırlanmıştır.
 
 ---
 
@@ -161,7 +204,33 @@ düzeltirsiniz.
 
 ---
 
-## 4. Faturanın kendisini belgeye iliştirme
+## 4. Eşleşmeyen fatura satırları (kayda alınmayan kalemler)
+
+Faturadaki her kalem kantin stoğuna girmez: nakliye bedeli, ambalaj, kantinle
+ilgisiz bir malzeme ya da henüz tanımlanmamış bir ürün olabilir. Böyle bir
+satırı formdan sildiğinizde **iz bırakır**.
+
+> Neden önemli: silinen kalem hiçbir yere yazılmazsa, faturanın toplamı ile
+> sistemdeki belgenin toplamı birbirini tutmaz ve bu fark aylar sonra
+> açıklanamaz hale gelir.
+
+Belgeyi kaydettiğinizde bir uyarı çıkar ve kalem **Mal Girişi** ekranının
+üstündeki **“⚠️ Eşleşmeyen Fatura Satırları”** panelinde açık olarak bekler.
+Kontrol panelindeki uyarı listesinde de görünür.
+
+Panelde her kalem için **“Sonuçlandır”** düğmesi vardır; iki yoldan biri:
+
+| Seçenek | Ne olur |
+|---|---|
+| **Ürüne bağla** | Kalem belgeye satır olarak eklenir, **stoğa girer** ve belge toplamı büyür. Miktar/fiyat/KDV faturadan gelir, gerekirse düzeltirsiniz. |
+| **Yok say** | Stok değişmez. **Sebep yazmak zorunludur** ("nakliye bedeli, stok kalemi değil" gibi) ve bu açıklama denetimde okunur. |
+
+Kesinleşmiş bir sayımın kapsadığı belgeye satır eklenemez — mutabakat bozulur;
+böyle bir durumda düzeltme kaydı girilir.
+
+---
+
+## 5. Faturanın kendisini belgeye iliştirme
 
 Belge kaydedildikten sonra **Mal Girişi → Detay** ekranının altında **Fatura
 Dosyaları** bölümü vardır. **“📎 Fatura Dosyası Ekle”** ile faturanın PDF'ini,
@@ -192,7 +261,29 @@ erişilemez: her açılışta oturum ve kampüs yetkisi kontrol edilir.
 
 ---
 
-## 5. Faturanın devamı: ödeme ve iade
+## 6. Yanlış girilen belgeyi geri alma
+
+| | **İptal Et** | **Kalıcı Olarak Sil** |
+|---|---|---|
+| Kim yapabilir | Yazma yetkisi olan herkes (ön muhasebe dahil) | Yalnızca **yönetim** (sistem yöneticisi / genel müdürlük) |
+| Belge | Listede **“İPTAL”** olarak kalır | Hiç olmamış gibi kaybolur |
+| Stok | Hareketler geri alınır | Hareketler geri alınır |
+| Fatura dosyaları | Durur | **Diskten de silinir** |
+| e-Fatura (ETTN) | **Serbest kalır** — aynı fatura yeniden girilebilir | Serbest kalır |
+| Denetim izi | Kayıt durur | Yalnızca denetim günlüğünde: belge, satırları ve silinen dosya adları |
+
+Silme penceresi ne kaybedileceğini tek tek sayar ve onay için **belge
+numarasını yazmanızı** ister. Kayıt izini korumak istiyorsanız silmek yerine
+iptal edin.
+
+İkisi de şu iki durumda engellenir:
+- Belge tarihinden sonra **kesinleşmiş bir dönem sayımı** varsa (o sayım bu
+  alımı hesaba kattı; geri almak sayımı geçmişe dönük yanlış yapar)
+- Belgeye dayanan bir **iade kaydı** varsa (önce iade çözülmeli)
+
+---
+
+## 7. Faturanın devamı: ödeme ve iade
 
 - **Ödeme** — Tedarikçiler → tedarikçiye tıklayın → **“+ Ödeme Kaydet”**.
   Bakiye = Alım − İade − Ödeme.

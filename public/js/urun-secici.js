@@ -10,16 +10,7 @@
  *
  * Harici kütüphane yok; klavyeyle de kullanılır (↑ ↓ Enter Esc).
  */
-import { el } from './ui.js';
-
-/** Karşılaştırma için sadeleştirir: Türkçe harfler ve noktalama. */
-function normalize(s) {
-  return String(s || '')
-    .toLocaleLowerCase('tr')
-    .replace(/ı/g, 'i').replace(/İ/g, 'i')
-    .replace(/[^a-z0-9ğüşöç]+/g, ' ')
-    .trim();
-}
+import { el, normalizeTr as normalize } from './ui.js';
 
 const MAX_SONUC = 60;
 
@@ -64,7 +55,7 @@ export function createProductPicker({
     const kelimeler = needle.split(' ').filter(Boolean);
     const skor = (p) => {
       const ad = normalize(p.name);
-      const barkod = String(p.barcode || '').toLocaleLowerCase('tr');
+      const barkod = String(p.barcode || '').toLowerCase();
       // Barkodun tamamı yazıldıysa en üste
       if (barkod && barkod === needle) return 0;
       if (!kelimeler.every((k) => ad.includes(k) || barkod.includes(k))) return null;
@@ -104,6 +95,10 @@ export function createProductPicker({
       ]));
     }
     liste.replaceChildren(...satirlar);
+    // Süzme listeyi kısaltır/uzatır. Konum yeniden hesaplanmazsa yukarı
+    // açılmış bir liste alt kenarına yapışık kalır ve yazdıkça yukarı
+    // kayarak başlık alanının üstüne biner.
+    if (acik) konumla();
   }
 
   /** Vurgulanabilecek son satırın indeksi (yeni ürün satırı dahil). */
@@ -128,19 +123,24 @@ export function createProductPicker({
     else { liste.style.bottom = 'auto'; liste.style.top = `${r.bottom + 2}px`; }
   }
 
-  function ac() {
-    sonuclar = ara(input.value);
+  /**
+   * @param hepsi true ise yazili metne bakmadan tum listeyi gosterir.
+   *        Odaklanildiginda boyledir: kutuda secili urunun adi yaziyor olsa
+   *        da kullanici listeye goz atabilmeli, tek sonuca kilitlenmemeli.
+   */
+  function ac(hepsi = false) {
+    sonuclar = ara(hepsi ? '' : input.value);
     vurgu = -1;
     acik = true;
     liste.hidden = false;
     node.classList.add('open');
     ciz();
-    konumla();
   }
 
   function kapat() {
     acik = false;
     liste.hidden = true;
+    liste.replaceChildren();   // kapalı listede eski satırlar DOM'da kalmasın
     node.classList.remove('open');
     // Yazılan metin bir seçim değil: seçili ürünün adına geri dön
     input.value = selectedId ? urunAdi(selectedId) : '';
@@ -159,7 +159,7 @@ export function createProductPicker({
   window.addEventListener('resize', kaydirmaIzle);
   window.addEventListener('scroll', kaydirmaIzle, true);
 
-  input.addEventListener('focus', () => { input.select(); ac(); });
+  input.addEventListener('focus', () => { input.select(); ac(true); });
   input.addEventListener('input', () => {
     if (!acik) ac(); else { sonuclar = ara(input.value); vurgu = -1; ciz(); }
   });
@@ -200,9 +200,15 @@ export function createProductPicker({
       input.value = selectedId ? urunAdi(selectedId) : '';
       node.classList.toggle('needs-pick', !selectedId);
     },
-    /** Yeni ürün eklendiğinde listeyi tazeler ve onu seçer. */
+    /**
+     * Yeni tanımlanan ürünü listeye alır ve isteğe bağlı olarak seçer.
+     *
+     * `products` dizisi tüm seçiciler arasında PAYLAŞILIR; bu yüzden
+     * zaten varsa yeniden eklenmez (aksi halde her satır için bir kopya
+     * oluşur ve listede aynı ürün defalarca görünür).
+     */
     addProduct: (p, select = true) => {
-      products.push(p);
+      if (!products.some((x) => x.id === p.id)) products.push(p);
       if (select) sec(p.id);
     },
     markMissing: (missing) => node.classList.toggle('needs-pick', !!missing),

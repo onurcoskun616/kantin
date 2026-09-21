@@ -85,7 +85,19 @@ async function karekodOkut(text) {
 /** Bir satirin alanlarini doldurur (satir 1'den baslar). */
 async function satirDoldur(n, { urun = null, miktar, fiyat, kdv }) {
   const tr = `.modal .line-table tbody tr:nth-child(${n})`;
-  if (urun !== null) await page.selectOption(`${tr} select`, String(urun));
+  if (urun !== null) {
+    // Aranabilir secici: kutuya urun adini yazip listeden secilir
+    const ad = await page.evaluate(async (id) => {
+      const t = localStorage.getItem('kantin_token');
+      const r = await fetch('/api/products', { headers: { Authorization: `Bearer ${t}` } });
+      return (await r.json()).items.find((p) => p.id === id)?.name ?? '';
+    }, urun);
+    await page.click(`${tr} .picker-input`);
+    await page.fill(`${tr} .picker-input`, ad);
+    await page.waitForTimeout(250);
+    await page.click(`${tr} .picker-list .picker-item:not(.picker-new)`);
+    await page.waitForTimeout(200);
+  }
   await page.fill(`${tr} td:nth-child(2) input`, String(miktar));
   await page.fill(`${tr} td:nth-child(3) input`, String(fiyat));
   await page.fill(`${tr} td:nth-child(5) input`, String(kdv));
@@ -171,7 +183,9 @@ await karekodOkut(QR);
 const body = await page.textContent('.modal-body');
 ok('Karekod okundu bildirimi', body.includes('Karekod okundu'), body.slice(0, 200));
 ok('Satirlarin karekodda olmadigi soylendi', body.includes('Ürün satırları karekodda yok'));
-ok('Tedarikci VKN ile secildi', await page.$eval('.modal select', (n) => n.value) === String(supplier.id));
+ok('Tedarikci VKN ile secildi',
+  await page.$eval('.modal select', (n) => n.value) === String(supplier.id),
+  await page.$eval('.modal select', (n) => n.value));
 ok('Belge no dolduruldu', (await page.inputValue('.modal input[placeholder*="rsaliye"]')) === DOC_NO);
 ok('Belge tarihi dolduruldu', (await page.inputValue('.modal input[type=date]')) === '2026-09-15');
 ok('Karsilastirma tablosu acildi', body.includes('Karekodla karşılaştırma'));

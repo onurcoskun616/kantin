@@ -87,9 +87,13 @@ ok('Kagit Havlu eslesmeyen olarak listelendi', importText.includes('Kağıt Havl
 
 const rows = await page.$$eval('.modal .line-table tbody tr', ns=>ns.length);
 ok('3 satir olusturuldu', rows===3, String(rows));
-const selects = await page.$$eval('.modal .line-table tbody tr select', ns=>ns.map(n=>({v:n.value, warn:n.classList.contains('needs-pick')})));
-ok('Iki satir urunle esleşti', selects.filter(s=>s.v).length===2, JSON.stringify(selects));
-ok('Eslesmeyen satir kirmizi isaretli', selects.filter(s=>s.warn).length===1, JSON.stringify(selects));
+// Urun secimi artik aranabilir bir secici (public/js/urun-secici.js):
+// dolu bir kutu urunun eslestigi, kirmizi bir kutu eslesmedigi anlamina gelir.
+const secimler = await page.$$eval('.modal .line-table tbody tr .picker',
+  ns=>ns.map(n=>({ v:n.querySelector('.picker-input').value, warn:n.classList.contains('needs-pick') })));
+ok('Iki satir urunle esleşti', secimler.filter(s=>s.v).length===2, JSON.stringify(secimler));
+ok('Eslesmeyen satir kirmizi isaretli', secimler.filter(s=>s.warn).length===1, JSON.stringify(secimler));
+ok('Eslesen satirda urun ADI yaziyor', secimler.some(s=>/Su 500|Ayran|Süt/.test(s.v)), JSON.stringify(secimler));
 
 const qtys = await page.$$eval('.modal .line-table tbody tr td:nth-child(2) input', ns=>ns.map(n=>n.value));
 const prices = await page.$$eval('.modal .line-table tbody tr td:nth-child(3) input', ns=>ns.map(n=>n.value));
@@ -118,6 +122,17 @@ ok('Belge kaydedildi', !!created, JSON.stringify(purchases.slice(0,1)));
 ok('Net toplam dogru (1020 + 720)', created && Math.abs(created.net_total-1740)<0.01, String(created?.net_total));
 ok('KDV dogru (10,20 + 72)', created && Math.abs(created.vat_total-82.2)<0.01, String(created?.vat_total));
 ok('XML belgeye otomatik eklendi', created?.attachment_count===1, String(created?.attachment_count));
+
+// Kaydetme sonrasi "alis fiyati artti" penceresi acilmis olabilir (baska bir
+// test ayni urunu daha ucuza almissa). Acik kalan pencere sonraki tiklamalari
+// engeller; kapatip devam ederiz.
+async function acikPencereleriKapat() {
+  for (let i = 0; i < 4 && (await page.$$('.modal-backdrop')).length; i++) {
+    await page.click('.modal-backdrop:last-of-type .modal-head .icon-btn').catch(() => {});
+    await page.waitForTimeout(300);
+  }
+}
+await acikPencereleriKapat();
 
 console.log('\n4) Ayni fatura ikinci kez aktarilamaz');
 await page.evaluate(()=>{location.hash='#/purchases';}); await page.waitForTimeout(1500);

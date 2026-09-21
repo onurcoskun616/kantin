@@ -224,6 +224,39 @@ CREATE TABLE IF NOT EXISTS purchases (
   created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+-- FATURADA OLUP KAYITLARA ALINMAYAN SATIRLAR
+--
+-- e-Fatura XML'i aktarilirken bazi kalemler sistemde karsilik bulamaz
+-- (henuz tanimlanmamis urun, kantinle ilgisiz kalem, nakliye/ambalaj
+-- bedeli...). Kullanici o satiri siler ve belge kaydedilir. Onceden bu
+-- kalemler IZ BIRAKMADAN kayboluyordu: fatura toplami ile sistemdeki
+-- belge toplami arasindaki fark aylar sonra aciklanamaz hale geliyordu.
+--
+-- Artik her biri burada saklanir ve bir panelde "acik" olarak bekler;
+-- ya bir urune baglanip belgeye eklenir ya da sebebi yazilarak yok sayilir.
+CREATE TABLE IF NOT EXISTS purchase_unmatched_lines (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  purchase_id   INTEGER NOT NULL REFERENCES purchases(id) ON DELETE CASCADE,
+  source_name   TEXT    NOT NULL,          -- faturada yazan ad
+  source_code   TEXT,                      -- barkod / satici urun kodu
+  quantity      REAL    NOT NULL DEFAULT 0,
+  unit_code     TEXT,
+  unit_price    REAL    NOT NULL DEFAULT 0,
+  discount_pct  REAL    NOT NULL DEFAULT 0,
+  vat_rate      REAL    NOT NULL DEFAULT 0,
+  net_total     REAL    NOT NULL DEFAULT 0,
+  gross_total   REAL    NOT NULL DEFAULT 0,
+  status        TEXT    NOT NULL DEFAULT 'ACIK'
+                  CHECK (status IN ('ACIK','COZULDU','YOKSAYILDI')),
+  resolved_product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  resolution_note TEXT,
+  resolved_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  resolved_at   TEXT,
+  created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_unmatched_status ON purchase_unmatched_lines(status);
+CREATE INDEX IF NOT EXISTS idx_unmatched_purchase ON purchase_unmatched_lines(purchase_id);
+
 -- Ayni e-Fatura iki kez girilemez. IPTAL edilen belge haric: iptal edilmis
 -- (veya tedarikcinin iptal ettigi) bir fatura yeniden girilebilmelidir.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_purchases_efatura

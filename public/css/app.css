@@ -210,8 +210,9 @@ select.needs-pick { border-color: var(--danger); background: var(--danger-soft);
 }
 .picker-item:last-child { border-bottom: 0; }
 .picker-item:hover, .picker-item.on { background: var(--surface-2); }
-.picker-name { flex: 1; min-width: 0; }
-.picker-meta { color: var(--text-muted); font-size: 11.5px; white-space: nowrap; }
+/* Uzun ürün adı barkod/stok sütununun üstüne binmesin */
+.picker-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-meta { color: var(--text-muted); font-size: 11.5px; white-space: nowrap; flex: 0 0 auto; }
 .picker-new { color: var(--brand-600); font-weight: 600; position: sticky; bottom: 0; background: var(--surface); }
 .picker-empty { padding: 10px; font-size: 12.5px; color: var(--text-muted); }
 
@@ -335,14 +336,26 @@ input:disabled, select:disabled { background: var(--surface-2); color: var(--tex
   display: grid; place-items: center; padding: 16px; z-index: 100;
   backdrop-filter: blur(2px);
 }
+/* Genislik ICERIKTEN BAGIMSIZ sinirlanir. `place-items:center` ogeyi
+   max-content genisliginde tutar; genis bir tablo iceren modal boylece
+   ekrani asabiliyordu (telefonda sag taraf tamamen kesiliyordu). vw ile
+   sert sinir koyunca tasma tablonun kendi yatay kaydirmasina gider. */
 .modal {
   background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow-lg);
-  width: 100%; max-width: 560px; max-height: 90dvh; display: flex; flex-direction: column;
+  width: 100%; max-width: min(560px, calc(100vw - 32px)); max-height: 90dvh;
+  display: flex; flex-direction: column;
 }
-.modal.wide { max-width: 900px; }
+.modal.wide { max-width: min(900px, calc(100vw - 32px)); }
 .modal-head { padding: 15px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
 .modal-head h3 { font-size: 15px; flex: 1; }
-.modal-body { padding: 18px; overflow-y: auto; display: grid; gap: 14px; }
+/* Dikey yigin. GRID DEGIL, flex: `.table-wrap` bir kaydirma kutusudur
+   (overflow-x:auto) ve boyle bir ogenin otomatik en kucuk boyu 0'dir.
+   Grid'de modal icerigi tasinca satir sifira cokuyor ve TABLO TAMAMEN
+   KAYBOLUYORDU (uzun fatura, karekod karsilastirmasi acikken...).
+   flex + `flex: 0 0 auto` ile hicbir oge icerigin altina inemez; tasma
+   modal govdesinde dikey kaydirmaya gider. */
+.modal-body { padding: 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+.modal-body > * { flex: 0 0 auto; }
 .modal-foot { padding: 13px 18px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; background: var(--surface-2); }
 
 /* Bildirimler */

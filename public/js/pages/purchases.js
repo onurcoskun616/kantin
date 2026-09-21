@@ -1,7 +1,8 @@
 import { api } from '../api.js';
 import { state, canWrite, canDeleteDocuments } from '../app.js';
-import { el, card, stat, table, fmt, badge, modal, toast, confirmDialog, dateUtil, alertBox, empty, shortName} from '../ui.js';
-import { parseEFatura, matchProducts, matchSupplier } from '../efatura.js';
+import { el, card, stat, table, fmt, badge, modal, toast, confirmDialog, dateUtil, alertBox, empty, shortName, formModal } from '../ui.js';
+import { createProductPicker } from '../urun-secici.js';
+import { parseEFatura, matchProducts, matchSupplier, unitFromCode } from '../efatura.js';
 import { parseKarekod, compareWithLines } from '../karekod.js';
 import { openKarekodScanner } from '../karekod-tarayici.js';
 
@@ -12,7 +13,13 @@ export async function render(root) {
   await draw();
 
   async function draw() {
-    const data = await api.get('/api/purchases', { campusId: state.campusId, ...range });
+    const [data, unmatched] = await Promise.all([
+      api.get('/api/purchases', { campusId: state.campusId, ...range }),
+      // Faturada olup kayda alınmayan kalemler — tarih aralığından bağımsız,
+      // çünkü çözülmemiş bir kalem eskidikçe daha çok önem kazanır
+      api.get('/api/purchases/unmatched', { campusId: state.campusId })
+        .catch(() => ({ items: [], openCount: 0, openTotal: 0 })),
+    ]);
     container.replaceChildren();
 
     const fromInput = el('input', { type: 'date', value: range.from });
@@ -37,6 +44,8 @@ export async function render(root) {
       stat('Belge Sayısı', String(data.items.length)),
       stat('Ortalama Belge', fmt.money(data.items.length ? total / data.items.length : 0)),
     ]));
+
+    if (unmatched.items.length) container.append(unmatchedPanel(unmatched, draw));
 
     container.append(card('Alım Belgeleri (İrsaliye / Fatura)', [
       table([
@@ -184,21 +193,61 @@ function confirmDelete(data, onChange) {
 
 /* --------------------------- Yeni mal girişi ------------------------ */
 async function openPurchaseForm(onDone) {
-  const [suppliers, products] = await Promise.all([
+  const [suppliers, products, categories, stock] = await Promise.all([
     api.get('/api/suppliers'),
     api.get('/api/products', { campusId: state.campusId }),
+    api.get('/api/products/categories'),
+    // Stok, ürün seçicide "bu ürün zaten var mıydı" sorusunu cevaplar
+    api.get('/api/stock', { campusId: state.campusId }).catch(() => ({ items: [] })),
   ]);
-  if (!suppliers.items.length) {
-    toast('Önce en az bir tedarikçi tanımlamalısınız.', 'warning');
-    return;
-  }
 
   const productMap = new Map(products.items.map((p) => [p.id, p]));
+  const stockByProduct = new Map(stock.items.map((r) => [r.product_id, r.stock_qty]));
+  const pickers = [];          // satırlardaki seçiciler: yeni ürün hepsine eklenir
+  // Faturadan gelip KAYDA ALINMAYAN kalemler. Kullanıcı bir satırı sildiğinde
+  // buraya düşer ve belgeyle birlikte kaydedilir; iz bırakmadan kaybolmaz.
+  const droppedLines = [];
   const lines = [];
   const linesBody = el('tbody');
   const totalsBox = el('div.row', { style: 'justify-content:flex-end;gap:24px;font-weight:600' });
 
-  const supplierSelect = el('select', {}, suppliers.items.map((s) => el('option', { value: s.id }, [s.name])));
+  const supplierSelect = el('select', {}, [
+    el('option', { value: '' }, ['— tedarikçi seçin —']),
+    ...suppliers.items.map((s) => el('option', { value: s.id }, [s.name])),
+  ]);
+
+  /**
+   * Faturadaki tedarikçi sistemde yoksa buradan tanımlanır (10. madde).
+   * Unvan ve VKN faturadan gelir; kullanıcı yeniden yazmaz.
+   */
+  function addSupplier(preset = {}, onAdded = null) {
+    formModal({
+      title: 'Yeni Tedarikçi',
+      fields: [
+        { name: 'name', label: 'Firma adı', value: preset.name || '', required: true },
+        {
+          name: 'taxNo', label: 'Vergi / TC no', value: preset.taxNo || '', required: true,
+          hint: 'Zorunlu — 10 hane VKN veya 11 hane TCKN. Faturalar bu numarayla eşleşir.',
+        },
+        { name: 'taxOffice', label: 'Vergi dairesi', value: preset.taxOffice || '' },
+        { name: 'phone', label: 'Telefon', value: '' },
+      ],
+      submitText: 'Tedarikçiyi Ekle',
+      onSubmit: async (v) => {
+        const yeni = await api.post('/api/suppliers', v);
+        suppliers.items.push(yeni);
+        supplierSelect.append(el('option', { value: yeni.id }, [yeni.name]));
+        supplierSelect.value = String(yeni.id);
+        toast(`${yeni.name} eklendi ve seçildi.`);
+        onAdded?.(yeni);
+      },
+    });
+  }
+
+  const newSupplierBtn = el('button.btn.btn-sm', {
+    type: 'button', text: '+ Yeni', title: 'Listede olmayan tedarikçiyi buradan ekleyin',
+    onclick: () => addSupplier({}),
+  });
   const docNo = el('input', { placeholder: 'İrsaliye / fatura no' });
   const docDate = el('input', { type: 'date', value: dateUtil.today() });
   const dueDate = el('input', { type: 'date' });
@@ -268,14 +317,24 @@ async function openPurchaseForm(onDone) {
       vatRate: p0.vatRate ?? 10,
       discountPct: p0.discountPct ?? 0,
       net: 0, vat: 0,
-      sourceName: p0.sourceName || null,   // faturadaki ad (eslesmeyen satirlar icin)
+      // Faturadan gelen ham bilgiler: eşleşmeyen satır ürün olarak
+      // tanımlanırken bunlar forma önden yazılır (10. madde)
+      sourceName: p0.sourceName || null,
+      sourceBarcode: p0.sourceBarcode || null,
+      sourceUnit: p0.sourceUnit || null,
     };
 
-    const select = el('select', {}, [
-      el('option', { value: '', selected: initialId === null }, ['— ürün seçin —']),
-      ...products.items.map((p) =>
-        el('option', { value: p.id, selected: p.id === initialId }, [`${p.name}${p.barcode ? ' · ' + p.barcode : ''}`])),
-    ]);
+    // Ürün seçimi: yazdıkça süzen, stoğu gösteren ve yerinde ürün
+    // tanımlamaya izin veren seçici (bkz. urun-secici.js)
+    const picker = createProductPicker({
+      products: products.items,
+      stockByProduct,
+      value: initialId ?? null,
+      onChange: () => syncProduct(),
+      onCreateNew: (yazilan) => addProductFromLine(line, picker, yazilan),
+    });
+    pickers.push(picker);
+
     const qty = el('input.num', { type: 'number', step: '0.01', min: '0.001', value: String(line.quantity) });
     const price = el('input.num', { type: 'number', step: '0.01', min: '0', value: hasPreset ? String(line.unitPrice) : '' });
     const disc = el('input.num', { type: 'number', step: '0.01', min: '0', max: '100', value: String(line.discountPct) });
@@ -284,7 +343,7 @@ async function openPurchaseForm(onDone) {
     const totalCell = el('td.num');
 
     const syncProduct = () => {
-      line.productId = select.value ? Number(select.value) : null;
+      line.productId = picker.getValue();
       const p = productMap.get(line.productId);
       // Fatura satiri kendi fiyatini ve KDV'sini getirir; urun kartindaki
       // degerler yalnizca bos alanlari doldurmak icin kullanilir.
@@ -294,7 +353,7 @@ async function openPurchaseForm(onDone) {
       } else if (p && hasPreset && !vatIn.value) {
         vatIn.value = p.vat_rate;
       }
-      select.classList.toggle('needs-pick', !select.value);
+      picker.markMissing(!line.productId);
       recalcLine();
     };
     const recalcLine = () => {
@@ -308,25 +367,106 @@ async function openPurchaseForm(onDone) {
       totalCell.textContent = fmt.money(line.net + line.vat);
       recalcTotals();
     };
-    [select, qty, price, disc, vatIn, expiry].forEach((n) => n.addEventListener('input', recalcLine));
-    select.addEventListener('change', syncProduct);
+    [qty, price, disc, vatIn, expiry].forEach((n) => n.addEventListener('input', recalcLine));
 
     const tr = el('tr', {}, [
-      el('td', { style: 'min-width:220px' }, [
-        select,
+      el('td', { style: 'min-width:240px' }, [
+        picker.node,
         line.sourceName ? el('small.muted', { text: `Faturada: ${line.sourceName}`, style: 'display:block;margin-top:2px' }) : null,
       ]),
       el('td', {}, [qty]), el('td', {}, [price]), el('td', {}, [disc]), el('td', {}, [vatIn]),
       el('td', {}, [expiry]), totalCell,
       el('td', {}, [el('button.icon-btn', {
         text: '✕', title: 'Satırı sil',
-        onclick: () => { lines.splice(lines.indexOf(line), 1); tr.remove(); recalcTotals(); },
+        onclick: () => {
+          // Faturadan gelen bir kalem siliniyorsa kaydını tutarız: belge
+          // toplamı ile fatura toplamı arasındaki fark sonradan
+          // açıklanabilir olsun (bkz. "Eşleşmeyen Fatura Satırları").
+          if (line.sourceName) {
+            droppedLines.push({
+              sourceName: line.sourceName,
+              sourceCode: line.sourceBarcode || null,
+              unitCode: line.sourceUnit || null,
+              quantity: line.quantity,
+              unitPrice: line.unitPrice,
+              discountPct: line.discountPct,
+              vatRate: line.vatRate,
+            });
+          }
+          lines.splice(lines.indexOf(line), 1);
+          tr.remove();
+          recalcTotals();
+        },
       })]),
     ]);
     lines.push(line);
     linesBody.append(tr);
     syncProduct();
-    select.focus();
+    if (!initialId) picker.focus();
+  }
+
+  /**
+   * Faturada olup sistemde olmayan kalemi ürün olarak tanımlar (10. madde).
+   *
+   * Alanlar faturadan doldurulur: ad, barkod, KDV oranı ve iskonto sonrası
+   * gerçek birim maliyet. Satış fiyatını kullanıcı girer — onu fatura bilmez.
+   */
+  function addProductFromLine(line, picker, yazilanAd) {
+    const ad = (yazilanAd || line.sourceName || '').trim();
+    const birimMaliyet = line.quantity > 0
+      ? Math.round((line.unitPrice * (1 - (line.discountPct || 0) / 100)) * 100) / 100
+      : 0;
+
+    formModal({
+      title: 'Faturadaki Kalemi Ürün Olarak Tanımla',
+      wide: true,
+      fields: [
+        { name: 'name', label: 'Ürün adı', value: ad, required: true },
+        {
+          name: 'barcode', label: 'Barkod', value: line.sourceBarcode || '',
+          hint: line.sourceBarcode ? 'Faturadan okundu.' : 'Faturada barkod yoktu; sonra ekleyebilirsiniz.',
+        },
+        {
+          name: 'categoryId', label: 'Kategori', type: 'select', value: '',
+          options: [{ value: '', label: '— seçiniz —' },
+            ...categories.items.map((c) => ({ value: c.id, label: c.name }))],
+        },
+        {
+          name: 'unit', label: 'Birim', type: 'select', value: line.sourceUnit || 'ADET',
+          options: ['ADET', 'KG', 'LT', 'PAKET', 'KUTU', 'PORSIYON'].map((u) => ({ value: u, label: u })),
+        },
+        {
+          name: 'productType', label: 'Ürün tipi', type: 'select', value: 'SATIN_ALINAN',
+          options: [
+            { value: 'SATIN_ALINAN', label: 'Satın alınan — raftan sayılır, doğrudan satılır' },
+            { value: 'HAMMADDE', label: 'Hammadde — sayılır ama satılmaz' },
+          ],
+        },
+        {
+          name: 'purchasePrice', label: 'Alış fiyatı (KDV hariç)', type: 'number', step: '0.01', min: '0',
+          value: birimMaliyet || '', required: true,
+          hint: 'Faturadan geldi (iskonto düşülmüş birim maliyet).',
+        },
+        {
+          name: 'salePrice', label: 'Satış fiyatı (KDV dahil)', type: 'number', step: '0.01', min: '0',
+          value: '', required: true,
+          hint: 'Öğrenciden tahsil edilecek raf fiyatı — faturada yoktur, siz belirlersiniz.',
+        },
+        {
+          name: 'vatRate', label: 'KDV oranı (%)', type: 'number', step: '0.1', min: '0', max: '100',
+          value: line.vatRate ?? 10, hint: 'Fatura satırındaki oran.',
+        },
+        { name: 'criticalStock', label: 'Kritik stok seviyesi', type: 'number', step: '1', min: '0', value: 0 },
+      ],
+      submitText: 'Ürünü Ekle ve Satıra Bağla',
+      onSubmit: async (v) => {
+        const yeni = await api.post('/api/products', v);
+        productMap.set(yeni.id, yeni);
+        // Diğer satırların seçicileri de yeni ürünü görsün
+        for (const pk of pickers) pk.addProduct(yeni, pk === picker);
+        toast(`${yeni.name} tanımlandı ve satıra bağlandı.`);
+      },
+    });
   }
 
   // e-Fatura aktarimindan gelen bilgiler: ETTN ve dosyanin kendisi.
@@ -382,7 +522,13 @@ async function openPurchaseForm(onDone) {
       ]),
       importBox,
       el('div.grid.grid-3', {}, [
-        el('label.field', {}, [el('span', { text: 'Tedarikçi *' }), supplierSelect]),
+        el('label.field', {}, [
+          el('span', { text: 'Tedarikçi *' }),
+          el('div.row', { style: 'gap:6px;align-items:stretch' }, [
+            el('div', { style: 'flex:1;min-width:0' }, [supplierSelect]),
+            newSupplierBtn,
+          ]),
+        ]),
         el('label.field', {}, [el('span', { text: 'Belge No' }), docNo]),
         el('label.field', {}, [el('span', { text: 'Belge Tarihi *' }), docDate]),
         el('label.field', {}, [el('span', { text: 'Vade Tarihi' }), dueDate]),
@@ -433,6 +579,8 @@ async function openPurchaseForm(onDone) {
         discountPct: line.discountPct,
         vatRate: line.vatRate,
         sourceName: line.product ? null : line.name,
+        sourceBarcode: line.codes[0] || null,
+        sourceUnit: unitFromCode(line.unitCode),
       });
     }
     recalcTotals();
@@ -451,9 +599,27 @@ async function openPurchaseForm(onDone) {
     ]));
 
     if (!supplier) {
-      notes.push(alertBox('warning', 'Tedarikçi eşleşmedi',
-        `Faturadaki "${invoice.supplier.name}" (VKN ${invoice.supplier.taxNo || 'yok'}) sistemde bulunamadı. `
-        + 'Listeden doğru tedarikçiyi seçin. Tedarikçi kartına VKN yazarsanız bir dahaki sefere kendiliğinden eşleşir.'));
+      const ekleBtn = el('button.btn.btn-sm', {
+        type: 'button',
+        text: `+ "${invoice.supplier.name || 'Bu firmayı'}" tedarikçi olarak ekle`,
+        onclick: () => addSupplier({
+          name: invoice.supplier.name,
+          taxNo: invoice.supplier.taxNo,
+          taxOffice: invoice.supplier.taxOffice,
+        }, () => {
+          // Eklendikten sonra uyarı yerini onaya bıraksın
+          uyariKutusu.replaceChildren(alertBox('success', 'Tedarikçi eklendi',
+            `${invoice.supplier.name} tanımlandı ve seçildi. Bundan sonra bu firmanın `
+            + 'faturaları VKN ile kendiliğinden eşleşecek.'));
+        }),
+      });
+      const uyariKutusu = el('div', {}, [
+        alertBox('warning', 'Tedarikçi eşleşmedi',
+          `Faturadaki "${invoice.supplier.name}" (VKN ${invoice.supplier.taxNo || 'yok'}) sistemde bulunamadı. `
+          + 'Listeden doğru tedarikçiyi seçebilir ya da faturadaki bilgilerle yeni kart açabilirsiniz.'),
+        el('div.btn-row', { style: 'margin-top:8px' }, [ekleBtn]),
+      ]);
+      notes.push(uyariKutusu);
     } else if (matchedBy === 'unvan') {
       notes.push(alertBox('info', 'Tedarikçi unvandan eşleşti',
         `${supplier.name} seçildi. VKN ile eşleşmesi için tedarikçi kartına `
@@ -463,7 +629,9 @@ async function openPurchaseForm(onDone) {
     if (unmatched.length) {
       notes.push(alertBox('warning', `${unmatched.length} kalem eşleşmedi`,
         `Şu ürünler sistemde bulunamadı: ${unmatched.map((l) => `"${l.name}"`).join(', ')}. `
-        + 'Aşağıdaki satırlarda karşılık gelen ürünü seçin, satırı silin veya önce ürünü tanımlayın.'));
+        + 'Aşağıdaki kırmızı satırlarda ürün kutusuna tıklayın: arayarak seçebilir ya da '
+        + 'listenin sonundaki "+ yeni ürün tanımla" ile faturadaki bilgilerle kart açabilirsiniz. '
+        + 'Kaleme karşılık gelen bir ürün yoksa satırı silin.'));
     }
     if (mismatched.length) {
       notes.push(alertBox('warning', 'Satır tutarı uyuşmuyor',
@@ -555,6 +723,9 @@ async function openPurchaseForm(onDone) {
     saveBtn.disabled = true;
     saveBtn.textContent = 'Kaydediliyor...';
     try {
+      if (!supplierSelect.value) {
+        throw new Error('Tedarikçi seçmelisiniz. Listede yoksa "+ Yeni" ile ekleyebilirsiniz.');
+      }
       const payload = {
         campusId: state.campusId,
         supplierId: Number(supplierSelect.value),
@@ -563,6 +734,7 @@ async function openPurchaseForm(onDone) {
         dueDate: dueDate.value || null,
         note: noteInput.value.trim(),
         efaturaUuid: imported.uuid || null,
+        unmatchedLines: droppedLines,
         lines: lines.filter((l) => l.quantity > 0 && l.productId).map((l) => ({
           productId: l.productId, quantity: l.quantity, unitPrice: l.unitPrice,
           vatRate: l.vatRate, discountPct: l.discountPct, expiryDate: l.expiryDate,
@@ -613,7 +785,14 @@ async function openPurchaseForm(onDone) {
       }
 
       m.close();
-      toast(`Mal girişi kaydedildi. Toplam ${fmt.money(res.grossTotal)}`);
+      toast(
+        `Mal girişi kaydedildi. Toplam ${fmt.money(res.grossTotal)}`
+        + (res.unmatchedCount
+          ? ` · Faturadan ${res.unmatchedCount} kalem kayda alınmadı, "Eşleşmeyen Fatura Satırları" panelinde bekliyor.`
+          : ''),
+        res.unmatchedCount ? 'warning' : 'success',
+        res.unmatchedCount ? 9000 : 4000,
+      );
       if (res.priceAlerts?.length) {
         modal({
           title: '⚠️ Alış Fiyatı Artışı Tespit Edildi',
@@ -758,4 +937,133 @@ function humanSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+
+/* ============ EŞLEŞMEYEN FATURA SATIRLARI (uyarı paneli) =========== */
+/**
+ * Faturada olup belgeye alınmamış kalemler.
+ *
+ * Bunlar sessizce kaybolursa fatura toplamı ile sistemdeki belge toplamı
+ * arasındaki fark aylar sonra açıklanamaz hale gelir. Panel her birini
+ * açık tutar; kullanıcı ya bir ürüne bağlar (kalem belgeye eklenir, stoğa
+ * girer) ya da sebebini yazarak yok sayar.
+ */
+function unmatchedPanel(data, onChange) {
+  const toplam = data.items.reduce((s, r) => s + r.gross_total, 0);
+  return card(`⚠️ Eşleşmeyen Fatura Satırları (${data.items.length})`, [
+    table([
+      { label: 'Belge', value: (r) => `${r.document_no || '#' + r.purchase_id} · ${fmt.date(r.document_date)}` },
+      { label: 'Tedarikçi', value: (r) => r.supplier_name, wrap: true },
+      { label: 'Faturadaki ad', wrap: true, render: (r) => el('div', {}, [
+        el('strong', { text: r.source_name }),
+        r.source_code ? el('small.muted', { text: r.source_code, style: 'display:block' }) : null,
+      ]) },
+      { label: 'Miktar', num: true, value: (r) => fmt.num(r.quantity) },
+      { label: 'Birim Fiyat', num: true, value: (r) => fmt.money(r.unit_price) },
+      { label: 'KDV %', num: true, value: (r) => fmt.num(r.vat_rate) },
+      { label: 'Tutar', num: true, render: (r) => el('strong', { text: fmt.money(r.gross_total) }) },
+      {
+        label: '',
+        render: (r) => (canWrite('purchases')
+          ? el('button.btn.btn-sm.btn-primary', { text: 'Sonuçlandır', onclick: () => resolveUnmatched(r, onChange) })
+          : el('span.muted', { text: '—' })),
+      },
+    ], data.items, { rowClass: () => 'is-warn' }),
+  ], {
+    note: `Bu ${data.items.length} kalem faturada vardı ama belgeye alınmadı `
+      + `(toplam ${fmt.money(toplam)}). Her birini ya bir ürüne bağlayın ya da `
+      + 'sebebini yazarak yok sayın — aksi halde fatura ile belge tutarı arasındaki '
+      + 'fark açıklanamaz kalır.',
+    tight: true,
+  });
+}
+
+/** Bir kalemi ürüne bağlar ya da sebebiyle yok sayar. */
+async function resolveUnmatched(row, onChange) {
+  const products = await api.get('/api/products', { campusId: row.campus_id });
+  const stock = await api.get('/api/stock', { campusId: row.campus_id }).catch(() => ({ items: [] }));
+
+  const picker = createProductPicker({
+    products: products.items,
+    stockByProduct: new Map(stock.items.map((r) => [r.product_id, r.stock_qty])),
+    placeholder: 'Ürün arayın…',
+  });
+  const qty = el('input.num', { type: 'number', step: '0.01', min: '0.001', value: String(row.quantity) });
+  const price = el('input.num', { type: 'number', step: '0.01', min: '0', value: String(row.unit_price) });
+  const vat = el('input.num', { type: 'number', step: '0.1', min: '0', max: '100', value: String(row.vat_rate) });
+  const note = el('input', { placeholder: 'Örn: nakliye bedeli, stok kalemi değil' });
+  const hata = el('div.alert.alert-danger', { hidden: true });
+
+  const baglaBtn = el('button.btn.btn-primary', { text: 'Ürüne Bağla ve Belgeye Ekle' });
+  const yoksayBtn = el('button.btn', { text: 'Yok Say' });
+
+  const m = modal({
+    title: 'Eşleşmeyen Kalemi Sonuçlandır',
+    body: [
+      hata,
+      el('dl.kv', {}, [
+        el('dt', { text: 'Faturada' }), el('dd', { text: row.source_name }),
+        el('dt', { text: 'Belge' }), el('dd', { text: `${row.document_no || '#' + row.purchase_id} · ${fmt.date(row.document_date)} · ${row.supplier_name}` }),
+        el('dt', { text: 'Tutar' }), el('dd', { text: `${fmt.num(row.quantity)} × ${fmt.money(row.unit_price)} = ${fmt.money(row.gross_total)} (KDV dahil)` }),
+      ]),
+      alertBox('info', 'İki yoldan biri',
+        'Kalem gerçekten alındıysa bir ürüne bağlayın: belgeye satır olarak eklenir ve stoğa girer. '
+        + 'Stok kalemi değilse (nakliye, ambalaj, hizmet bedeli) sebebini yazıp yok sayın.'),
+      el('label.field', {}, [el('span', { text: 'Ürün' }), picker.node]),
+      el('div.grid.grid-3', {}, [
+        el('label.field', {}, [el('span', { text: 'Miktar' }), qty]),
+        el('label.field', {}, [el('span', { text: 'Birim fiyat (KDV hariç)' }), price]),
+        el('label.field', {}, [el('span', { text: 'KDV %' }), vat]),
+      ]),
+      el('label.field', {}, [el('span', { text: 'Açıklama (yok sayarken zorunlu)' }), note]),
+    ],
+    actions: [el('button.btn', { text: 'Vazgeç', onclick: () => m.close() }), yoksayBtn, baglaBtn],
+  });
+
+  const gonder = async (body, btn, etiket) => {
+    hata.hidden = true;
+    btn.disabled = true;
+    btn.textContent = 'Kaydediliyor...';
+    try {
+      const r = await api.post(`/api/purchases/unmatched/${row.id}/resolve`, body);
+      m.close();
+      toast(r.status === 'COZULDU'
+        ? `Kalem belgeye eklendi (${fmt.money(r.grossTotal)}) ve stoğa girdi.`
+        : 'Kalem yok sayıldı; kaydı denetim için saklandı.');
+      onChange();
+    } catch (err) {
+      hata.textContent = err.message;
+      hata.hidden = false;
+      btn.disabled = false;
+      btn.textContent = etiket;
+    }
+  };
+
+  baglaBtn.addEventListener('click', () => {
+    if (!picker.getValue()) {
+      picker.markMissing(true);
+      hata.textContent = 'Önce bir ürün seçin. Kalem stok ürünü değilse "Yok Say" kullanın.';
+      hata.hidden = false;
+      return;
+    }
+    gonder({
+      productId: picker.getValue(),
+      quantity: Number(qty.value) || 0,
+      unitPrice: Number(price.value) || 0,
+      vatRate: Number(vat.value) || 0,
+      discountPct: row.discount_pct,
+      note: note.value.trim() || null,
+    }, baglaBtn, 'Ürüne Bağla ve Belgeye Ekle');
+  });
+
+  yoksayBtn.addEventListener('click', () => {
+    if (!note.value.trim()) {
+      hata.textContent = 'Yok saymak için sebep yazmalısınız. Bu kayıt denetimde okunacak.';
+      hata.hidden = false;
+      note.focus();
+      return;
+    }
+    gonder({ ignore: true, note: note.value.trim() }, yoksayBtn, 'Yok Say');
+  });
 }

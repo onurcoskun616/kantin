@@ -118,8 +118,12 @@ ok('Belge no yazilmadan silinmiyor', /eşleşmedi/.test(dogrulamaHatasi), dogrul
 const belgeNo = await page.$eval('.modal-backdrop:last-of-type input', (n) => n.placeholder);
 await page.fill('.modal-backdrop:last-of-type input', belgeNo);
 await page.click('.modal-backdrop:last-of-type .btn-danger');
-await page.waitForTimeout(2500);
-ok('Dogru belge no ile silindi', (await page.$$('.modal-backdrop')).length === 0);
+// Sabit bekleme yerine pencerenin kapanmasini bekle: sunucu yavas
+// oldugunda sabit sure yetmiyor ve test nedensiz kiriliyordu.
+const kapandi = await page.waitForSelector('.modal-backdrop', { state: 'detached', timeout: 15000 })
+  .then(() => true).catch(() => false);
+ok('Dogru belge no ile silindi', kapandi,
+  await page.textContent('.modal-backdrop .alert-danger').catch(() => 'pencere kapanmadi'));
 const silindiMi = await page.evaluate(async (no) => {
   const t = localStorage.getItem('kantin_token');
   const r = await fetch('/api/purchases?from=2000-01-01&to=2099-01-01', { headers: { Authorization: `Bearer ${t}` } });

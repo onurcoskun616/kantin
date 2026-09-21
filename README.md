@@ -73,6 +73,9 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
   kendiliğinden dolar. Ürünler barkod veya adla eşlenir
 - Eşleşmeyen kalem sessizce atlanmaz: satır kırmızı işaretlenir, ürün seçilmeden belge kaydedilmez
 - Fatura toplamı satırlarla çapraz kontrol edilir; tutmuyorsa uyarı çıkar
+- **İskontolar** — satır iskontosu satıra işlenir; **belge geneli iskonto**
+  (ciro primi vb.) satırlara mal bedeline orantılı dağıtılır. Dağıtılmazsa stok
+  maliyeti gerçekten ödenenden yüksek kaydedilir ve kâr olduğundan düşük görünür
 - Aynı e-Fatura (ETTN) ikinci kez aktarılamaz
 - **Karekod (QR) okuma** — kâğıt/PDF faturadaki GİB karekodu kamerayla ya da
   fotoğraftan okunur: tedarikçi, belge no, tarih ve ETTN dolar. Karekodda ürün
@@ -80,6 +83,17 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
   satırlar faturanın KDV oranı başına matrah/KDV toplamlarıyla anlık karşılaştırılır**;
   fark kalırsa kaydederken onay istenir. XML olmadan da mükerrer fatura koruması çalışır
 - Adım adım: **[docs/FATURA-GIRISI.md](docs/FATURA-GIRISI.md)**
+- **Aranabilir ürün seçici** — fatura satırında ürün adını yazdıkça süzülür;
+  her satırda barkod ve **mevcut stok** görünür. Türkçe karakter gerekmez
+  ("cay" → "Çay"). Listenin sonundan, faturadaki bilgilerle **yerinde yeni
+  ürün** tanımlanabilir; eşleşmeyen tedarikçi de aynı şekilde eklenir
+- **Eşleşmeyen fatura satırları paneli** — faturada olup belgeye alınmayan
+  kalemler iz bırakır. Her biri ya bir ürüne bağlanır (belgeye satır olarak
+  eklenir, stoğa girer) ya da sebebi yazılarak yok sayılır. Aksi halde fatura
+  toplamı ile belge toplamı arasındaki fark aylar sonra açıklanamaz kalır
+- **Belge iptali ve kalıcı silme** — iptal belgeyi kayıtta bırakır ve ETTN'yi
+  serbest bırakır; kalıcı silme (yalnızca yönetim) satırları, stok hareketlerini
+  ve fatura dosyalarını diskten de siler, içeriği denetim günlüğüne yazar
 - **Fatura dosyası ekleme** — PDF, fotoğraf veya XML belgeye iliştirilir; denetimde
   "bu rakam nereden geldi" sorusu tek tıkla açılır
 - Her dosyanın SHA-256 özeti saklanır (sonradan değişirse anlaşılır); silme yetkisi
@@ -87,6 +101,10 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
 
 ### Tedarikçi
 - İrsaliye/fatura girişi (iskonto, KDV, SKT alanlarıyla)
+- **Vergi numarası zorunlu ve tekil** — 10 hane VKN veya 11 hane TCKN. Aynı
+  numara ikinci firmaya verilemez; hata mesajı çakışan firmanın adını söyler.
+  Mükerrer tedarikçi kartı sessiz bir hatadır: fatura bazen birine bazen
+  ötekine yazılır, cari borç ikiye bölünür
 - Mükerrer belge no kontrolü
 - Cari hesap: toplam alım, iade, ödemeler, bakiye (Bakiye = Alım − İade − Ödeme)
 - Tedarikçi bazlı alım ve iade raporu (iade oranı %5'i geçen tedarikçi işaretlenir)
@@ -100,7 +118,12 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
 
 ### Güvenlik ve yönetim
 - 6 rol: Sistem Yöneticisi, Genel Müdürlük, Kampüs Yöneticisi, Kantin Görevlisi,
-  Ön Muhasebe (salt okunur — yalnızca teslim fişi onayı), Denetçi (salt okunur)
+  **Ön Muhasebe** (veri girişi), Denetçi (salt okunur)
+- **Ön muhasebe** bir veri girişi rolüdür: fatura/mal girişi, tedarikçi ve
+  ödemeler, iadeler, ürün kartı ve fiyatlar, günlük ciro girer; teslim fişini
+  onaylar. Sayım kesinleştiremez, stok düzeltemez, kuruluş tanımlarına
+  dokunamaz, belgeyi kalıcı silemez. Yetki **alan alan** verilir ve varsayılan
+  kapalıdır — sonradan eklenen bir uç yanlışlıkla açılmaz
 - Kampüs bazlı veri izolasyonu — görevli yalnızca kendi kampüsünü görür
 - Parolalar `scrypt` ile saklanır, oturumlar HMAC imzalı
 - Silinemez denetim izi: kim, ne zaman, neyi değiştirdi
@@ -166,12 +189,15 @@ docker compose up -d
 ### Testler
 
 ```bash
-npm test        # 102 test: uçtan uca API + karekod çözümleyici
+npm test        # 130 test: uçtan uca API + karekod çözümleyici
 npm run test:ui # tarayıcı regresyon testleri:
                 #   sayim-akisi  — kör sayım → iki imza → kesinleştirme
                 #   ciro-teslim  — teslim fişi → tutar dondurma → kod ile onay
                 #   fatura-eki   — e-Fatura XML aktarımı → fatura dosyası ekleme
                 #   karekod      — karekod ile başlık + satır/fatura çapraz kontrolü
+                #   yetki-ve-silme — VKN tekilliği, belge silme, ön muhasebe yetkisi
+                #   eslesmeyen-satirlar — kayda alınmayan kalemin izi ve çözümü
+                #   belge-iskontosu — belge geneli iskontonun satırlara dağıtımı
 ```
 
 `test:ui` Playwright gerektirir (`npm i -g playwright && playwright install chromium`)
@@ -277,6 +303,7 @@ public/
   js/xlsx.js        Tarayıcı içi Excel okuyucu (harici kütüphane yok)
   js/efatura.js     Tarayıcı içi e-Fatura (UBL-TR) okuyucu
   js/karekod.js     Fatura karekodu (GİB QR) çözümleyici + çapraz kontrol
+  js/urun-secici.js Aranabilir ürün seçici (stok gösterir, yerinde ürün açar)
 test/
   api.test.js       Uçtan uca API testleri
   karekod.test.js   Karekod çözümleyici birim testleri
@@ -292,7 +319,7 @@ docs/
   FATURA-GIRISI.md  Tedarikçi faturasını işleme: XML, karekod, elle giriş, dosya ekleme
   VPS-KURULUM.md    Sunucu kurulum rehberi
   YOL-HARITASI.md   Atlanan noktalar ve sonraki aşama önerileri
-  sablonlar/        Excel şablonu ve örnek e-Fatura XML
+  sablonlar/        Excel şablonu ve örnek e-Fatura XML'leri (biri iskontolu)
 ```
 
 ---

@@ -34,133 +34,122 @@ purchaseRoutes.get('/', async (ctx) => {
   return { items };
 });
 
-purchaseRoutes.get('/:id', async (ctx) => {
-  const id = Number(ctx.params.id);
-  const header = get(
-    `SELECT p.*, s.name AS supplier_name, k.name AS campus_name FROM purchases p
-       JOIN suppliers s ON s.id = p.supplier_id JOIN campuses k ON k.id = p.campus_id WHERE p.id = ?`, [id]
+/* ============ FATURADA OLUP KAYDA ALINMAYAN SATIRLAR ============== */
+/**
+ * Acik (henuz cozulmemis) kalemler. `/:id` deseninden ONCE tanimlanmali:
+ * yonlendirici ilk eslesen rotayi kullanir, aksi halde "unmatched" bir
+ * belge id'si sanilir.
+ */
+purchaseRoutes.get('/unmatched', async (ctx) => {
+  const f = campusFilter(ctx.user, 'p.campus_id');
+  const durum = ctx.query.status || 'ACIK';
+  const params = [];
+  const where = ["u.status = ?"];
+  params.push(durum);
+  if (ctx.query.campusId) { where.push('p.campus_id = ?'); params.push(Number(ctx.query.campusId)); }
+
+  const items = all(
+    `SELECT u.*, p.document_no, p.document_date, p.campus_id, p.status AS purchase_status,
+            s.name AS supplier_name, k.name AS campus_name, pr.name AS resolved_product_name
+       FROM purchase_unmatched_lines u
+       JOIN purchases p ON p.id = u.purchase_id
+       JOIN suppliers s ON s.id = p.supplier_id
+       JOIN campuses  k ON k.id = p.campus_id
+       LEFT JOIN products pr ON pr.id = u.resolved_product_id
+      WHERE ${where.join(' AND ')} ${f.clause}
+      ORDER BY p.document_date DESC, u.id DESC LIMIT 300`,
+    [...params, ...f.params]
   );
-  if (!header) throw notFound('Alim belgesi bulunamadi.');
-  assertCampusAccess(ctx.user, header.campus_id);
-  const lines = all(
-    `SELECT l.*, pr.name AS product_name, pr.barcode, pr.unit FROM purchase_lines l
-       JOIN products pr ON pr.id = l.product_id WHERE l.purchase_id = ? ORDER BY l.id`, [id]
+  const openCount = get(
+    `SELECT COUNT(*) AS c, COALESCE(SUM(u.gross_total), 0) AS total
+       FROM purchase_unmatched_lines u JOIN purchases p ON p.id = u.purchase_id
+      WHERE u.status = 'ACIK' ${f.clause}`, f.params
   );
-  return { ...header, lines, attachments: attachmentsOf(id) };
+  return { items, openCount: openCount.c, openTotal: round2(openCount.total) };
 });
 
-purchaseRoutes.post('/', async (ctx) => {
+/**
+ * Bir kalemi cozer. Iki yol var:
+ *   productId verilirse  -> kalem belgeye SATIR olarak eklenir, stok girer
+ *   ignore: true         -> sebebi yazilarak yok sayilir (stok degismez)
+ *
+ * Belgeye satir eklemek stogu degistirir; bu yuzden iptal/silme ile ayni
+ * engeller gecerlidir (kesinlesmis sayim, bagli iade).
+ */
+purchaseRoutes.post('/unmatched/:id/resolve', async (ctx) => {
   requireWrite(ctx.user, 'purchases');
-  const campusId = assertCampusAccess(ctx.user, ctx.body.campusId);
-  const supplierId = int(ctx.body.supplierId, 'Tedarikci', { required: true });
-  if (!get('SELECT id FROM suppliers WHERE id = ?', [supplierId])) throw badRequest('Tedarikci bulunamadi.');
+  const id = Number(ctx.params.id);
+  const row = get('SELECT * FROM purchase_unmatched_lines WHERE id = ?', [id]);
+  if (!row) throw notFound('Kalem bulunamadi.');
+  if (row.status !== 'ACIK') throw conflict('Bu kalem zaten sonuclandirilmis.');
 
-  const documentNo = str(ctx.body.documentNo, 'Belge no', { max: 60 });
-  const documentDate = date(ctx.body.documentDate, 'Belge tarihi', { def: today() });
-  const dueDate = date(ctx.body.dueDate, 'Vade tarihi', { def: null });
-  const note = str(ctx.body.note, 'Aciklama', { max: 500 });
-  // e-Fatura XML'inden aktarildiysa belgenin ETTN'si
-  const efaturaUuid = str(ctx.body.efaturaUuid, 'e-Fatura ETTN', { max: 60 });
-  const lines = arr(ctx.body.lines, 'Satirlar', { required: true, min: 1 });
+  const header = get('SELECT * FROM purchases WHERE id = ?', [row.purchase_id]);
+  if (!header) throw notFound('Kalemin bagli oldugu belge bulunamadi.');
+  assertCampusAccess(ctx.user, header.campus_id);
 
-  // Ayni e-Fatura ikinci kez aktarilmasin (kampus fark etmeksizin: ETTN tekildir).
-  // IPTAL edilmis belge engel degildir: tedarikci faturayi iptal edip yeniden
-  // duzenlemis olabilir, ya da hatali giris iptal edilip tekrar girilecektir.
-  if (efaturaUuid) {
-    const dupEf = get(
-      "SELECT id, document_no FROM purchases WHERE efatura_uuid = ? AND status <> 'IPTAL'", [efaturaUuid]
+  const note = str(ctx.body.note, 'Aciklama', { max: 300 });
+
+  if (ctx.body.ignore) {
+    if (!note) throw badRequest('Yok saymak icin sebep yazmalisiniz.');
+    run(
+      `UPDATE purchase_unmatched_lines
+          SET status = 'YOKSAYILDI', resolution_note = ?, resolved_by = ?, resolved_at = datetime('now')
+        WHERE id = ?`, [note, ctx.user.id, id]
     );
-    if (dupEf) {
-      throw conflict(
-        `Bu e-Fatura zaten sisteme aktarilmis (Belge #${dupEf.id}${dupEf.document_no ? ' / ' + dupEf.document_no : ''}). `
-        + 'Yanlis girildiyse once o belgeyi iptal edin, sonra yeniden aktarin.'
-      );
-    }
+    logAudit({
+      user: ctx.user, action: 'UPDATE', entity: 'purchase_unmatched_lines', entityId: id,
+      campusId: header.campus_id, detail: { yoksayildi: row.source_name, sebep: note }, ip: ctx.ip,
+    });
+    return { ok: true, status: 'YOKSAYILDI' };
   }
 
-  // Ayni tedarikci + belge no ikilisi iki kez girilmesin (mukerrer irsaliye)
-  if (documentNo) {
-    const dup = get(
-      "SELECT id FROM purchases WHERE supplier_id = ? AND document_no = ? AND campus_id = ? AND status <> 'IPTAL'",
-      [supplierId, documentNo, campusId]
+  const productId = int(ctx.body.productId, 'Urun', { required: true });
+  const product = get('SELECT * FROM products WHERE id = ?', [productId]);
+  if (!product) throw badRequest('Urun bulunamadi.');
+  if (header.status === 'IPTAL') throw conflict('Iptal edilmis belgeye satir eklenemez.');
+  assertPurchaseMutable(header, 'satir eklenemez');
+
+  const quantity = num(ctx.body.quantity, 'Miktar', { def: row.quantity }) ?? row.quantity;
+  const unitPrice = num(ctx.body.unitPrice, 'Birim fiyat', { def: row.unit_price }) ?? row.unit_price;
+  const vatRate = num(ctx.body.vatRate, 'KDV', { min: 0, max: 100, def: row.vat_rate }) ?? row.vat_rate;
+  const discountPct = num(ctx.body.discountPct, 'Iskonto', { min: 0, max: 100, def: row.discount_pct }) ?? row.discount_pct;
+  if (!(quantity > 0)) throw badRequest('Miktar sifirdan buyuk olmalidir.');
+
+  const t = purchaseLineTotals({ quantity, unitPrice, vatRate, discountPct });
+  const effectiveUnitCost = round2(t.netTotal / quantity);
+
+  tx(() => {
+    insert(
+      `INSERT INTO purchase_lines (purchase_id, product_id, quantity, unit_price, vat_rate, discount_pct,
+                                   net_total, vat_total, gross_total, expiry_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      [header.id, productId, quantity, unitPrice, vatRate, discountPct, t.netTotal, t.vatTotal, t.grossTotal]
     );
-    if (dup) throw conflict(`Bu belge no (${documentNo}) bu tedarikci icin zaten kayitli. Belge #${dup.id}`);
-  }
-
-  const prepared = lines.map((raw, i) => {
-    const productId = int(raw.productId, `Satir ${i + 1} urun`, { required: true });
-    const product = get('SELECT * FROM products WHERE id = ?', [productId]);
-    if (!product) throw badRequest(`Satir ${i + 1}: urun bulunamadi.`);
-    const quantity = num(raw.quantity, `Satir ${i + 1} miktar`, { required: true, min: 0.001 });
-    const unitPrice = num(raw.unitPrice, `Satir ${i + 1} birim fiyat`, { required: true, min: 0 });
-    const vatRate = num(raw.vatRate, `Satir ${i + 1} KDV`, { min: 0, max: 100, def: product.vat_rate }) ?? product.vat_rate;
-    const discountPct = num(raw.discountPct, `Satir ${i + 1} iskonto`, { min: 0, max: 100, def: 0 }) ?? 0;
-    const totals = purchaseLineTotals({ quantity, unitPrice, vatRate, discountPct });
-    return {
-      productId, product, quantity, unitPrice, vatRate, discountPct, ...totals,
-      expiryDate: date(raw.expiryDate, `Satir ${i + 1} SKT`, { def: null }),
-      // Iskonto sonrasi gercek birim maliyet
-      effectiveUnitCost: quantity > 0 ? round2(totals.netTotal / quantity) : 0,
-    };
-  });
-
-  const netTotal = round2(prepared.reduce((s, l) => s + l.netTotal, 0));
-  const vatTotal = round2(prepared.reduce((s, l) => s + l.vatTotal, 0));
-  const grossTotal = round2(netTotal + vatTotal);
-
-  const purchaseId = tx(() => {
-    const pid = insert(
-      `INSERT INTO purchases (campus_id, supplier_id, document_no, document_date, net_total, vat_total, gross_total,
-                              due_date, status, note, efatura_uuid, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ONAYLI', ?, ?, ?)`,
-      [campusId, supplierId, documentNo, documentDate, netTotal, vatTotal, grossTotal, dueDate, note,
-       efaturaUuid || null, ctx.user.id]
+    addMovement({
+      campusId: header.campus_id, productId, type: 'ALIS', quantity,
+      unitCost: effectiveUnitCost, date: header.document_date,
+      refType: 'purchase', refId: header.id, userId: ctx.user.id,
+    });
+    // Belge toplamlari da buyumeli, yoksa fatura ile belge yine tutmaz
+    run(
+      `UPDATE purchases SET net_total = net_total + ?, vat_total = vat_total + ?, gross_total = gross_total + ?
+        WHERE id = ?`, [t.netTotal, t.vatTotal, t.grossTotal, header.id]
     );
-    for (const l of prepared) {
-      insert(
-        `INSERT INTO purchase_lines (purchase_id, product_id, quantity, unit_price, vat_rate, discount_pct,
-                                     net_total, vat_total, gross_total, expiry_date)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [pid, l.productId, l.quantity, l.unitPrice, l.vatRate, l.discountPct,
-         l.netTotal, l.vatTotal, l.grossTotal, l.expiryDate]
-      );
-      addMovement({
-        campusId, productId: l.productId, type: 'ALIS', quantity: l.quantity,
-        unitCost: l.effectiveUnitCost, date: documentDate,
-        refType: 'purchase', refId: pid, userId: ctx.user.id,
-      });
-      // Alis fiyati degistiyse katalogu guncelle ve gecmise yaz
-      if (round2(l.product.purchase_price) !== l.effectiveUnitCost) {
-        run("UPDATE products SET purchase_price = ?, updated_at = datetime('now') WHERE id = ?",
-          [l.effectiveUnitCost, l.productId]);
-        insert(
-          `INSERT INTO price_history (product_id, campus_id, old_purchase, new_purchase, old_sale, new_sale, effective_date, changed_by)
-           VALUES (?, NULL, ?, ?, ?, ?, ?, ?)`,
-          [l.productId, l.product.purchase_price, l.effectiveUnitCost,
-           l.product.sale_price, l.product.sale_price, documentDate, ctx.user.id]
-        );
-      }
-    }
-    return pid;
+    run(
+      `UPDATE purchase_unmatched_lines
+          SET status = 'COZULDU', resolved_product_id = ?, resolution_note = ?,
+              resolved_by = ?, resolved_at = datetime('now')
+        WHERE id = ?`, [productId, note || null, ctx.user.id, id]
+    );
   });
 
   logAudit({
-    user: ctx.user, action: 'CREATE', entity: 'purchases', entityId: purchaseId, campusId,
-    detail: { supplierId, documentNo, grossTotal, lineCount: prepared.length, efaturaUuid: efaturaUuid || undefined },
+    user: ctx.user, action: 'UPDATE', entity: 'purchase_unmatched_lines', entityId: id,
+    campusId: header.campus_id,
+    detail: { belge: header.id, faturaAdi: row.source_name, urun: product.name, miktar: quantity, tutar: t.grossTotal },
     ip: ctx.ip,
   });
-
-  // Fiyat degisimi uyarilari
-  const priceAlerts = prepared
-    .filter((l) => l.product.purchase_price > 0 && l.effectiveUnitCost > l.product.purchase_price * 1.1)
-    .map((l) => ({
-      productName: l.product.name,
-      oldPrice: l.product.purchase_price,
-      newPrice: l.effectiveUnitCost,
-      increasePct: round2(((l.effectiveUnitCost - l.product.purchase_price) / l.product.purchase_price) * 100),
-    }));
-
-  return { id: purchaseId, netTotal, vatTotal, grossTotal, priceAlerts };
+  return { ok: true, status: 'COZULDU', purchaseId: header.id, grossTotal: t.grossTotal };
 });
 
 /**
@@ -258,6 +247,154 @@ purchaseRoutes.delete('/:id', async (ctx) => {
     ip: ctx.ip,
   });
   return { ok: true, deletedLines: lines.length, deletedFiles: attachments.length };
+});
+
+purchaseRoutes.get('/:id', async (ctx) => {
+  const id = Number(ctx.params.id);
+  const header = get(
+    `SELECT p.*, s.name AS supplier_name, k.name AS campus_name FROM purchases p
+       JOIN suppliers s ON s.id = p.supplier_id JOIN campuses k ON k.id = p.campus_id WHERE p.id = ?`, [id]
+  );
+  if (!header) throw notFound('Alim belgesi bulunamadi.');
+  assertCampusAccess(ctx.user, header.campus_id);
+  const lines = all(
+    `SELECT l.*, pr.name AS product_name, pr.barcode, pr.unit FROM purchase_lines l
+       JOIN products pr ON pr.id = l.product_id WHERE l.purchase_id = ? ORDER BY l.id`, [id]
+  );
+  return { ...header, lines, attachments: attachmentsOf(id) };
+});
+
+purchaseRoutes.post('/', async (ctx) => {
+  requireWrite(ctx.user, 'purchases');
+  const campusId = assertCampusAccess(ctx.user, ctx.body.campusId);
+  const supplierId = int(ctx.body.supplierId, 'Tedarikci', { required: true });
+  if (!get('SELECT id FROM suppliers WHERE id = ?', [supplierId])) throw badRequest('Tedarikci bulunamadi.');
+
+  const documentNo = str(ctx.body.documentNo, 'Belge no', { max: 60 });
+  const documentDate = date(ctx.body.documentDate, 'Belge tarihi', { def: today() });
+  const dueDate = date(ctx.body.dueDate, 'Vade tarihi', { def: null });
+  const note = str(ctx.body.note, 'Aciklama', { max: 500 });
+  // e-Fatura XML'inden aktarildiysa belgenin ETTN'si
+  const efaturaUuid = str(ctx.body.efaturaUuid, 'e-Fatura ETTN', { max: 60 });
+  const lines = arr(ctx.body.lines, 'Satirlar', { required: true, min: 1 });
+  // Faturada olup belgeye ALINMAYAN kalemler (kullanici satiri sildi).
+  // Iz birakmadan kaybolmasinlar: panelde acik olarak bekleyecekler.
+  const unmatched = arr(ctx.body.unmatchedLines, 'Eslesmeyen satirlar', { def: [] }) ?? [];
+
+  // Ayni e-Fatura ikinci kez aktarilmasin (kampus fark etmeksizin: ETTN tekildir).
+  // IPTAL edilmis belge engel degildir: tedarikci faturayi iptal edip yeniden
+  // duzenlemis olabilir, ya da hatali giris iptal edilip tekrar girilecektir.
+  if (efaturaUuid) {
+    const dupEf = get(
+      "SELECT id, document_no FROM purchases WHERE efatura_uuid = ? AND status <> 'IPTAL'", [efaturaUuid]
+    );
+    if (dupEf) {
+      throw conflict(
+        `Bu e-Fatura zaten sisteme aktarilmis (Belge #${dupEf.id}${dupEf.document_no ? ' / ' + dupEf.document_no : ''}). `
+        + 'Yanlis girildiyse once o belgeyi iptal edin, sonra yeniden aktarin.'
+      );
+    }
+  }
+
+  // Ayni tedarikci + belge no ikilisi iki kez girilmesin (mukerrer irsaliye)
+  if (documentNo) {
+    const dup = get(
+      "SELECT id FROM purchases WHERE supplier_id = ? AND document_no = ? AND campus_id = ? AND status <> 'IPTAL'",
+      [supplierId, documentNo, campusId]
+    );
+    if (dup) throw conflict(`Bu belge no (${documentNo}) bu tedarikci icin zaten kayitli. Belge #${dup.id}`);
+  }
+
+  const prepared = lines.map((raw, i) => {
+    const productId = int(raw.productId, `Satir ${i + 1} urun`, { required: true });
+    const product = get('SELECT * FROM products WHERE id = ?', [productId]);
+    if (!product) throw badRequest(`Satir ${i + 1}: urun bulunamadi.`);
+    const quantity = num(raw.quantity, `Satir ${i + 1} miktar`, { required: true, min: 0.001 });
+    const unitPrice = num(raw.unitPrice, `Satir ${i + 1} birim fiyat`, { required: true, min: 0 });
+    const vatRate = num(raw.vatRate, `Satir ${i + 1} KDV`, { min: 0, max: 100, def: product.vat_rate }) ?? product.vat_rate;
+    const discountPct = num(raw.discountPct, `Satir ${i + 1} iskonto`, { min: 0, max: 100, def: 0 }) ?? 0;
+    const totals = purchaseLineTotals({ quantity, unitPrice, vatRate, discountPct });
+    return {
+      productId, product, quantity, unitPrice, vatRate, discountPct, ...totals,
+      expiryDate: date(raw.expiryDate, `Satir ${i + 1} SKT`, { def: null }),
+      // Iskonto sonrasi gercek birim maliyet
+      effectiveUnitCost: quantity > 0 ? round2(totals.netTotal / quantity) : 0,
+    };
+  });
+
+  const netTotal = round2(prepared.reduce((s, l) => s + l.netTotal, 0));
+  const vatTotal = round2(prepared.reduce((s, l) => s + l.vatTotal, 0));
+  const grossTotal = round2(netTotal + vatTotal);
+
+  const purchaseId = tx(() => {
+    const pid = insert(
+      `INSERT INTO purchases (campus_id, supplier_id, document_no, document_date, net_total, vat_total, gross_total,
+                              due_date, status, note, efatura_uuid, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ONAYLI', ?, ?, ?)`,
+      [campusId, supplierId, documentNo, documentDate, netTotal, vatTotal, grossTotal, dueDate, note,
+       efaturaUuid || null, ctx.user.id]
+    );
+    for (const l of prepared) {
+      insert(
+        `INSERT INTO purchase_lines (purchase_id, product_id, quantity, unit_price, vat_rate, discount_pct,
+                                     net_total, vat_total, gross_total, expiry_date)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [pid, l.productId, l.quantity, l.unitPrice, l.vatRate, l.discountPct,
+         l.netTotal, l.vatTotal, l.grossTotal, l.expiryDate]
+      );
+      addMovement({
+        campusId, productId: l.productId, type: 'ALIS', quantity: l.quantity,
+        unitCost: l.effectiveUnitCost, date: documentDate,
+        refType: 'purchase', refId: pid, userId: ctx.user.id,
+      });
+      // Alis fiyati degistiyse katalogu guncelle ve gecmise yaz
+      if (round2(l.product.purchase_price) !== l.effectiveUnitCost) {
+        run("UPDATE products SET purchase_price = ?, updated_at = datetime('now') WHERE id = ?",
+          [l.effectiveUnitCost, l.productId]);
+        insert(
+          `INSERT INTO price_history (product_id, campus_id, old_purchase, new_purchase, old_sale, new_sale, effective_date, changed_by)
+           VALUES (?, NULL, ?, ?, ?, ?, ?, ?)`,
+          [l.productId, l.product.purchase_price, l.effectiveUnitCost,
+           l.product.sale_price, l.product.sale_price, documentDate, ctx.user.id]
+        );
+      }
+    }
+    for (const u of unmatched) {
+      const ad = str(u.sourceName, 'Faturadaki ad', { max: 300 });
+      if (!ad) continue;
+      const miktar = num(u.quantity, 'Miktar', { def: 0 }) ?? 0;
+      const fiyat = num(u.unitPrice, 'Birim fiyat', { def: 0 }) ?? 0;
+      const iskonto = num(u.discountPct, 'Iskonto', { min: 0, max: 100, def: 0 }) ?? 0;
+      const kdv = num(u.vatRate, 'KDV', { min: 0, max: 100, def: 0 }) ?? 0;
+      const t = purchaseLineTotals({ quantity: miktar, unitPrice: fiyat, vatRate: kdv, discountPct: iskonto });
+      insert(
+        `INSERT INTO purchase_unmatched_lines (purchase_id, source_name, source_code, quantity, unit_code,
+                                               unit_price, discount_pct, vat_rate, net_total, gross_total)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [pid, ad, str(u.sourceCode, 'Kod', { max: 60 }) || null, miktar,
+         str(u.unitCode, 'Birim', { max: 20 }) || null, fiyat, iskonto, kdv, t.netTotal, t.grossTotal]
+      );
+    }
+    return pid;
+  });
+
+  logAudit({
+    user: ctx.user, action: 'CREATE', entity: 'purchases', entityId: purchaseId, campusId,
+    detail: { supplierId, documentNo, grossTotal, lineCount: prepared.length, efaturaUuid: efaturaUuid || undefined },
+    ip: ctx.ip,
+  });
+
+  // Fiyat degisimi uyarilari
+  const priceAlerts = prepared
+    .filter((l) => l.product.purchase_price > 0 && l.effectiveUnitCost > l.product.purchase_price * 1.1)
+    .map((l) => ({
+      productName: l.product.name,
+      oldPrice: l.product.purchase_price,
+      newPrice: l.effectiveUnitCost,
+      increasePct: round2(((l.effectiveUnitCost - l.product.purchase_price) / l.product.purchase_price) * 100),
+    }));
+
+  return { id: purchaseId, netTotal, vatTotal, grossTotal, priceAlerts, unmatchedCount: unmatched.length };
 });
 
 /* ======================= ALIM BELGESI EKLERI ======================= */
