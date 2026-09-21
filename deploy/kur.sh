@@ -31,6 +31,8 @@ DAL="${KANTIN_BRANCH:-main}"
 AG="${CADDY_NETWORK:-topkapi-qr_default}"
 ALAN="${KANTIN_DOMAIN:-kantin.topkapikoleji.org}"
 KONTEYNER="topkapi-kantin"
+CADDY_KONTEYNER="${CADDY_CONTAINER:-topkapi-qr-caddy-1}"
+CADDYFILE_ICERIDE="${CADDYFILE_IN_CONTAINER:-/etc/caddy/Caddyfile}"
 
 bilgi() { printf '\n\033[1;34m==>\033[0m \033[1m%s\033[0m\n' "$1"; }
 ok()    { printf '  \033[32m✓\033[0m %s\n' "$1"; }
@@ -204,7 +206,27 @@ else
   printf '     Cozum denemesi: chown -R 1000:1000 %s\n' "$DIZIN/backups"
 fi
 
-bilgi "8/8  Son adim — Caddy kurali (ELLE)"
+bilgi "8/8  Disaridan erisim (Caddy)"
+
+# Guncellemede bu adim genellikle ZATEN TAMAMDIR. Her kosuda kurulum
+# talimatini basmak, kullaniciyi "hala bir sey yapmam mi gerekiyor?" diye
+# dusundurur. Once durumu kontrol edip yalnizca gerekiyorsa anlatiriz.
+CADDY_HAZIR=0
+if docker exec "$CADDY_KONTEYNER" grep -qF "$ALAN" "$CADDYFILE_ICERIDE" 2>/dev/null; then
+  CADDY_HAZIR=1
+fi
+
+if [ "$CADDY_HAZIR" = 1 ]; then
+  ok "Caddy zaten yapilandirilmis ($ALAN) — yapacak bir sey yok"
+  DURUM="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$ALAN/api/health" 2>/dev/null || true)"
+  if [ "$DURUM" = "200" ]; then
+    ok "https://$ALAN aciliyor ve yanit veriyor"
+  else
+    uyari "https://$ALAN yanit vermedi (kod: ${DURUM:-yok})"
+    printf '     Sertifika yenileniyor olabilir; birkac dakika sonra tekrar deneyin.\n'
+    printf '     Gecmiyorsa teshis: curl -fsSL https://raw.githubusercontent.com/onurcoskun616/kantin/main/deploy/teshis.sh -o /tmp/teshis.sh && sudo bash /tmp/teshis.sh\n'
+  fi
+else
 cat <<EOF
   Kantin calisiyor ama disaridan erisim icin Caddy'ye tek blok eklemek
   gerekiyor. Bunu BILEREK otomatik yapmiyoruz: hatali bir reload mevcut
@@ -242,6 +264,7 @@ $ALAN {
      calistigini kontrol edin.
 
 EOF
+fi
 
 bilgi "Ozet"
 docker compose ps
