@@ -61,11 +61,21 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
 - Reçete kontrolü raporu: beyan edilen üretim hammadde tüketimiyle tutarlı mı?
 
 ### Fiyat ve kârlılık
+- **Alış fiyatı ürün kartında elle tutulmaz** — mal girişlerinden (fatura veya
+  açılış stoğu) oluşur ve **iskonto düşülmüş gerçek maliyettir**. Her kampüs
+  kendi alımının fiyatını taşır: aynı ürün Esenyurt'a başka, Çorlu'ya başka
+  fiyata gelebilir ve stok değeri buna göre hesaplanır. Fire, satış ve sayım
+  farkı fiyat belirlemez; belge iptal edilirse bir önceki girişe dönülür
+- **Satış fiyatı tarih bazlıdır** — “1 Ekim'den itibaren 15 TL” diye
+  tanımlanır, günü gelince kendiliğinden geçer. Geçmişe dönük raporlar o
+  dönemde geçerli olan fiyatı kullanır. Yürürlüğe girmiş fiyat silinemez
+  (o dönemin kârlılığını açıklayan kayıttır); ileri tarihli fiyat iptal edilir
 - Alış (KDV hariç) ve satış (KDV dahil) fiyatı ayrı tutulur
 - Birim kâr, kâr marjı ve maliyet üzeri kâr oranı otomatik hesaplanır
-- Kampüs bazlı fiyat istisnası
+- Kampüs bazlı fiyat istisnası (tarihli)
 - Fiyat değişiklik geçmişi; alımda %10 üzeri fiyat artışı uyarısı
 - Fiyat denetimi raporu: zararına satış, düşük marj, tavan fiyat aşımı
+- Ayrıntılar: **[docs/FIYAT-YONETIMI.md](docs/FIYAT-YONETIMI.md)**
 
 ### Fatura ve belge
 - **e-Fatura / e-Arşiv XML aktarımı** — UBL-TR XML dosyasını yükleyin: tedarikçi (VKN ile),
@@ -198,6 +208,7 @@ npm run test:ui # tarayıcı regresyon testleri:
                 #   yetki-ve-silme — VKN tekilliği, belge silme, ön muhasebe yetkisi
                 #   eslesmeyen-satirlar — kayda alınmayan kalemin izi ve çözümü
                 #   belge-iskontosu — belge geneli iskontonun satırlara dağıtımı
+                #   fiyat-mimarisi — alış faturadan, satış tarih bazlı
 ```
 
 `test:ui` Playwright gerektirir (`npm i -g playwright && playwright install chromium`)
@@ -270,7 +281,7 @@ cron yedekleme görevi).
 
 | Alan | Kabul |
 |---|---|
-| `purchase_price` | Tedarikçiden alış, **KDV hariç** (fatura satır fiyatı) |
+| `purchase_price` | Tedarikçiden alış, **KDV hariç**. Ürün kartında yalnızca *başlangıç* değeridir; geçerli fiyat mal girişlerinden gelir |
 | `sale_price` | Öğrenciye satış, **KDV dahil** (raf etiketi) |
 | Birim kâr | `satış(KDV hariç) − alış(KDV hariç)` |
 | Kâr marjı % | `birim kâr / satış(KDV hariç) × 100` |
@@ -317,6 +328,7 @@ docs/
   DENETIM-KONTROLLERI.md  Kör sayım, iki imza, üretilen ürün, nokta sayımı, ciro teslim fişi
   KURULUM-DOCKER-CADDY.md Mevcut Docker + Caddy sunucusuna yan yana kurulum
   FATURA-GIRISI.md  Tedarikçi faturasını işleme: XML, karekod, elle giriş, dosya ekleme
+  FIYAT-YONETIMI.md Alış fiyatı nereden gelir, tarih bazlı satış fiyatı
   VPS-KURULUM.md    Sunucu kurulum rehberi
   YOL-HARITASI.md   Atlanan noktalar ve sonraki aşama önerileri
   sablonlar/        Excel şablonu ve örnek e-Fatura XML'leri (biri iskontolu)

@@ -236,13 +236,28 @@ export function confirmDialog(message, { title = 'Onay', confirmText = 'Evet, de
   });
 }
 
-/** Basit form modal'i. fields: [{name,label,type,value,options,required,hint,step,min}] */
+/**
+ * Basit form modal'i.
+ * fields: [{name,label,type,value,options,required,hint,step,min}]
+ *
+ * Ozel tipler:
+ *   section - baslik satiri
+ *   info    - GIRDI DEGIL, salt okunur bilgi satiri. Degeri formdan
+ *             donmez; "bu alan artik elle girilmiyor, su kaynaktan geliyor"
+ *             demek icin kullanilir.
+ */
 export function formModal({ title, fields, submitText = 'Kaydet', wide = false, onSubmit }) {
   const inputs = {};
   const errorBox = el('div.alert.alert-danger', { hidden: true });
 
   const body = fields.map((f) => {
     if (f.type === 'section') return el('h4', { text: f.label, style: 'margin-top:6px;font-size:13px;color:var(--text-muted)' });
+    if (f.type === 'info') {
+      return el('div.field', {}, [
+        el('span', { text: f.label }),
+        el('div.info-value', { text: f.value ?? '' }),
+      ]);
+    }
     let input;
     if (f.type === 'select') {
       input = el('select', { name: f.name }, (f.options || []).map((o) =>

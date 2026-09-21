@@ -156,6 +156,38 @@ CREATE TABLE IF NOT EXISTS campus_products (
   PRIMARY KEY (campus_id, product_id)
 );
 
+-- TARIH BAZLI SATIS FIYATI (9. madde)
+--
+-- Satis fiyati bir TARIHTEN ITIBAREN gecerlidir. Onceden urun kartinda tek
+-- bir deger vardi: fiyat degisince eski donemlerin karliligi da gecmise
+-- donuk degisiyor, "gecen ay bu urunu kaca satiyorduk" sorusu
+-- cevaplanamiyordu. Ayrica ileri tarihli fiyat ("1 Ekim'den itibaren")
+-- tanimlanamiyordu.
+--
+-- campus_id NULL  = tum kampusler icin gecerli katalog fiyati
+-- campus_id dolu  = yalnizca o kampus (kampus fiyati katalogu ezer)
+--
+-- Bir tarihteki gecerli fiyat: effective_from <= tarih olan satirlar
+-- icinde EN GEC olani; once kampuse ozel, yoksa katalog.
+CREATE TABLE IF NOT EXISTS product_prices (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id     INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  campus_id      INTEGER REFERENCES campuses(id) ON DELETE CASCADE,
+  sale_price     REAL    NOT NULL CHECK (sale_price >= 0),
+  effective_from TEXT    NOT NULL,
+  note           TEXT,
+  created_by     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+-- Ayni urun+kampus+tarih icin tek satir. campus_id NULL olabildigi ve
+-- SQLite'ta NULL'lar birbirine esit sayilmadigi icin iki ayri indeks gerekir.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_product_prices_campus
+  ON product_prices(product_id, campus_id, effective_from) WHERE campus_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_product_prices_catalog
+  ON product_prices(product_id, effective_from) WHERE campus_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_product_prices_lookup
+  ON product_prices(product_id, effective_from);
+
 -- Fiyat degisiklik gecmisi (denetim ve gecmise donuk kar hesabi icin)
 CREATE TABLE IF NOT EXISTS price_history (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,

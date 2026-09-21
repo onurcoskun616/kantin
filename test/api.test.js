@@ -1567,3 +1567,280 @@ describe('Eslesmeyen fatura satirlari', () => {
     assert.match(r.data.error, /Iptal edilmis/i);
   });
 });
+
+/* ======= Alis fiyati faturadan/giristen gelir (kart degil) ======== */
+describe('Alis fiyati kaynagi', () => {
+  let campusA; let campusB; let supplierId; let productId;
+
+  before(async () => {
+    campusA = (await ok('POST', '/api/campuses', { name: 'Fiyat A Kampüsü', code: 'FYA' })).id;
+    campusB = (await ok('POST', '/api/campuses', { name: 'Fiyat B Kampüsü', code: 'FYB' })).id;
+    supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'Fiyat Test Tedarikçi', taxNo: '8080808080' })).id;
+    // Kart uzerindeki deger yalnizca BASLANGIC degeridir
+    productId = (await ok('POST', '/api/products',
+      { name: 'Fiyat Test Ürünü', purchasePrice: 10, salePrice: 25, vatRate: 10 })).id;
+  });
+
+  const alim = (campusId, no, birimFiyat, iskonto = 0) => ok('POST', '/api/purchases', {
+    campusId, supplierId, documentNo: no, documentDate: daysAgo(3),
+    lines: [{ productId, quantity: 10, unitPrice: birimFiyat, vatRate: 10, discountPct: iskonto }],
+  });
+
+  test('hic alim yokken katalogdaki baslangic degeri gecerlidir', async () => {
+    const r = await ok('GET', `/api/stock?campusId=${campusA}`);
+    const satir = r.items.find((x) => x.product_id === productId);
+    assert.equal(satir.purchase_price, 10);
+    assert.equal(satir.last_purchase_price, null, 'henuz giris yok');
+  });
+
+  test('fatura girilince alis fiyati FATURADAN gelir', async () => {
+    await alim(campusA, 'FY-001', 12.5);
+    const satir = (await ok('GET', `/api/stock?campusId=${campusA}`))
+      .items.find((x) => x.product_id === productId);
+    assert.equal(satir.purchase_price, 12.5);
+    assert.equal(satir.last_purchase_price, 12.5);
+  });
+
+  test('iskonto dusulmus GERCEK maliyet kullanilir', async () => {
+    await alim(campusA, 'FY-002', 20, 25);          // 20 - %25 = 15,00
+    const satir = (await ok('GET', `/api/stock?campusId=${campusA}`))
+      .items.find((x) => x.product_id === productId);
+    assert.equal(satir.purchase_price, 15, 'liste fiyati 20 degil, odenen 15 olmali');
+  });
+
+  test('her kampus KENDI alis fiyatini tasir', async () => {
+    await alim(campusB, 'FY-003', 9.4);
+    const a = (await ok('GET', `/api/stock?campusId=${campusA}`))
+      .items.find((x) => x.product_id === productId);
+    const b = (await ok('GET', `/api/stock?campusId=${campusB}`))
+      .items.find((x) => x.product_id === productId);
+    assert.equal(a.purchase_price, 15, 'A kampusu kendi fiyatini korumali');
+    assert.equal(b.purchase_price, 9.4, 'B kampusu kendi fiyatini kullanmali');
+  });
+
+  test('stok degeri kampusun kendi maliyetiyle hesaplanir', async () => {
+    const b = await ok('GET', `/api/stock?campusId=${campusB}`);
+    const satir = b.items.find((x) => x.product_id === productId);
+    assert.ok(Math.abs(satir.stock_cost_value - satir.stock_qty * 9.4) < 0.01,
+      `${satir.stock_cost_value} vs ${satir.stock_qty} x 9.4`);
+  });
+
+  test('belge iptal edilince o giris fiyat kaynagi olmaktan cikar', async () => {
+    const b = await alim(campusB, 'FY-004', 30);
+    let satir = (await ok('GET', `/api/stock?campusId=${campusB}`))
+      .items.find((x) => x.product_id === productId);
+    assert.equal(satir.purchase_price, 30);
+
+    await ok('POST', `/api/purchases/${b.id}/cancel`);
+
+    satir = (await ok('GET', `/api/stock?campusId=${campusB}`))
+      .items.find((x) => x.product_id === productId);
+    assert.equal(satir.purchase_price, 9.4, 'iptal sonrasi bir onceki girise donmeli');
+  });
+
+  test('fire ve satis hareketleri fiyat kaynagi DEGILDIR', async () => {
+    await ok('POST', '/api/waste', {
+      campusId: campusB, productId, quantity: 1, reason: 'KIRILMA', wasteDate: daysAgo(1),
+    });
+    const satir = (await ok('GET', `/api/stock?campusId=${campusB}`))
+      .items.find((x) => x.product_id === productId);
+    assert.equal(satir.purchase_price, 9.4, 'fire fiyati degistirmemeli');
+  });
+});
+
+/* ===== Urun kartinda alis fiyati artik ELLE tutulmaz (4. madde) ==== */
+describe('Urun karti alis fiyatini korur', () => {
+  let campusId; let supplierId; let productId;
+
+  before(async () => {
+    campusId = (await ok('POST', '/api/campuses', { name: 'Kart Kampüsü', code: 'KRT' })).id;
+    supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'Kart Test Tedarikçi', taxNo: '1212121212' })).id;
+    productId = (await ok('POST', '/api/products',
+      { name: 'Kart Test Ürünü', purchasePrice: 11, salePrice: 25, vatRate: 10 })).id;
+  });
+
+  test('alis fiyati GONDERILMEDEN yapilan guncelleme onu silmez', async () => {
+    // Arayuz artik purchasePrice gondermiyor; eskiden bu alani 0'a dusururdu
+    const r = await ok('PUT', `/api/products/${productId}`, {
+      name: 'Kart Test Ürünü (düzenlendi)', salePrice: 28, vatRate: 10, criticalStock: 3,
+    });
+    assert.equal(r.purchase_price, 11, 'alis fiyati korunmali');
+    assert.equal(r.sale_price, 28);
+    assert.equal(r.name, 'Kart Test Ürünü (düzenlendi)');
+  });
+
+  test('kampus fiyati guncellenirken de alis degeri silinmez', async () => {
+    await ok('PUT', `/api/products/${productId}/campus-price/${campusId}`,
+      { purchasePrice: 9, salePrice: 24 });
+    const sonra = await ok('PUT', `/api/products/${productId}/campus-price/${campusId}`,
+      { salePrice: 26 });
+    assert.ok(sonra, 'istek gecmeli');
+    const detay = await ok('GET', `/api/products/${productId}`);
+    const kampus = detay.campusPrices.find((c) => c.campus_id === campusId);
+    assert.equal(kampus.purchase_price, 9, 'gonderilmeyen alis degeri korunmali');
+    assert.equal(kampus.sale_price, 26);
+  });
+
+  test('urun listesi alis fiyatinin KAYNAGINI soyler', async () => {
+    const once = await ok('GET', `/api/products?campusId=${campusId}`);
+    const k1 = once.items.find((p) => p.id === productId);
+    assert.equal(k1.purchase_price_source, 'KAMPUS', 'henuz alim yok, kampus tanimi gecerli');
+
+    await ok('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'KRT-001', documentDate: daysAgo(1),
+      lines: [{ productId, quantity: 5, unitPrice: 13.2, vatRate: 10 }],
+    });
+
+    const sonra = await ok('GET', `/api/products?campusId=${campusId}`);
+    const k2 = sonra.items.find((p) => p.id === productId);
+    assert.equal(k2.purchase_price_source, 'ALIM');
+    assert.equal(k2.effective_purchase_price, 13.2);
+    assert.equal(k2.last_purchase_date, daysAgo(1));
+  });
+
+  test('kar marji gercek maliyet uzerinden hesaplanir', async () => {
+    const r = await ok('GET', `/api/products?campusId=${campusId}`);
+    const k = r.items.find((p) => p.id === productId);
+    // Satis 26,00 KDV dahil %10 -> net 23,636..., maliyet 13,20
+    assert.ok(Math.abs(k.profit.purchaseNet - 13.2) < 0.01, String(k.profit.purchaseNet));
+    assert.ok(k.profit.unitProfit > 10 && k.profit.unitProfit < 11, String(k.profit.unitProfit));
+  });
+});
+
+/* ============ Tarih bazli satis fiyati (9. madde) ================= */
+describe('Tarih bazli satis fiyati', () => {
+  let campusId; let otherCampus; let productId;
+  const iso = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+
+  before(async () => {
+    campusId = (await ok('POST', '/api/campuses', { name: 'Fiyat Tarih Kampüsü', code: 'FTK' })).id;
+    otherCampus = (await ok('POST', '/api/campuses', { name: 'Fiyat Tarih 2', code: 'FT2' })).id;
+    productId = (await ok('POST', '/api/products',
+      { name: 'Tarihli Fiyat Ürünü', purchasePrice: 10, salePrice: 20, vatRate: 10 })).id;
+  });
+
+  test('urun tanimlanirken fiyat listesine de yazilir', async () => {
+    const r = await ok('GET', `/api/products/${productId}/prices`);
+    assert.equal(r.items.length, 1);
+    assert.equal(r.items[0].sale_price, 20);
+    assert.equal(r.items[0].campus_id, null, 'katalog fiyati');
+    assert.equal(r.items[0].is_future, false);
+  });
+
+  test('ILERI tarihli fiyat bugunku fiyati degistirmez', async () => {
+    await ok('POST', `/api/products/${productId}/prices`,
+      { salePrice: 26, effectiveFrom: iso(7), note: '1 hafta sonra zam' });
+
+    const urun = (await ok('GET', `/api/products?campusId=${campusId}`))
+      .items.find((p) => p.id === productId);
+    assert.equal(urun.effective_sale_price, 20, 'bugun hala eski fiyat');
+    assert.equal(urun.next_price_date, iso(7), 'yaklasan fiyat tarihi bildirilmeli');
+
+    const kart = await ok('GET', `/api/products/${productId}`);
+    assert.equal(kart.sale_price, 20, 'urun kartindaki gecerli fiyat degismemeli');
+  });
+
+  test('GECMIS tarihli fiyat o gunden itibaren gecerlidir', async () => {
+    await ok('POST', `/api/products/${productId}/prices`,
+      { salePrice: 22, effectiveFrom: daysAgo(10) });
+    const urun = (await ok('GET', `/api/products?campusId=${campusId}`))
+      .items.find((p) => p.id === productId);
+    // Urun tanimi bugun yapildi (20 TL) ve o daha gec tarihli, yani 20 gecerli
+    assert.equal(urun.effective_sale_price, 20, 'daha yeni tarihli fiyat kazanir');
+  });
+
+  test('gecmise donuk stok degeri O GUNUN fiyatini kullanir', async () => {
+    const bugunku = await ok('GET', `/api/stock?campusId=${campusId}`);
+    const gecmis = await ok('GET', `/api/stock?campusId=${campusId}&date=${daysAgo(5)}`);
+    const b = bugunku.items.find((x) => x.product_id === productId);
+    const g = gecmis.items.find((x) => x.product_id === productId);
+    assert.equal(b.sale_price, 20, 'bugun 20');
+    assert.equal(g.sale_price, 22, '5 gun once 22 gecerliydi');
+  });
+
+  test('kampus fiyati katalogu ezer, digerlerini etkilemez', async () => {
+    await ok('POST', `/api/products/${productId}/prices`,
+      { salePrice: 18, campusId, note: 'Kampüse özel' });
+
+    const a = (await ok('GET', `/api/products?campusId=${campusId}`))
+      .items.find((p) => p.id === productId);
+    const b = (await ok('GET', `/api/products?campusId=${otherCampus}`))
+      .items.find((p) => p.id === productId);
+    assert.equal(a.effective_sale_price, 18, 'kendi kampusunde ozel fiyat');
+    assert.equal(b.effective_sale_price, 20, 'diger kampus katalogu kullanir');
+  });
+
+  test('ayni gune ikinci fiyat girilirse sonuncusu gecerlidir', async () => {
+    await ok('POST', `/api/products/${productId}/prices`, { salePrice: 19, campusId });
+    const a = (await ok('GET', `/api/products?campusId=${campusId}`))
+      .items.find((p) => p.id === productId);
+    assert.equal(a.effective_sale_price, 19);
+    const liste = await ok('GET', `/api/products/${productId}/prices`);
+    const bugunKampus = liste.items.filter((r) => r.campus_id === campusId && r.effective_from === liste.today);
+    assert.equal(bugunKampus.length, 1, 'ayni gun icin tek satir kalmali');
+  });
+
+  test('ileri tarihli fiyat iptal edilebilir', async () => {
+    const liste = await ok('GET', `/api/products/${productId}/prices`);
+    const gelecek = liste.items.find((r) => r.is_future);
+    assert.ok(gelecek, 'ileri tarihli fiyat olmali');
+    await ok('DELETE', `/api/products/${productId}/prices/${gelecek.id}`);
+    const sonra = await ok('GET', `/api/products/${productId}/prices`);
+    assert.ok(!sonra.items.some((r) => r.id === gelecek.id));
+  });
+
+  test('yururluge girmis fiyat SILINEMEZ', async () => {
+    const liste = await ok('GET', `/api/products/${productId}/prices`);
+    const gecmis = liste.items.find((r) => !r.is_future);
+    const r = await api('DELETE', `/api/products/${productId}/prices/${gecmis.id}`);
+    assert.equal(r.status, 409);
+    assert.match(r.data.error, /Yururluge girmis/i);
+  });
+
+  test('fiyat listesi kimin ne zaman girdigini tutar', async () => {
+    const liste = await ok('GET', `/api/products/${productId}/prices`);
+    assert.ok(liste.items.every((r) => r.created_by_name), JSON.stringify(liste.items.slice(0, 2)));
+  });
+});
+
+/* ======= Excel toplu yukleme ve tarihli fiyat listesi ============== */
+describe('Toplu yukleme fiyatlari', () => {
+  const BARKOD = 'TOPLU-0001';
+
+  test('yuklenen urun fiyat listesine yazilir', async () => {
+    const r = await ok('POST', '/api/products/bulk-import', {
+      items: [{ barcode: BARKOD, name: 'Toplu Ürün', purchasePrice: 7, salePrice: 14, vatRate: 10 }],
+    });
+    assert.equal(r.created, 1);
+
+    const urun = (await ok('GET', '/api/products')).items.find((p) => p.barcode === BARKOD);
+    const fiyatlar = await ok('GET', `/api/products/${urun.id}/prices`);
+    assert.equal(fiyatlar.items.length, 1);
+    assert.equal(fiyatlar.items[0].sale_price, 14);
+    assert.match(fiyatlar.items[0].note, /Excel/);
+  });
+
+  test('alis fiyati sutunu BOS gelirse mevcut deger korunur', async () => {
+    const once = (await ok('GET', '/api/products')).items.find((p) => p.barcode === BARKOD);
+    assert.equal(once.purchase_price, 7);
+
+    // Excel'de yalnizca satis fiyati guncellenmis bir satir
+    const r = await ok('POST', '/api/products/bulk-import', {
+      items: [{ barcode: BARKOD, name: 'Toplu Ürün', salePrice: 16, vatRate: 10 }],
+    });
+    assert.equal(r.updated, 1);
+
+    const sonra = (await ok('GET', '/api/products')).items.find((p) => p.barcode === BARKOD);
+    assert.equal(sonra.purchase_price, 7, 'bos birakilan alis fiyati silinmemeli');
+    assert.equal(sonra.sale_price, 16);
+  });
+
+  test('toplu yukleme fiyat listesine yeni satir ekler', async () => {
+    const urun = (await ok('GET', '/api/products')).items.find((p) => p.barcode === BARKOD);
+    const fiyatlar = await ok('GET', `/api/products/${urun.id}/prices`);
+    // Ayni gun oldugu icin tek satir kalir ama degeri guncellenmis olmali
+    assert.equal(fiyatlar.items[0].sale_price, 16);
+  });
+});

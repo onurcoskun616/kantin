@@ -67,6 +67,51 @@ function upgradeExistingSchema() {
   rebuildIfMissing('counts', "'SAYILDI'");      // TASLAK/KESINLESMIS -> + SAYILDI
   rebuildIfMissing('products', "'HAMMADDE'");   // SATIN_ALINAN/URETILEN -> + HAMMADDE
   rebuildIfMissing('users', "'MUHASEBE'");      // roller -> + MUHASEBE (on muhasebe)
+  backfillProductPrices();
+}
+
+/**
+ * Mevcut satis fiyatlarini TARIHLI fiyat listesine tasir (9. madde).
+ *
+ * Fiyat listesi sonradan eklendi; eski urunlerin hic satiri yok. Cozumleme
+ * sutuna dustugu icin davranis dogru ama fiyat takvimi bos gorunur ve
+ * "bu fiyat ne zamandan beri gecerli" sorusu cevapsiz kalir. Her urun icin
+ * BIR KEZ, urunun olusturuldugu tarihten gecerli bir satir yazariz.
+ *
+ * Tekrar calistirilabilir: zaten satiri olan urune dokunmaz.
+ */
+function backfillProductPrices() {
+  if (!tableExists('product_prices') || !tableExists('products')) return;
+
+  const urunler = db.prepare(
+    `SELECT p.id, p.sale_price, DATE(p.created_at) AS gun
+       FROM products p
+      WHERE NOT EXISTS (SELECT 1 FROM product_prices pp WHERE pp.product_id = p.id AND pp.campus_id IS NULL)`
+  ).all();
+  for (const u of urunler) {
+    db.prepare(
+      `INSERT INTO product_prices (product_id, campus_id, sale_price, effective_from, note)
+       VALUES (?, NULL, ?, ?, 'Mevcut fiyat (listeye aktarildi)')`
+    ).run(u.id, u.sale_price ?? 0, u.gun || '2000-01-01');
+  }
+
+  // Kampuse ozel fiyatlar da listeye tasinir
+  const kampus = tableExists('campus_products') ? db.prepare(
+    `SELECT cp.campus_id, cp.product_id, cp.sale_price, DATE(p.created_at) AS gun
+       FROM campus_products cp JOIN products p ON p.id = cp.product_id
+      WHERE cp.sale_price IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM product_prices pp
+                         WHERE pp.product_id = cp.product_id AND pp.campus_id = cp.campus_id)`
+  ).all() : [];
+  for (const k of kampus) {
+    db.prepare(
+      `INSERT INTO product_prices (product_id, campus_id, sale_price, effective_from, note)
+       VALUES (?, ?, ?, ?, 'Mevcut kampus fiyati (listeye aktarildi)')`
+    ).run(k.product_id, k.campus_id, k.sale_price, k.gun || '2000-01-01');
+  }
+
+  const toplam = urunler.length + kampus.length;
+  if (toplam) console.log(`[SEMA] ${toplam} satis fiyati tarihli fiyat listesine aktarildi.`);
 }
 
 /** Eski veritabanlarina sonradan eklenen sutunlar. Tekrar calistirilabilir. */

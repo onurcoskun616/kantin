@@ -276,6 +276,15 @@ function renderPreview(parsed) {
     ]));
   }
 
+  // Excel'deki alış fiyatı bir BAŞLANGIÇ değeridir: ilk fatura girildiğinde
+  // gerçek maliyetle değişir. Kullanıcı bunu bilmezse "fiyatı Excel'den
+  // güncelleyeyim" diye tekrar tekrar yüklemeye çalışır.
+  nodes.push(alertBox('info', 'Alış fiyatı başlangıç değeridir',
+    'Buradaki alış fiyatları ilk kurulum içindir. İlk mal girişi (fatura) '
+    + 'kaydedildiğinde alış fiyatı, o faturadaki iskonto düşülmüş gerçek '
+    + 'maliyetle değişir ve sonrasında Excel\'den güncellenmez. '
+    + 'Satış fiyatları da yükleme tarihinden itibaren geçerli olur.'));
+
   nodes.push(el('div', {}, [
     el('p.card-note', { text: `Önizleme — ilk ${Math.min(products.valid.length, 20)} satır:` }),
     table([

@@ -1,7 +1,7 @@
 /** Ürün kataloğu, fiyat/kâr yönetimi ve tedarikçiler. */
 import { api } from '../api.js';
 import { state, canWrite } from '../app.js';
-import { el, card, stat, table, fmt, badge, modal, toast, formModal, deltaCell, alertBox, empty, shortName} from '../ui.js';
+import { el, card, stat, table, fmt, badge, modal, toast, formModal, deltaCell, alertBox, empty, shortName, dateUtil } from '../ui.js';
 
 /* ============================== Ürünler ============================= */
 export async function renderProducts(root) {
@@ -77,11 +77,18 @@ export async function renderProducts(root) {
         { label: 'Maliyet Üzeri', num: true, value: (r) => fmt.pct(r.profit.markupPct) },
         { label: 'Tip', render: (r) => PRODUCT_TYPE_BADGE[r.product_type]?.() ?? el('span.muted', { text: 'Satın alınan' }) },
         { label: 'Kampüs Fiyatı', render: (r) => (r.campus_sale_price !== null && r.campus_sale_price !== undefined ? badge('Özel', 'info') : el('span.muted', { text: '—' })) },
+        {
+          label: 'Yaklaşan Fiyat',
+          render: (r) => (r.next_price_date
+            ? badge(fmt.date(r.next_price_date), 'warn')
+            : el('span.muted', { text: '—' })),
+        },
         { label: 'Durum', render: (r) => (r.is_active ? badge('Aktif', 'ok') : badge('Pasif')) },
         {
           label: '', render: (r) => (canWrite("products") ? el('div.btn-row', {}, [
             el('button.btn.btn-sm', { text: 'Düzenle', onclick: () => openProductForm(cats.items, r, draw) }),
             el('button.btn.btn-sm', { text: 'Kampüs Fiyatı', onclick: () => openCampusPrice(r, draw) }),
+            el('button.btn.btn-sm', { text: '🗓️ Fiyat Takvimi', onclick: () => openPriceCalendar(r, draw) }),
             r.product_type === 'URETILEN' ? el('button.btn.btn-sm', {
               text: '📋 Reçete',
               onclick: async () => {
@@ -131,10 +138,22 @@ function openProductForm(categories, product, onDone) {
         ],
         hint: 'Hammadde sayıma girer ama satılmaz; tüketimi reçeteden hesaplanır. '
           + 'Üretilen ürünler stoktan ve sayımdan çıkarılır; dönem satış adedi sayım ekranında beyan edilir.' },
-      { name: 'purchasePrice', label: 'Alış fiyatı (KDV hariç)', type: 'number', step: '0.01', min: '0', value: product?.purchase_price ?? '', required: true,
-        hint: 'Tedarikçi faturasındaki birim fiyat.' },
-      { name: 'salePrice', label: 'Satış fiyatı (KDV dahil)', type: 'number', step: '0.01', min: '0', value: product?.sale_price ?? '', required: true,
+      // ALIŞ FİYATI BURADA GİRİLMEZ (4. ve 7. madde): faturadan veya açılış
+      // stoğu girişinden gelir. Elle tutulan bir alış fiyatı, faturayla
+      // güncellenen gerçek maliyetin yanında sessizce eskiyordu.
+      {
+        name: '__alisBilgi', type: 'info',
+        label: 'Alış fiyatı',
+        value: alisFiyatiAciklamasi(product),
+      },
+      { name: 'salePrice', label: 'Satış fiyatı (KDV dahil)', type: 'number', step: '0.01', min: '0',
+        value: product?.effective_sale_price ?? product?.sale_price ?? '', required: true,
         hint: 'Öğrenciden tahsil edilen raf fiyatı.' },
+      // Fiyatlar TARİHTEN İTİBAREN geçerlidir (9. madde): ileri tarih
+      // verirseniz bugünkü fiyat değişmez, günü gelince kendiliğinden geçer.
+      { name: 'effectiveDate', label: 'Satış fiyatı geçerlilik tarihi', type: 'date', value: dateUtil.today(),
+        hint: 'İleri tarih verirseniz fiyat o gün yürürlüğe girer; bugünkü satışlar '
+          + 'eski fiyattan devam eder. Geçmiş tarih, o günden sonraki raporları etkiler.' },
       { name: 'vatRate', label: 'KDV oranı (%)', type: 'number', step: '0.1', min: '0', max: '100', value: product?.vat_rate ?? 10 },
       { name: 'maxPrice', label: 'Tavan fiyat (TL)', type: 'number', step: '0.01', min: '0', value: product?.max_price ?? 0,
         hint: 'Resmî tarife/okul kararıyla belirlenen üst sınır. 0 = sınır yok.' },
@@ -154,13 +173,143 @@ function openProductForm(categories, product, onDone) {
   });
 }
 
+/**
+ * FİYAT TAKVİMİ — bir ürünün tarih bazlı satış fiyatları (9. madde).
+ *
+ * Satış fiyatı bir tarihten itibaren geçerlidir. Burada geçmişte hangi
+ * fiyatın uygulandığı görülür, ileri tarihli fiyat tanımlanır ve henüz
+ * yürürlüğe girmemiş bir fiyat iptal edilebilir. Yürürlüğe girmiş fiyat
+ * silinemez: o dönemin kârlılığını açıklayan kayıttır.
+ */
+async function openPriceCalendar(product, onDone) {
+  const govde = el('div');
+  const hata = el('div.alert.alert-danger', { hidden: true });
+
+  const fiyat = el('input.num', { type: 'number', step: '0.01', min: '0', placeholder: '0,00' });
+  const tarih = el('input', { type: 'date', value: dateUtil.today() });
+  const kapsam = el('select', {}, [
+    el('option', { value: '' }, ['Tüm kampüsler (katalog)']),
+    ...state.campuses.map((c) => el('option', { value: c.id, selected: c.id === state.campusId },
+      [`Yalnızca ${shortName(c.name)}`])),
+  ]);
+  const aciklama = el('input', { placeholder: 'Örn: tedarikçi zammı, tarife değişikliği' });
+  const ekleBtn = el('button.btn.btn-primary', { text: 'Fiyatı Tanımla' });
+
+  async function yenile() {
+    const data = await api.get(`/api/products/${product.id}/prices`);
+    govde.replaceChildren(table([
+      { label: 'Geçerlilik', render: (r) => el('div', {}, [
+        el('strong', { text: fmt.date(r.effective_from) }),
+        r.is_future ? badge('Yürürlüğe girmedi', 'warn') : null,
+      ]) },
+      { label: 'Kapsam', value: (r) => (r.campus_name ? shortName(r.campus_name) : 'Tüm kampüsler') },
+      { label: 'Satış (KDV dahil)', num: true, render: (r) => el('strong', { text: fmt.money(r.sale_price) }) },
+      { label: 'Açıklama', value: (r) => r.note || '—', wrap: true },
+      { label: 'Giren', value: (r) => r.created_by_name || '—' },
+      {
+        label: '',
+        render: (r) => (r.is_future && canWrite('products')
+          ? el('button.btn.btn-sm.btn-danger', {
+            text: 'İptal',
+            onclick: async () => {
+              try {
+                await api.del(`/api/products/${product.id}/prices/${r.id}`);
+                toast('İleri tarihli fiyat iptal edildi.');
+                await yenile();
+                onDone?.();
+              } catch (err) { toast(err.message, 'error'); }
+            },
+          })
+          : el('span.muted', { text: '—', title: 'Yürürlüğe girmiş fiyat silinemez' })),
+      },
+    ], data.items, { emptyText: 'Henüz fiyat tanımı yok.' }));
+  }
+
+  const m = modal({
+    title: `🗓️ Fiyat Takvimi — ${product.name}`,
+    wide: true,
+    body: [
+      hata,
+      alertBox('info', 'Satış fiyatı tarihten itibaren geçerlidir',
+        'İleri tarihli fiyat girerseniz bugünkü satışlar eski fiyattan devam eder, '
+        + 'belirttiğiniz gün kendiliğinden yürürlüğe girer. Geçmişe dönük raporlar da '
+        + 'o dönemde geçerli olan fiyatı kullanır.'),
+      canWrite('products') ? el('div.grid.grid-4', { style: 'align-items:end' }, [
+        el('label.field', {}, [el('span', { text: 'Satış fiyatı (KDV dahil)' }), fiyat]),
+        el('label.field', {}, [el('span', { text: 'Geçerlilik tarihi' }), tarih]),
+        el('label.field', {}, [el('span', { text: 'Kapsam' }), kapsam]),
+        el('div', {}, [ekleBtn]),
+      ]) : null,
+      canWrite('products') ? el('label.field', {}, [el('span', { text: 'Açıklama' }), aciklama]) : null,
+      govde,
+    ],
+    actions: [el('button.btn', { text: 'Kapat', onclick: () => m.close() })],
+  });
+
+  ekleBtn.addEventListener('click', async () => {
+    hata.hidden = true;
+    const deger = Number(fiyat.value);
+    if (!(deger > 0)) {
+      hata.textContent = 'Satış fiyatı girin.';
+      hata.hidden = false;
+      return;
+    }
+    ekleBtn.disabled = true;
+    try {
+      await api.post(`/api/products/${product.id}/prices`, {
+        salePrice: deger,
+        effectiveFrom: tarih.value || dateUtil.today(),
+        campusId: kapsam.value ? Number(kapsam.value) : null,
+        note: aciklama.value.trim() || null,
+      });
+      fiyat.value = '';
+      aciklama.value = '';
+      toast(tarih.value > dateUtil.today()
+        ? `Fiyat ${fmt.date(tarih.value)} tarihinde yürürlüğe girecek.`
+        : 'Fiyat tanımlandı.');
+      await yenile();
+      onDone?.();
+    } catch (err) {
+      hata.textContent = err.message;
+      hata.hidden = false;
+    } finally {
+      ekleBtn.disabled = false;
+    }
+  });
+
+  await yenile();
+}
+
+/** Ürün kartında alış fiyatının nereden geldiğini anlatan satır. */
+function alisFiyatiAciklamasi(product) {
+  if (!product) {
+    return 'Alış fiyatı ürün kartında tutulmaz; ilk mal girişiyle (fatura veya '
+      + 'açılış stoğu) kendiliğinden oluşur.';
+  }
+  const fiyat = product.effective_purchase_price ?? product.purchase_price ?? 0;
+  if (product.purchase_price_source === 'ALIM' && product.last_purchase_date) {
+    return `${fmt.money(fiyat)} — ${fmt.date(product.last_purchase_date)} tarihli mal girişinden `
+      + '(iskonto düşülmüş gerçek maliyet). Değiştirmek için yeni bir alım belgesi girin.';
+  }
+  if (fiyat > 0) {
+    return `${fmt.money(fiyat)} — başlangıç değeri. Bu ürün için henüz mal girişi yapılmadı; `
+      + 'ilk fatura girildiğinde gerçek maliyetle değişecek.';
+  }
+  return 'Henüz mal girişi yapılmadı, alış fiyatı oluşmadı. Kâr hesabı ilk faturadan sonra anlam kazanır.';
+}
+
 function openCampusPrice(product, onDone) {
   const campusName = state.campuses.find((c) => c.id === state.campusId)?.name ?? '';
   formModal({
     title: `Kampüs Fiyatı — ${product.name}`,
     fields: [
-      { name: 'purchasePrice', label: `Alış fiyatı (${shortName(campusName)})`, type: 'number', step: '0.01', min: '0',
-        value: product.campus_purchase_price ?? '', hint: `Boş bırakılırsa katalog fiyatı (${fmt.money(product.purchase_price)}) kullanılır.` },
+      // Kampüs alış fiyatı da elle girilmez: o kampüse en son hangi fiyatla
+      // mal girdiyse maliyet odur. Aynı ürün Esenyurt'a başka, Çorlu'ya
+      // başka fiyata gelebilir ve stok değeri buna göre oluşur.
+      {
+        name: '__alisBilgi', type: 'info', label: `Alış fiyatı (${shortName(campusName)})`,
+        value: alisFiyatiAciklamasi(product),
+      },
       { name: 'salePrice', label: `Satış fiyatı (${shortName(campusName)})`, type: 'number', step: '0.01', min: '0',
         value: product.campus_sale_price ?? '', hint: `Boş bırakılırsa katalog fiyatı (${fmt.money(product.sale_price)}) kullanılır.` },
       { name: 'criticalStock', label: 'Kritik stok', type: 'number', step: '1', min: '0', value: product.campus_critical_stock ?? '' },
