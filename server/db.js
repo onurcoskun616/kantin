@@ -68,6 +68,55 @@ function upgradeExistingSchema() {
   rebuildIfMissing('products', "'HAMMADDE'");   // SATIN_ALINAN/URETILEN -> + HAMMADDE
   rebuildIfMissing('users', "'MUHASEBE'");      // roller -> + MUHASEBE (on muhasebe)
   backfillProductPrices();
+  tightenPaymentCampus();
+}
+
+/**
+ * Tedarikci odemelerini KAMPUSE baglar (cari hesap kampus bazlidir).
+ *
+ * Eski surumde `supplier_payments.campus_id` bos birakilabiliyordu. Kampussuz
+ * bir odeme hangi kampusun borcunu kapattigini soylemez; bes kampusun bakiyesi
+ * o odeme yuzunden birbirine karisir. Once bos satirlar cikarilabildigi
+ * kadar doldurulur, sonra sutun ZORUNLU hale getirilir.
+ *
+ * Cikarilamayan satir kalirsa sutun eski haliyle BIRAKILIR. Bilinmeyen bir
+ * kampusa "en yakin tahmin"le para yazmak, bos birakmaktan daha kotudur:
+ * yanlis kampusun bakiyesi sessizce duzelmis gorunur. Kullanici o odemeleri
+ * arayuzde "kampus atanmamis" uyarisiyla gorur; duzelttikten sonraki ilk
+ * acilista sutun kendiliginden zorunlu olur.
+ */
+function tightenPaymentCampus() {
+  if (!tableExists('supplier_payments') || !tableExists('purchases')) return;
+  const sutun = db.prepare('PRAGMA table_info(supplier_payments)').all()
+    .find((c) => c.name === 'campus_id');
+  if (!sutun || sutun.notnull) return;   // zaten zorunlu
+
+  // 1) Odeme bir alim belgesine baglanmissa kampus o belgeden gelir.
+  db.exec(`
+    UPDATE supplier_payments SET campus_id = (
+      SELECT p.campus_id FROM purchases p WHERE p.id = supplier_payments.purchase_id)
+     WHERE campus_id IS NULL AND purchase_id IS NOT NULL
+       AND EXISTS (SELECT 1 FROM purchases p WHERE p.id = supplier_payments.purchase_id)`);
+
+  // 2) Tedarikciden yalnizca TEK kampus alim yapmissa odeme de onundur.
+  db.exec(`
+    UPDATE supplier_payments SET campus_id = (
+      SELECT MIN(p.campus_id) FROM purchases p
+       WHERE p.supplier_id = supplier_payments.supplier_id AND p.status <> 'IPTAL')
+     WHERE campus_id IS NULL
+       AND (SELECT COUNT(DISTINCT p.campus_id) FROM purchases p
+             WHERE p.supplier_id = supplier_payments.supplier_id AND p.status <> 'IPTAL') = 1`);
+
+  const kalan = db.prepare('SELECT COUNT(*) AS n FROM supplier_payments WHERE campus_id IS NULL').get().n;
+  if (kalan) {
+    console.log(
+      `[SEMA] ${kalan} tedarikci odemesinin kampusu belirlenemedi; kampus alani `
+      + 'simdilik zorunlu yapilmadi. Tedarikciler ekranindan atayin.'
+    );
+    return;
+  }
+  rebuildTable('supplier_payments');
+  console.log('[SEMA] Tedarikci odemeleri kampuse baglandi (cari hesap kampus bazli).');
 }
 
 /**
@@ -187,6 +236,12 @@ function rebuildTable(table) {
     const shared = oldColumns.filter((c) => newColumns.includes(c)).join(', ');
     db.exec(`INSERT INTO ${table} (${shared}) SELECT ${shared} FROM ${tempName}`);
     db.exec(`DROP TABLE ${tempName}`);
+    // Indeksler tabloyla birlikte yeniden adlandirilip gecici tabloyla
+    // DUSER; schema.sql'deki tanimlariyla hemen geri kurulur. Aksi halde
+    // bir sonraki acilisa kadar indekssiz calisirdik.
+    for (const stmt of schema.match(
+      new RegExp(`CREATE (?:UNIQUE )?INDEX IF NOT EXISTS [^;]*?\\bON ${table}\\s*\\([^;]*?\\);`, 'g')
+    ) || []) db.exec(stmt);
     db.exec('COMMIT');
     console.log(`[SEMA] ${table} tablosu yukseltildi.`);
   } catch (err) {

@@ -415,11 +415,19 @@ CREATE TABLE IF NOT EXISTS supplier_return_lines (
 );
 CREATE INDEX IF NOT EXISTS idx_return_lines_return ON supplier_return_lines(return_id);
 
+-- ---------------------------------------------------------------------
 -- Tedarikciye yapilan odemeler (cari hesap)
+--
+-- CARI HESAP KAMPUS BAZLIDIR. Tedarikci KARTI ortaktir (tek firma, tek
+-- VKN, tek adres) ama HESABI degildir: mal hangi kampuse girdiyse borc o
+-- kampusundur, odemeyi de o kampus yapar. Bu yuzden `campus_id` zorunlu:
+-- kampussuz bir odeme hangi kampusun borcunu kapattigini soylemez ve
+-- bes kampusun bakiyesi birbirine karisir.
+-- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS supplier_payments (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   supplier_id  INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
-  campus_id    INTEGER REFERENCES campuses(id) ON DELETE SET NULL,
+  campus_id    INTEGER NOT NULL REFERENCES campuses(id) ON DELETE RESTRICT,
   purchase_id  INTEGER REFERENCES purchases(id) ON DELETE SET NULL,
   amount       REAL    NOT NULL,
   payment_date TEXT    NOT NULL,
@@ -428,6 +436,8 @@ CREATE TABLE IF NOT EXISTS supplier_payments (
   created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_payments_supplier_campus
+  ON supplier_payments(supplier_id, campus_id, payment_date);
 
 -- ---------------------------------------------------------------------
 -- Fire / zayiat

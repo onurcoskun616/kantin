@@ -1,6 +1,6 @@
 /** Ürün kataloğu, fiyat/kâr yönetimi ve tedarikçiler. */
 import { api } from '../api.js';
-import { state, canWrite } from '../app.js';
+import { state, canWrite, campusName } from '../app.js';
 import { el, card, stat, table, fmt, badge, modal, toast, formModal, deltaCell, alertBox, empty, shortName, dateUtil, confirmDialog } from '../ui.js';
 import { createProductPicker } from '../urun-secici.js';
 
@@ -357,36 +357,74 @@ function openCategories(categories, onDone) {
   });
 }
 
-/* ============================ Tedarikçiler ========================== */
+/* ============================ Tedarikçiler ==========================
+ *
+ * Tedarikçi KARTI tüm kampüslerde ortaktır: tek firma, tek VKN, tek adres.
+ * Her kampüs için ayrı "Anadolu Gıda" kartı açmak e-Fatura eşleştirmesini
+ * ve öğrenilmiş ürün eşleştirmelerini böler.
+ *
+ * Tedarikçi HESABI ortak değildir: mal hangi kampüse girdiyse borç o
+ * kampüsündür, ödemeyi de o kampüs yapar. Bu yüzden listede görünen bakiye
+ * her zaman ÜSTTEKİ KAMPÜS SEÇİCİDE seçili kampüsün bakiyesidir.
+ * ------------------------------------------------------------------- */
 export async function renderSuppliers(root) {
   const container = el('div.grid');
   root.replaceChildren(container);
   await draw();
 
   async function draw() {
-    const data = await api.get('/api/suppliers');
+    const data = await api.get('/api/suppliers', { campusId: state.campusId });
+    const kampusli = !!data.scope?.campusId;
     container.replaceChildren();
 
     container.append(el('div.row', { style: 'justify-content:space-between' }, [
       el('h3', { text: 'Tedarikçiler' }),
       el('div.btn-row', {}, [
         el('button.btn', { text: '🔗 Ürün Eşleştirmeleri', onclick: () => openAliases(null, draw) }),
-        canWrite('products') ? el('button.btn.btn-primary', { text: '+ Yeni Tedarikçi', onclick: () => openSupplierForm(null, draw) }) : null,
+        canWrite('suppliers') ? el('button.btn.btn-primary', { text: '+ Yeni Tedarikçi', onclick: () => openSupplierForm(null, draw) }) : null,
       ]),
     ]));
+
+    const borclular = data.items.filter((r) => (r.campus_debt || 0) > 0.005);
+    const toplamBorc = borclular.reduce((t, r) => t + r.campus_debt, 0);
+    if (kampusli) {
+      container.append(card(null, [
+        el('div.grid.grid-3', {}, [
+          stat('Kampüs', shortName(data.scope.campusName), { sub: 'Bakiyeler bu kampüse aittir' }),
+          stat('Borçlu Olunan Firma', String(borclular.length), { sub: `${data.items.length} tedarikçiden` }),
+          stat('Toplam Borç', fmt.money(toplamBorc), { tone: toplamBorc > 0 ? 'warn' : 'ok' }),
+        ]),
+        el('p.card-note', {
+          text: 'Tedarikçi kartı tüm kampüslerde ortaktır; cari hesabı değildir. '
+            + 'Mal hangi kampüse girdiyse borç o kampüsündür, ödemeyi de o kampüs yapar. '
+            + 'Başka bir kampüsün bakiyesi için yukarıdaki kampüs seçiciyi değiştirin.',
+        }),
+      ], { tight: true }));
+    }
 
     container.append(card(null, [
       table([
         { label: 'Tedarikçi', value: (r) => r.name, wrap: true },
-        { label: 'Telefon', value: (r) => r.phone || '—' },
         { label: 'Vergi No', value: (r) => r.tax_no || '—' },
-        { label: 'E-posta', value: (r) => r.email || '—' },
+        { label: 'Telefon', value: (r) => r.phone || '—' },
+        ...(kampusli ? [
+          {
+            label: `${shortName(data.scope.campusName)} Alım`, num: true,
+            value: (r) => (r.campus_purchase ? fmt.money(r.campus_purchase) : '—'),
+          },
+          {
+            label: `${shortName(data.scope.campusName)} Bakiye`, num: true,
+            render: (r) => (Math.abs(r.campus_debt || 0) < 0.005
+              ? el('span.muted', { text: '—' })
+              : badge(fmt.money(r.campus_debt), r.campus_debt > 0 ? 'warn' : 'ok')),
+          },
+        ] : []),
         { label: 'Durum', render: (r) => (r.is_active ? badge('Aktif', 'ok') : badge('Pasif')) },
         {
           label: '', render: (r) => el('div.btn-row', {}, [
             el('button.btn.btn-sm', { text: 'Cari Hesap', onclick: () => showSupplier(r.id, draw) }),
             el('button.btn.btn-sm', { text: '🔗 Eşleştirmeler', onclick: () => openAliases(r, draw) }),
-            canWrite('products') ? el('button.btn.btn-sm', { text: 'Düzenle', onclick: () => openSupplierForm(r, draw) }) : null,
+            canWrite('suppliers') ? el('button.btn.btn-sm', { text: 'Düzenle', onclick: () => openSupplierForm(r, draw) }) : null,
           ]),
         },
       ], data.items, { emptyText: 'Tedarikçi kaydı yok.' }),
@@ -557,10 +595,20 @@ async function openAliases(supplier, onDone) {
   await yenile();
 }
 
+/**
+ * CARİ HESAP — KAMPÜS BAZLI
+ *
+ * Üstte seçili kampüsün hesabı, altında tüm kampüslerin dökümü vardır.
+ * Tek bir toplam rakam yanıltıcıdır: aynı firmaya Esenyurt borçluyken
+ * Çorlu fazla ödeme yapmış olabilir ve toplam "borç yok" der.
+ */
 async function showSupplier(id, onDone) {
-  const data = await api.get(`/api/suppliers/${id}`);
+  const data = await api.get(`/api/suppliers/${id}`, { campusId: state.campusId });
+  const kapsam = data.scope || { campusId: null, campusName: 'Tüm kampüsler' };
+  const cokKampus = (data.campusBalances || []).length > 1;
+
   modal({
-    title: `${data.name} — Cari Hesap`,
+    title: `${data.name} — Cari Hesap (${shortName(kapsam.campusName)})`,
     wide: true,
     body: [
       el('div.grid.grid-4', {}, [
@@ -572,25 +620,74 @@ async function showSupplier(id, onDone) {
         stat('Toplam Ödeme', fmt.money(data.balance.totalPaid)),
         stat('Bakiye (Borç)', fmt.money(data.balance.debt), { tone: data.balance.debt > 0 ? 'warn' : 'ok' }),
       ]),
-      el('p.card-note', { text: 'Bakiye = Alım − İade − Ödeme. İade edilen mal borçtan düşülür.' }),
-      canWrite("products") ? el('button.btn.btn-primary', {
-        text: '+ Ödeme Kaydet',
-        onclick: () => formModal({
-          title: 'Tedarikçiye Ödeme',
-          fields: [
-            { name: 'amount', label: 'Tutar (TL)', type: 'number', step: '0.01', min: '0.01', required: true },
-            { name: 'paymentDate', label: 'Tarih', type: 'date', value: new Date().toISOString().slice(0, 10), required: true },
-            { name: 'method', label: 'Ödeme şekli', type: 'select', options: ['NAKIT', 'HAVALE', 'CEK', 'KART'].map((m) => ({ value: m, label: m })) },
-            { name: 'note', label: 'Açıklama' },
-          ],
-          onSubmit: async (v) => {
-            await api.post(`/api/suppliers/${id}/payments`, { ...v, campusId: state.campusId });
-            toast('Ödeme kaydedildi.');
-            document.querySelector('.modal-backdrop')?.remove();
-            onDone();
+      el('p.card-note', {
+        text: kapsam.campusId
+          ? `Bakiye = Alım − İade − Ödeme. Bu rakamlar yalnızca ${shortName(kapsam.campusName)} `
+            + 'kampüsüne aittir; her kampüsün bu firmayla ayrı hesabı vardır.'
+          : 'Bakiye = Alım − İade − Ödeme. Bu rakam TÜM kampüslerin toplamıdır; '
+            + 'ödeme yaparken hangi kampüs adına olduğunu seçmeniz gerekir.',
+      }),
+
+      /* --- Kampüs kampüs döküm --- */
+      ...(cokKampus ? [
+        el('h4', { text: 'Kampüs Hesapları', style: 'font-size:13px;color:var(--text-muted)' }),
+        table([
+          { label: 'Kampüs', value: (r) => shortName(r.campusName) },
+          { label: 'Alım', num: true, value: (r) => fmt.money(r.totalPurchase) },
+          { label: 'İade', num: true, value: (r) => (r.totalReturn ? fmt.money(r.totalReturn) : '—') },
+          { label: 'Ödeme', num: true, value: (r) => fmt.money(r.totalPaid) },
+          {
+            label: 'Bakiye', num: true,
+            render: (r) => (Math.abs(r.debt) < 0.005
+              ? el('span.muted', { text: '—' })
+              : badge(fmt.money(r.debt), r.debt > 0 ? 'warn' : 'ok')),
           },
+          { label: 'Son Alım', value: (r) => (r.lastPurchaseDate ? fmt.date(r.lastPurchaseDate) : '—') },
+        ], data.campusBalances, {
+          emptyText: 'Bu firmayla hiçbir kampüsün hesabı yok.',
+          rowClass: (r) => (r.campusId === kapsam.campusId ? 'row-active' : ''),
         }),
+      ] : []),
+
+      /* --- Kampüsü atanmamış eski ödemeler --- */
+      ...(data.unassignedPayments?.length ? [
+        alertBox('warning', 'Kampüsü atanmamış ödeme var',
+          `${data.unassignedPayments.length} ödeme hiçbir kampüsün bakiyesine girmiyor. `
+          + 'Aşağıdan hangi kampüs adına yapıldığını seçin.'),
+        table([
+          { label: 'Tarih', value: (r) => fmt.date(r.payment_date) },
+          { label: 'Tutar', num: true, value: (r) => fmt.money(r.amount) },
+          { label: 'Şekil', value: (r) => r.method },
+          {
+            label: '', render: (r) => (canWrite('suppliers') ? el('button.btn.btn-sm', {
+              text: 'Kampüse Ata',
+              onclick: () => atamaPenceresi(id, r, onDone),
+            }) : null),
+          },
+        ], data.unassignedPayments),
+      ] : []),
+
+      canWrite('suppliers') ? el('button.btn.btn-primary', {
+        text: '+ Ödeme Kaydet',
+        onclick: () => odemePenceresi(id, data, kapsam, onDone),
       }) : null,
+
+      el('h4', { text: 'Hesap Ekstresi', style: 'font-size:13px;color:var(--text-muted)' }),
+      table([
+        { label: 'Tarih', value: (r) => fmt.date(r.date) },
+        {
+          label: 'İşlem', render: (r) => badge(
+            { ALIM: 'Alım', IADE: 'İade', ODEME: 'Ödeme' }[r.kind] || r.kind,
+            r.kind === 'ALIM' ? 'warn' : 'ok'
+          ),
+        },
+        { label: 'Belge / Şekil', value: (r) => r.ref || '—', wrap: true },
+        ...(kapsam.campusId ? [] : [{ label: 'Kampüs', value: (r) => shortName(campusName(r.campusId)) }]),
+        { label: 'Borç', num: true, value: (r) => (r.debit ? fmt.money(r.debit) : '—') },
+        { label: 'Alacak', num: true, value: (r) => (r.credit ? fmt.money(r.credit) : '—') },
+        { label: 'Bakiye', num: true, value: (r) => fmt.money(r.balance) },
+      ], data.ledger || [], { emptyText: 'Bu kampüste bu firmayla hareket yok.' }),
+
       el('h4', { text: 'Alım Belgeleri', style: 'font-size:13px;color:var(--text-muted)' }),
       table([
         { label: 'Tarih', value: (r) => fmt.date(r.document_date) },
@@ -611,11 +708,72 @@ async function showSupplier(id, onDone) {
       el('h4', { text: 'Ödemeler', style: 'font-size:13px;color:var(--text-muted)' }),
       table([
         { label: 'Tarih', value: (r) => fmt.date(r.payment_date) },
+        { label: 'Kampüs', value: (r) => (r.campus_name ? shortName(r.campus_name) : '⚠ atanmamış') },
         { label: 'Tutar', num: true, value: (r) => fmt.money(r.amount) },
         { label: 'Şekil', value: (r) => r.method },
         { label: 'Not', value: (r) => r.note || '—', wrap: true },
       ], data.payments, { emptyText: 'Ödeme kaydı yok.' }),
     ],
+  });
+}
+
+/**
+ * Ödeme kaydı.
+ *
+ * Kampüs seçimi ZORUNLUDUR ve ön tanımlı değer seçili kampüstür: ödeme
+ * hangi kampüsün borcunu kapattığını söylemezse beş kampüsün bakiyesi
+ * birbirine karışır.
+ */
+function odemePenceresi(id, data, kapsam, onDone) {
+  // Kampus listesi hesap dokumunden gelir (borclar da yazar). Firmayla hic
+  // hareketi olmayan bir kurulumda dokum bos kalabilir; o zaman kullanicinin
+  // gorebildigi kampuslere duseriz, yoksa form secenegi olmayan bir acilir
+  // listeyle kilitlenirdi.
+  const secenekler = ((data.campusBalances || []).length
+    ? data.campusBalances.map((r) => ({
+      value: String(r.campusId),
+      label: `${shortName(r.campusName)}${r.debt > 0.005 ? ` — borç ${fmt.money(r.debt)}` : ''}`,
+    }))
+    : state.campuses.map((c) => ({ value: String(c.id), label: shortName(c.name) })));
+  formModal({
+    title: `${data.name} — Ödeme`,
+    fields: [
+      {
+        name: 'campusId', label: 'Hangi kampüs adına?', type: 'select', required: true,
+        value: String(kapsam.campusId || state.campusId || secenekler[0]?.value || ''),
+        options: secenekler,
+        hint: 'Ödeme yalnızca seçilen kampüsün borcunu kapatır.',
+      },
+      { name: 'amount', label: 'Tutar (TL)', type: 'number', step: '0.01', min: '0.01', required: true },
+      { name: 'paymentDate', label: 'Tarih', type: 'date', value: new Date().toISOString().slice(0, 10), required: true },
+      { name: 'method', label: 'Ödeme şekli', type: 'select', options: ['NAKIT', 'HAVALE', 'CEK', 'KART'].map((m) => ({ value: m, label: m })) },
+      { name: 'note', label: 'Açıklama' },
+    ],
+    onSubmit: async (v) => {
+      await api.post(`/api/suppliers/${id}/payments`, { ...v, campusId: Number(v.campusId) });
+      toast('Ödeme kaydedildi.');
+      document.querySelector('.modal-backdrop')?.remove();
+      onDone();
+    },
+  });
+}
+
+/** Kampüsü belirsiz kalmış eski bir ödemeyi bir kampüse bağlar. */
+function atamaPenceresi(supplierId, odeme, onDone) {
+  formModal({
+    title: `${fmt.money(odeme.amount)} — Kampüse Ata`,
+    fields: [{
+      name: 'campusId', label: 'Bu ödeme hangi kampüs adına yapıldı?', type: 'select', required: true,
+      value: String(state.campusId || ''),
+      options: state.campuses.map((c) => ({ value: String(c.id), label: shortName(c.name) })),
+    }],
+    submitText: 'Ata',
+    onSubmit: async (v) => {
+      await api.put(`/api/suppliers/${supplierId}/payments/${odeme.id}/campus`, { campusId: Number(v.campusId) });
+      toast('Ödeme kampüse bağlandı.');
+      document.querySelector('.modal-backdrop')?.remove();
+      onDone();
+    },
   });
 }
 

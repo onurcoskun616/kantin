@@ -334,6 +334,9 @@ input:disabled, select:disabled { background: var(--surface-2); color: var(--tex
 .pos { color: var(--success); font-weight: 650; }
 .neg { color: var(--danger); font-weight: 650; }
 .muted { color: var(--text-muted); }
+
+/* Listede "su an baktiginiz kayit" satiri (or. cari hesapta secili kampus) */
+tr.row-active > td { background: var(--brand-soft); font-weight: 600; }
 .small { font-size: 12px; }
 .nowrap { white-space: nowrap; }
 

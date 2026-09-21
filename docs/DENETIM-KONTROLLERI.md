@@ -242,7 +242,7 @@ ve bu fark denetimi doğrudan etkiler:
 | Ne oldu? | Mal bizde bozuldu / kırıldı / ikram edildi | Mal tedarikçiye geri gönderildi |
 | Maliyeti kim taşır? | Kantin | Tedarikçi (alacaklandırır) |
 | Fire raporunda | ✓ görünür | ✗ görünmez |
-| Cari hesapta | etkisi yok | borcu azaltır |
+| Cari hesapta | etkisi yok | **iadeyi yapan kampüsün** borcunu azaltır |
 | Stok etkisi | düşer | düşer |
 
 İade fire olarak kaydedilirse kantin, taşımadığı bir maliyeti üstlenmiş görünür ve
@@ -252,6 +252,20 @@ hiç kaydedilmezse mal satılmış sayılır ve **olmayan bir ciro açığı** d
 İade ekranı, iade belgesini ilgili alım belgesinden doldurabilir; böylece fiyatlar
 faturayla birebir eşleşir. Aynı irsaliye numarası ikinci kez girilemez, üretilen
 ürünler (tost, çay) iade edilemez ve iadesi olan alım belgesi iptal edilemez.
+
+### Cari hesap kampüs bazlıdır
+
+Tedarikçi **kartı** beş kampüste ortaktır (tek firma, tek VKN); **hesabı**
+değildir. Mal hangi kampüse girdiyse borç o kampüsündür, iade ve ödeme de o
+kampüsün hesabına işler.
+
+Denetim açısından önemi: kampüs bakiyeleri tek torbada toplanırsa bir kampüsün
+ödenmemiş borcu, başka bir kampüsün fazla ödemesiyle gizlenir ve "kime ne kadar
+borçluyuz" sorusunun cevabı hiçbir kampüs için doğru çıkmaz. Ödeme kaydında
+kampüs seçimi bu yüzden **zorunludur**; yanlış kampüse girilen ödeme silinmez,
+denetim kaydı bırakarak düzeltilir.
+
+Ayrıntılar: **[TEDARIKCI-CARI-HESAP.md](TEDARIKCI-CARI-HESAP.md)**
 
 **Denetim sinyali:** bir tedarikçide iade oranı %5'i geçiyorsa rapor onu işaretler.
 Tekrar eden "bozuk mal" iadeleri ya tedarikçi sorunudur ya da kayıp/kaçağı iade

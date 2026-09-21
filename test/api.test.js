@@ -1382,7 +1382,7 @@ describe('On muhasebe yetkileri', () => {
     const s = await asAcc('POST', '/api/suppliers', { name: 'Muhasebenin Açtığı', taxNo: '4242424242' });
     assert.equal(s.status, 200, JSON.stringify(s.data));
     const p = await asAcc('POST', `/api/suppliers/${supplierId}/payments`,
-      { amount: 100, paymentDate: daysAgo(1), method: 'HAVALE' });
+      { campusId, amount: 100, paymentDate: daysAgo(1), method: 'HAVALE' });
     assert.equal(p.status, 200, JSON.stringify(p.data));
   });
 
@@ -2011,5 +2011,134 @@ describe('Urun eslestirme ogrenme', () => {
     const b = await ok('GET', `/api/products/aliases?supplierId=${tedB}`);
     assert.ok(a.items.some((x) => x.source_name === 'DOGAL KAYNAK SUYU'), 'genel kayit A"da gorunmeli');
     assert.ok(b.items.some((x) => x.source_name === 'DOGAL KAYNAK SUYU'), 'genel kayit B"de de gorunmeli');
+  });
+});
+
+/**
+ * CARI HESAP KAMPUS BAZLI
+ *
+ * Tedarikci karti ortaktir, hesabi degildir. Bir kampusun odemesi baska bir
+ * kampusun borcunu kapatmamalidir; aksi halde bes kampusun bakiyesi birbirine
+ * karisir ve hicbiri dogru cikmaz.
+ */
+describe('Kampus bazli tedarikci cari hesabi', () => {
+  let kampusA; let kampusB; let tedarikci; let urun;
+
+  before(async () => {
+    kampusA = (await ok('POST', '/api/campuses', { name: 'Cari Kampüs A', code: 'CRA' })).id;
+    kampusB = (await ok('POST', '/api/campuses', { name: 'Cari Kampüs B', code: 'CRB' })).id;
+    tedarikci = (await ok('POST', '/api/suppliers',
+      { name: 'Cari Test Gıda', taxNo: '1515151515' })).id;
+    urun = (await ok('POST', '/api/products',
+      { name: 'Cari Test Ürünü', salePrice: 20, vatRate: 10, unit: 'ADET' })).id;
+
+    // A kampusune 1000 TL (KDV dahil 1100), B kampusune 500 TL (550) mal girisi
+    await ok('POST', '/api/purchases', {
+      campusId: kampusA, supplierId: tedarikci, documentNo: 'CRA-001', documentDate: daysAgo(5),
+      lines: [{ productId: urun, quantity: 100, unitPrice: 10, vatRate: 10 }],
+    });
+    await ok('POST', '/api/purchases', {
+      campusId: kampusB, supplierId: tedarikci, documentNo: 'CRB-001', documentDate: daysAgo(4),
+      lines: [{ productId: urun, quantity: 50, unitPrice: 10, vatRate: 10 }],
+    });
+  });
+
+  test('odeme kampus secilmeden kaydedilemez', async () => {
+    const r = await api('POST', `/api/suppliers/${tedarikci}/payments`,
+      { amount: 100, paymentDate: daysAgo(1) });
+    assert.equal(r.status, 400, JSON.stringify(r.data));
+    assert.match(r.data.error, /kampus/i);
+  });
+
+  test('odeme YALNIZCA odendigi kampusun borcunu kapatir', async () => {
+    await ok('POST', `/api/suppliers/${tedarikci}/payments`,
+      { campusId: kampusA, amount: 400, paymentDate: daysAgo(2), method: 'HAVALE' });
+
+    const a = await ok('GET', `/api/suppliers/${tedarikci}?campusId=${kampusA}`);
+    assert.equal(a.balance.totalPurchase, 1100);
+    assert.equal(a.balance.totalPaid, 400);
+    assert.equal(a.balance.debt, 700);
+
+    const b = await ok('GET', `/api/suppliers/${tedarikci}?campusId=${kampusB}`);
+    assert.equal(b.balance.totalPurchase, 550);
+    assert.equal(b.balance.totalPaid, 0, 'A kampusunun odemesi B"ye yazilmamali');
+    assert.equal(b.balance.debt, 550);
+  });
+
+  test('kampus dokumunde her kampus kendi satirinda', async () => {
+    const d = await ok('GET', `/api/suppliers/${tedarikci}`);
+    const a = d.campusBalances.find((r) => r.campusId === kampusA);
+    const b = d.campusBalances.find((r) => r.campusId === kampusB);
+    assert.equal(a.debt, 700);
+    assert.equal(b.debt, 550);
+    // Kapsam verilmezse grup toplami
+    assert.equal(d.balance.debt, 1250);
+    assert.equal(d.scope.campusId, null);
+  });
+
+  test('ekstre yuruyen bakiye verir', async () => {
+    const d = await ok('GET', `/api/suppliers/${tedarikci}?campusId=${kampusA}`);
+    assert.equal(d.ledger.length, 2, JSON.stringify(d.ledger));
+    assert.equal(d.ledger[0].kind, 'ALIM');
+    assert.equal(d.ledger[0].balance, 1100);
+    assert.equal(d.ledger[1].kind, 'ODEME');
+    assert.equal(d.ledger[1].balance, 700);
+    assert.ok(d.ledger.every((r) => r.campusId === kampusA), 'ekstre kampus disina tasmamali');
+  });
+
+  test('listede bakiye secili kampusun bakiyesidir', async () => {
+    const a = await ok('GET', `/api/suppliers?campusId=${kampusA}`);
+    assert.equal(a.scope.campusId, kampusA);
+    assert.equal(a.items.find((r) => r.id === tedarikci).campus_debt, 700);
+
+    const b = await ok('GET', `/api/suppliers?campusId=${kampusB}`);
+    assert.equal(b.items.find((r) => r.id === tedarikci).campus_debt, 550);
+  });
+
+  test('odeme baska kampusun belgesine baglanamaz', async () => {
+    const belgeler = await ok('GET', `/api/purchases?from=2000-01-01&to=2099-12-31&campusId=${kampusB}`);
+    const belgeB = belgeler.items.find((p) => p.document_no === 'CRB-001');
+    const r = await api('POST', `/api/suppliers/${tedarikci}/payments`,
+      { campusId: kampusA, amount: 50, paymentDate: daysAgo(1), purchaseId: belgeB.id });
+    assert.equal(r.status, 400, JSON.stringify(r.data));
+    assert.match(r.data.error, /baska bir kampuse|kampüse/i);
+  });
+
+  test('yanlis kampuse girilen odeme duzeltilebilir', async () => {
+    const odeme = await ok('POST', `/api/suppliers/${tedarikci}/payments`,
+      { campusId: kampusA, amount: 200, paymentDate: daysAgo(1), method: 'NAKIT' });
+    await ok('PUT', `/api/suppliers/${tedarikci}/payments/${odeme.id}/campus`, { campusId: kampusB });
+
+    const a = await ok('GET', `/api/suppliers/${tedarikci}?campusId=${kampusA}`);
+    const b = await ok('GET', `/api/suppliers/${tedarikci}?campusId=${kampusB}`);
+    assert.equal(a.balance.debt, 700, 'A kampusu duzeltmeden sonra eski bakiyesine donmeli');
+    assert.equal(b.balance.debt, 350, 'odeme B kampusune tasindi');
+  });
+
+  test('kampus yoneticisi yalnizca KENDI kampusunun hesabini gorur', async () => {
+    const eposta = `cari-yonetici-${Date.now()}@topkapiokullari.com`;
+    await ok('POST', '/api/users', {
+      email: eposta, fullName: 'Cari Kampüs Yöneticisi', role: 'KAMPUS_YONETICISI',
+      campusId: kampusA, password: 'CariParola123',
+    });
+    const giris = await api('POST', '/api/auth/login', { email: eposta, password: 'CariParola123' }, false);
+    assert.equal(giris.status, 200, JSON.stringify(giris.data));
+    const jeton = giris.data.token;
+
+    const res = await fetch(`${BASE}/api/suppliers/${tedarikci}`, {
+      headers: { Authorization: `Bearer ${jeton}` },
+    });
+    const d = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(d));
+    assert.equal(d.scope.campusId, kampusA);
+    assert.equal(d.balance.debt, 700);
+    assert.equal(d.campusBalances.length, 1, 'baska kampusun hesabini gormemeli');
+    assert.ok(d.payments.every((o) => o.campus_id === kampusA), 'baska kampusun odemesini gormemeli');
+
+    // Baska kampusun hesabini acikca isteyemez
+    const yasak = await fetch(`${BASE}/api/suppliers/${tedarikci}?campusId=${kampusB}`, {
+      headers: { Authorization: `Bearer ${jeton}` },
+    });
+    assert.equal(yasak.status, 403);
   });
 });

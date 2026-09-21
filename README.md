@@ -93,6 +93,12 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
   satırlar faturanın KDV oranı başına matrah/KDV toplamlarıyla anlık karşılaştırılır**;
   fark kalırsa kaydederken onay istenir. XML olmadan da mükerrer fatura koruması çalışır
 - Adım adım: **[docs/FATURA-GIRISI.md](docs/FATURA-GIRISI.md)**
+- **Kampüs bazlı cari hesap** — tedarikçi kartı tüm kampüslerde ortaktır
+  (tek firma, tek VKN), cari hesabı değildir: mal hangi kampüse girdiyse borç o
+  kampüsündür ve ödemeyi de o kampüs yapar. Ödeme kaydederken hangi kampüs adına
+  olduğu zorunlu olarak sorulur; Esenyurt'un ödemesi Çorlu'nun borcunu kapatmaz.
+  Cari Hesap penceresi kampüs kampüs dökümü ve yürüyen bakiyeli ekstre verir.
+  Ayrıntılar: **[docs/TEDARIKCI-CARI-HESAP.md](docs/TEDARIKCI-CARI-HESAP.md)**
 - **Tedarikçi ürün eşleştirmesi (öğrenen)** — aynı ürün her faturada aynı adla
   gelmez ("AYRAN 200 ML" / "KUTU AYRAN" / "AYRAN PK"). Bir kez eşleştirdiğinizde
   sistem öğrenir; o tedarikçinin sonraki faturalarında kalem kendiliğinden
@@ -339,6 +345,7 @@ docs/
   KURULUM-DOCKER-CADDY.md Mevcut Docker + Caddy sunucusuna yan yana kurulum
   FATURA-GIRISI.md  Tedarikçi faturasını işleme: XML, karekod, elle giriş, dosya ekleme
   FIYAT-YONETIMI.md Alış fiyatı nereden gelir, tarih bazlı satış fiyatı
+  TEDARIKCI-CARI-HESAP.md Kampüs bazlı cari hesap: ortak kart, ayrı hesap
   VPS-KURULUM.md    Sunucu kurulum rehberi
   YOL-HARITASI.md   Atlanan noktalar ve sonraki aşama önerileri
   sablonlar/        Excel şablonu ve örnek e-Fatura XML'leri (biri iskontolu)

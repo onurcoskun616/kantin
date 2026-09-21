@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { state, canWrite, canDeleteDocuments } from '../app.js';
+import { state, canWrite, canDeleteDocuments, campusName } from '../app.js';
 import { el, card, stat, table, fmt, badge, modal, toast, confirmDialog, dateUtil, alertBox, empty, shortName, formModal } from '../ui.js';
 import { createProductPicker } from '../urun-secici.js';
 import { parseEFatura, matchProducts, matchSupplier, unitFromCode } from '../efatura.js';
@@ -541,14 +541,18 @@ async function openPurchaseForm(onDone) {
 
   const saveBtn = el('button.btn.btn-primary', { text: 'Belgeyi Kaydet' });
   const m = modal({
-    title: 'Yeni Mal Girişi (İrsaliye / Fatura)',
+    // Hangi kampuse mal girildigi basliktadir: stok O kampuse girer ve borc
+    // O kampusun cari hesabina yazilir. Yanlis kampus secili oldugunda hata
+    // iki yerde birden olusur ve sonradan ayiklanmasi zordur.
+    title: `Yeni Mal Girişi — ${shortName(campusName())}`,
     wide: true,
     body: [
       errorBox,
       el('div.row', { style: 'justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap' }, [
         el('small.muted', {
-          text: 'Faturayı elle girebilir, e-Fatura/e-Arşiv XML dosyasından otomatik doldurabilir '
-            + 'ya da kağıt faturadaki karekodu okutabilirsiniz.',
+          text: `Mal ${shortName(campusName())} kampüsüne girecek, borç da bu kampüsün cari `
+            + 'hesabına yazılacak. Faturayı elle girebilir, e-Fatura/e-Arşiv XML dosyasından '
+            + 'otomatik doldurabilir ya da kağıt faturadaki karekodu okutabilirsiniz.',
         }),
         el('div.btn-row', {}, [importBtn, qrBtn, xmlInput]),
       ]),
