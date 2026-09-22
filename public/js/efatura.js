@@ -240,12 +240,16 @@ function readLine(node) {
     netTotal,
     vatTotal,
     grossTotal: round2(netTotal + vatTotal),
-    // Ürün eşlemesi için kullanılabilecek kodlar: barkod, tedarikçi kodu, bizim kodumuz
-    codes: [
-      text(at(item, 'StandardItemIdentification'), 'ID'),
-      text(at(item, 'SellersItemIdentification'), 'ID'),
-      text(at(item, 'BuyersItemIdentification'), 'ID'),
-    ].filter(Boolean),
+    // Ürün eşlemesi için kullanılabilecek TÜM kodlar, UBL öncelik sırasıyla.
+    // ManufacturersItemIdentification uzun süre okunmuyordu; Türkiye'deki
+    // e-faturaların çoğunda GERÇEK BARKOD (GTIN) orada duruyor.
+    codes: itemCodes(item),
+    // Ürün kartının barkod alanına yalnızca BARKOD GÖRÜNÜMLÜ bir kod yazılır.
+    barcode: gtinOf(item),
+    // Tedarikçinin kendi stok kodu: eşleştirme bundan öğrenilir. Barkod
+    // değildir, ürün kartına yazılmaz.
+    supplierCode: text(at(item, 'SellersItemIdentification'), 'ID')
+      || text(at(item, 'BuyersItemIdentification'), 'ID') || null,
     note: text(item, 'Description'),
     mismatch: null,
   };
@@ -255,6 +259,36 @@ function readLine(node) {
     line.mismatch = `Faturada ${lineExtension.toFixed(2)} yazıyor, hesaplanan ${netTotal.toFixed(2)}`;
   }
   return line;
+}
+
+/**
+ * Satırdaki bütün ürün kodları, UBL'nin anlam sırasıyla.
+ *
+ * Standard  : GTIN (UBL tanımı gereği barkod)
+ * Manufacturers : üreticinin kodu — TR faturalarında çoğunlukla GTIN
+ * Sellers   : tedarikçinin kendi stok kodu (or. "130302")
+ * Buyers    : bizim kodumuz
+ */
+function itemCodes(item) {
+  return [
+    text(at(item, 'StandardItemIdentification'), 'ID'),
+    text(at(item, 'ManufacturersItemIdentification'), 'ID'),
+    text(at(item, 'SellersItemIdentification'), 'ID'),
+    text(at(item, 'BuyersItemIdentification'), 'ID'),
+  ].filter(Boolean);
+}
+
+/**
+ * Ürün kartına yazılabilecek GERÇEK barkod.
+ *
+ * Tedarikçinin iç stok kodunu ("130302") barkod alanına yazmak iki şeyi
+ * bozar: (1) raftaki ürün okutulduğunda eşleşmez, (2) barkod alanı TEKİLDİR
+ * ve başka bir tedarikçi aynı kısa kodu kullandığında ikinci ürün hiç
+ * açılamaz. Bu yüzden yalnızca GTIN görünümlü (8/12/13/14 hane, tamamı
+ * rakam) bir kod barkod sayılır; yoksa alan BOŞ bırakılır.
+ */
+function gtinOf(item) {
+  return itemCodes(item).find((c) => /^\d{8}$|^\d{12,14}$/.test(c.trim())) || null;
 }
 
 /**

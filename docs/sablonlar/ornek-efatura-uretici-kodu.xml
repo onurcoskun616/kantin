@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ÖRNEK e-FATURA — BARKOD ÜRETİCİ ALANINDA (UBL-TR 1.2)
+
+  Gerçek bir fatura değildir; firma ve VKN bilgileri uydurmadır.
+
+  Gerçek hayattaki bir durumu taklit eder: pek çok entegratör GTIN'i
+  StandardItemIdentification yerine ManufacturersItemIdentification
+  altına yazar, SellersItemIdentification'a da tedarikçinin KENDİ iç stok
+  kodunu koyar.
+
+  İçinde bilerek şunlar var:
+    1) Barkod yalnızca ManufacturersItemIdentification'da  -> okunmalı
+    2) Hiç GTIN yok, yalnızca tedarikçi stok kodu var       -> barkod BOŞ kalmalı
+       (tedarikçinin "A-77" gibi iç kodu barkod alanına yazılmamalıdır:
+        barkod tekildir ve başka bir tedarikçinin aynı kodu ürün açmayı
+        engellerdi)
+-->
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+         xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+         xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+  <cbc:UBLVersionID>2.1</cbc:UBLVersionID>
+  <cbc:CustomizationID>TR1.2</cbc:CustomizationID>
+  <cbc:ProfileID>TICARIFATURA</cbc:ProfileID>
+  <cbc:ID>URT2026000000777</cbc:ID>
+  <cbc:UUID>3f2a1b7c-9d4e-4a10-bc33-5e6f7a8b9c01</cbc:UUID>
+  <cbc:IssueDate>2026-09-18</cbc:IssueDate>
+  <cbc:InvoiceTypeCode>SATIS</cbc:InvoiceTypeCode>
+  <cbc:DocumentCurrencyCode>TRY</cbc:DocumentCurrencyCode>
+  <cbc:LineCountNumeric>2</cbc:LineCountNumeric>
+
+  <cac:AccountingSupplierParty>
+    <cac:Party>
+      <cac:PartyIdentification>
+        <cbc:ID schemeID="VKN">5550001111</cbc:ID>
+      </cac:PartyIdentification>
+      <cac:PartyName>
+        <cbc:Name>Üretici Kodlu Gıda Ltd. Şti.</cbc:Name>
+      </cac:PartyName>
+      <cac:PartyTaxScheme>
+        <cac:TaxScheme>
+          <cbc:Name>Ümraniye</cbc:Name>
+        </cac:TaxScheme>
+      </cac:PartyTaxScheme>
+    </cac:Party>
+  </cac:AccountingSupplierParty>
+
+  <cac:AccountingCustomerParty>
+    <cac:Party>
+      <cac:PartyIdentification>
+        <cbc:ID schemeID="VKN">9876543210</cbc:ID>
+      </cac:PartyIdentification>
+      <cac:PartyName>
+        <cbc:Name>Topkapı Okulları</cbc:Name>
+      </cac:PartyName>
+    </cac:Party>
+  </cac:AccountingCustomerParty>
+
+  <cac:TaxTotal>
+    <cbc:TaxAmount currencyID="TRY">54.00</cbc:TaxAmount>
+  </cac:TaxTotal>
+
+  <cac:LegalMonetaryTotal>
+    <cbc:LineExtensionAmount currencyID="TRY">1400.00</cbc:LineExtensionAmount>
+    <cbc:TaxExclusiveAmount currencyID="TRY">1400.00</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount currencyID="TRY">1454.00</cbc:TaxInclusiveAmount>
+    <cbc:PayableAmount currencyID="TRY">1454.00</cbc:PayableAmount>
+  </cac:LegalMonetaryTotal>
+
+  <!-- 1) Barkod ÜRETİCİ alanında: 100 x 9,00 = 900,00 · KDV %1 -->
+  <cac:InvoiceLine>
+    <cbc:ID>1</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="NIU">100</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="TRY">900.00</cbc:LineExtensionAmount>
+    <cac:TaxTotal>
+      <cbc:TaxAmount currencyID="TRY">9.00</cbc:TaxAmount>
+      <cac:TaxSubtotal>
+        <cbc:TaxableAmount currencyID="TRY">900.00</cbc:TaxableAmount>
+        <cbc:TaxAmount currencyID="TRY">9.00</cbc:TaxAmount>
+        <cbc:Percent>1</cbc:Percent>
+        <cac:TaxCategory>
+          <cac:TaxScheme>
+            <cbc:Name>KDV</cbc:Name>
+            <cbc:TaxTypeCode>0015</cbc:TaxTypeCode>
+          </cac:TaxScheme>
+        </cac:TaxCategory>
+      </cac:TaxSubtotal>
+    </cac:TaxTotal>
+    <cac:Item>
+      <cbc:Name>ÜRETİCİ KODLU AYRAN 180 ML</cbc:Name>
+      <cac:SellersItemIdentification>
+        <cbc:ID>130302</cbc:ID>
+      </cac:SellersItemIdentification>
+      <cac:ManufacturersItemIdentification>
+        <cbc:ID>8697462736435</cbc:ID>
+      </cac:ManufacturersItemIdentification>
+    </cac:Item>
+    <cac:Price>
+      <cbc:PriceAmount currencyID="TRY">9.00</cbc:PriceAmount>
+    </cac:Price>
+  </cac:InvoiceLine>
+
+  <!-- 2) Hic GTIN yok, yalnizca tedarikci kodu: 50 x 10,00 = 500,00 · KDV %10 -->
+  <cac:InvoiceLine>
+    <cbc:ID>2</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="NIU">50</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="TRY">500.00</cbc:LineExtensionAmount>
+    <cac:TaxTotal>
+      <cbc:TaxAmount currencyID="TRY">45.00</cbc:TaxAmount>
+      <cac:TaxSubtotal>
+        <cbc:TaxableAmount currencyID="TRY">500.00</cbc:TaxableAmount>
+        <cbc:TaxAmount currencyID="TRY">45.00</cbc:TaxAmount>
+        <cbc:Percent>10</cbc:Percent>
+        <cac:TaxCategory>
+          <cac:TaxScheme>
+            <cbc:Name>KDV</cbc:Name>
+            <cbc:TaxTypeCode>0015</cbc:TaxTypeCode>
+          </cac:TaxScheme>
+        </cac:TaxCategory>
+      </cac:TaxSubtotal>
+    </cac:TaxTotal>
+    <cac:Item>
+      <cbc:Name>KODSUZ PEYNİRLİ POĞAÇA</cbc:Name>
+      <cac:SellersItemIdentification>
+        <cbc:ID>A-77</cbc:ID>
+      </cac:SellersItemIdentification>
+    </cac:Item>
+    <cac:Price>
+      <cbc:PriceAmount currencyID="TRY">10.00</cbc:PriceAmount>
+    </cac:Price>
+  </cac:InvoiceLine>
+</Invoice>

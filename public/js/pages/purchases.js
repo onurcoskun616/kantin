@@ -338,7 +338,10 @@ async function openPurchaseForm(onDone) {
       // tanımlanırken bunlar forma önden yazılır (10. madde) ve belge
       // kaydedilirken eşleştirme bunlardan öğrenilir.
       sourceName: p0.sourceName || null,
+      // Ikisi AYRI: barkod urun kartina yazilir (yalnizca GTIN gorunumlu
+      // olan), tedarikcinin kendi stok kodu ise eslestirmeye ogretilir.
       sourceBarcode: p0.sourceBarcode || null,
+      sourceCode: p0.sourceCode || null,
       sourceUnit: p0.sourceUnit || null,
       aliasFactor: p0.aliasFactor ?? 1,
       matchedBy: p0.matchedBy || null,
@@ -417,7 +420,7 @@ async function openPurchaseForm(onDone) {
           if (line.sourceName) {
             droppedLines.push({
               sourceName: line.sourceName,
-              sourceCode: line.sourceBarcode || null,
+              sourceCode: line.sourceCode || line.sourceBarcode || null,
               unitCode: line.sourceUnit || null,
               quantity: line.quantity,
               unitPrice: line.unitPrice,
@@ -456,7 +459,12 @@ async function openPurchaseForm(onDone) {
         { name: 'name', label: 'Ürün adı', value: ad, required: true },
         {
           name: 'barcode', label: 'Barkod', value: line.sourceBarcode || '',
-          hint: line.sourceBarcode ? 'Faturadan okundu.' : 'Faturada barkod yoktu; sonra ekleyebilirsiniz.',
+          hint: line.sourceBarcode
+            ? 'Faturadan okundu.'
+            : (line.sourceCode
+              ? `Faturada barkod yok; "${line.sourceCode}" tedarikçinin kendi stok kodudur ve `
+                + 'barkod alanına yazılmaz. Raftaki ürünü okutup buraya ekleyebilirsiniz.'
+              : 'Faturada barkod yoktu; sonra ekleyebilirsiniz.'),
         },
         {
           name: 'categoryId', label: 'Kategori', type: 'select', value: '',
@@ -621,7 +629,8 @@ async function openPurchaseForm(onDone) {
         // Faturadaki ad/kod HER SATIRDA taşınır (eşleşmiş olsa bile):
         // kaydederken eşleştirme bundan öğrenilir/tazelenir.
         sourceName: line.name,
-        sourceBarcode: line.codes[0] || null,
+        sourceBarcode: line.barcode || null,
+        sourceCode: line.supplierCode || line.barcode || null,
         sourceUnit: unitFromCode(line.unitCode),
         aliasFactor: line.aliasFactor,
         matchedBy: line.matchedBy,
@@ -803,7 +812,8 @@ async function openPurchaseForm(onDone) {
           productId: l.productId, quantity: l.quantity, unitPrice: l.unitPrice,
           vatRate: l.vatRate, discountPct: l.discountPct, expiryDate: l.expiryDate,
           // Eşleştirmenin öğrenilmesi için: faturada bu kalem ne diyordu?
-          sourceName: l.sourceName, sourceCode: l.sourceBarcode, aliasFactor: l.aliasFactor,
+          sourceName: l.sourceName, sourceCode: l.sourceCode || l.sourceBarcode,
+          aliasFactor: l.aliasFactor,
         })),
       };
       if (!payload.lines.length) throw new Error('En az bir ürün satırı girmelisiniz.');
