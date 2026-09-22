@@ -369,11 +369,21 @@ export function matchProducts(lines, products, aliases = []) {
   });
 }
 
-/** Tedarikçiyi VKN üzerinden, olmazsa unvandan bulur. */
+/**
+ * Tedarikçiyi VKN üzerinden, olmazsa unvandan bulur.
+ *
+ * VKN karşılaştırmasında rakam dışındaki her şey atılır: fatura "1234567890"
+ * yazarken kart "123 456 78 90" ya da "1234567890 " tutuyor olabilir.
+ * Sunucudaki mükerrer VKN kontrolü de aynı şeyi yapar; ikisi ayrışırsa
+ * eşleşme "tedarikçi bulunamadı" der, kullanıcı yeni kart açmaya kalkar ve
+ * bu kez "bu VKN zaten tanımlı" hatası alır — çıkışsız bir döngü.
+ */
+const sadeceRakam = (v) => String(v || '').replace(/\D/g, '');
+
 export function matchSupplier(party, suppliers) {
-  const taxNo = String(party.taxNo || '').trim();
+  const taxNo = sadeceRakam(party.taxNo);
   if (taxNo) {
-    const hit = suppliers.find((s) => String(s.tax_no || '').trim() === taxNo);
+    const hit = suppliers.find((s) => sadeceRakam(s.tax_no) === taxNo);
     if (hit) return { supplier: hit, matchedBy: 'VKN' };
   }
   const name = normalize(party.name);
