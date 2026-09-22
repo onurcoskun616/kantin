@@ -11,7 +11,11 @@
  *   - Fise dahil gunlerin cirosunu kantin gorevlisi degistiremez
  *   - Genel mudurluk degistirirse fis 'FARKLI' olarak isaretlenir; kagittaki
  *     tutar ile sistemdeki tutar yan yana gorunur ve denetim izine yazilir
- *   - Fis silinemez (imzalanmis belgenin karsiligi sistemden kaldirilamaz)
+ *   - Fisi YALNIZCA sistem yoneticisi silebilir. Imzalanmis bir belgenin
+ *     karsiligi sistemden gelisiguzel kaldirilamamali; ama yanlis donemle ya
+ *     da yanlis kisi adina acilmis bir fis de sonsuza kadar duramaz. Silme
+ *     gerekce ister, tam icerigiyle denetim izine yazilir ve fise dahil
+ *     gunleri serbest birakir (yeniden teslim edilebilsinler).
  *
  * Dogrulama kodu: kagidin uzerindeki tutarin degistirilmedigini on muhasebenin
  * sisteme girmeden kontrol edebilmesi icin belge iceriginden uretilen kisa koddur.
@@ -209,6 +213,68 @@ handoverRoutes.post('/:id/confirm', async (ctx) => {
     campusId: header.campus_id, detail: { documentNo: header.document_no, total: header.total_amount }, ip: ctx.ip,
   });
   return getDetail(header.id);
+});
+
+/* ------------------------------- Silme ------------------------------ */
+/**
+ * Teslim fisini KALICI olarak siler — yalnizca SISTEM YONETICISI.
+ *
+ * Neden bu kadar dar bir yetki?
+ *   Fis, imzalanmis bir kagidin sistemdeki karsiligidir. Silinmesi o
+ *   imzanin karsiligini ortadan kaldirir; genel mudurluk ya da on muhasebe
+ *   icin bile fazla agir bir yetkidir. Ama yanlis donemle ya da yanlis kisi
+ *   adina acilmis bir fisin da bir cikisi olmali: aksi halde o gunlerin
+ *   cirosu sonsuza kadar kilitli kalir ve yeniden teslim edilemez.
+ *
+ * Silme sonrasi fise dahil gunler SERBEST KALIR (handover_id = NULL), yani
+ * dogru fis yeniden olusturulabilir. Belgenin tam icerigi denetim izine
+ * yazilir: silinen bir belgenin ne oldugu sonradan okunabilmelidir.
+ */
+handoverRoutes.delete('/:id', async (ctx) => {
+  requireRole(ctx.user, 'ADMIN');
+  const id = Number(ctx.params.id);
+  const header = get('SELECT * FROM revenue_handovers WHERE id = ?', [id]);
+  if (!header) throw notFound('Teslim fisi bulunamadi.');
+
+  // Gerekce ZORUNLU: imzali bir belge sebepsiz silinmemeli.
+  const reason = str(ctx.body.reason, 'Silme gerekcesi', { required: true, max: 300, min: 10 });
+  // Yanlis fisin kazara silinmesine karsi: belge numarasi elle yazilir.
+  const onay = str(ctx.body.documentNo, 'Belge numarasi', { required: true, max: 60 });
+  if (onay.trim().toUpperCase() !== String(header.document_no).toUpperCase()) {
+    throw badRequest(
+      `Yazdiginiz belge numarasi bu fisle eslesmedi. Silmek icin "${header.document_no}" yazin.`
+    );
+  }
+
+  const gunler = all(
+    'SELECT id, revenue_date, total_amount FROM daily_revenues WHERE handover_id = ? ORDER BY revenue_date',
+    [id]
+  );
+
+  tx(() => {
+    // Gunler once serbest birakilir; fis satiri sonra gider.
+    run('UPDATE daily_revenues SET handover_id = NULL WHERE handover_id = ?', [id]);
+    run('DELETE FROM revenue_handovers WHERE id = ?', [id]);
+  });
+
+  logAudit({
+    user: ctx.user, action: 'DELETE', entity: 'revenue_handovers', entityId: id,
+    campusId: header.campus_id,
+    detail: {
+      gerekce: reason,
+      documentNo: header.document_no,
+      donem: `${header.period_from} - ${header.period_to}`,
+      gunSayisi: header.day_count,
+      tutar: header.total_amount,
+      durum: header.status,
+      teslimEden: header.delivered_by_name,
+      teslimAlan: header.received_by_name,
+      dogrulamaKodu: header.verification_code,
+      serbestKalanGunler: gunler.map((g) => ({ tarih: g.revenue_date, tutar: g.total_amount })),
+    },
+    ip: ctx.ip,
+  });
+  return { ok: true, releasedDays: gunler.length, documentNo: header.document_no };
 });
 
 /* --------------------------- Belge dogrulama ----------------------- */

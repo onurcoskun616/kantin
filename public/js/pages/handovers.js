@@ -9,7 +9,7 @@
  * sistemdeki rakam sonradan ayrisirsa ekran bunu "FARKLI" olarak gosterir.
  */
 import { api } from '../api.js';
-import { state, canWrite, canConfirmHandover, navigate } from '../app.js';
+import { state, canWrite, canConfirmHandover, canDeleteHandover, navigate } from '../app.js';
 import {
   el, card, stat, table, fmt, badge, modal, toast, formModal,
   dateUtil, alertBox, shortName, deltaCell,
@@ -130,6 +130,10 @@ export async function renderDetail(root, { params }) {
       el('button.btn.btn-primary', { text: '🖨️ Yazdır (2 nüsha)', onclick: () => printSlip(data) }),
       (canConfirmHandover() && data.status !== 'ONAYLANDI')
         ? el('button.btn.btn-success', { text: '✔ Teslim Aldım', onclick: () => openConfirm(data, reload) })
+        : null,
+      // Silme YALNIZCA sistem yöneticisine görünür; kural sunucuda da aynı.
+      canDeleteHandover()
+        ? el('button.btn.btn-danger', { text: '🗑 Fişi Sil', onclick: () => openDelete(data) })
         : null,
     ]),
   ]));
@@ -518,4 +522,50 @@ function slipCopy(data, copyLabel) {
         + 've fiş "tutar farklı" olarak işaretlenir.',
     }),
   ]);
+}
+
+
+/**
+ * TESLİM FİŞİNİ SİL — yalnızca sistem yöneticisi.
+ *
+ * İmzalanmış bir belgenin sistemdeki karşılığını kaldırmak ağır bir
+ * işlemdir; pencere ne kaybedileceğini sayar, gerekçe ister ve belge
+ * numarasının elle yazılmasını şart koşar. Aynı kurallar sunucuda da
+ * uygulanır — bu ekran yalnızca kazayı zorlaştırır.
+ */
+function openDelete(data) {
+  formModal({
+    title: `Teslim Fişini Sil — ${data.document_no}`,
+    wide: true,
+    fields: [
+      {
+        type: 'info', label: 'Silinecek belge',
+        value: `${data.document_no} · ${data.day_count} gün · ${fmt.money(data.total_amount)}`,
+      },
+      {
+        type: 'info', label: 'Durum',
+        value: data.status === 'ONAYLANDI'
+          ? `Ön muhasebe ONAYLADI (${data.confirmed_by_name || data.received_by_name}). `
+            + 'İmzalı kâğıdın sistemdeki karşılığı kalkacak.'
+          : 'Henüz onaylanmadı.',
+      },
+      {
+        name: 'reason', label: 'Silme gerekçesi', type: 'textarea', required: true,
+        hint: 'En az 10 karakter. Denetim izine bu gerekçeyle yazılır ve silinemez.',
+      },
+      {
+        name: 'documentNo', label: 'Onay için belge numarasını yazın', required: true,
+        placeholder: data.document_no,
+        hint: 'Yanlış fişi silmeyi zorlaştırmak için.',
+      },
+    ],
+    submitText: 'Kalıcı Olarak Sil',
+    onSubmit: async (v) => {
+      const r = await api.del(`/api/handovers/${data.id}`, {
+        reason: v.reason, documentNo: v.documentNo,
+      });
+      toast(`${r.documentNo} silindi. ${r.releasedDays} günün cirosu yeniden teslim edilebilir.`);
+      navigate('handovers');
+    },
+  });
 }

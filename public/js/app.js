@@ -281,6 +281,17 @@ export function canDeleteDocuments() {
   return state.user && ['ADMIN', 'GENEL_MUDURLUK'].includes(state.user.role);
 }
 
+/**
+ * Teslim fisini SILEBILEN rol: yalnizca sistem yoneticisi.
+ *
+ * Fis imzalanmis bir kagidin sistemdeki karsiligidir; silinmesi o imzanin
+ * karsiligini ortadan kaldirir. Genel mudurluk icin bile fazla agir bir
+ * yetkidir. Kural sunucuda da ayni (requireRole(ctx.user, 'ADMIN')).
+ */
+export function canDeleteHandover() {
+  return state.user && state.user.role === 'ADMIN';
+}
+
 /** Teslim fisini sistemde onaylayabilen roller. */
 export function canConfirmHandover() {
   return state.user && ['ADMIN', 'GENEL_MUDURLUK', 'MUHASEBE'].includes(state.user.role);

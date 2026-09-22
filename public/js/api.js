@@ -188,7 +188,9 @@ export const api = {
   fetchBlob,
   post: (path, body) => request('POST', path, body ?? {}),
   put: (path, body) => request('PUT', path, body ?? {}),
-  del: (path) => request('DELETE', path),
+  // DELETE govde tasiyabilir: geri alinamaz silmeler gerekce ve dogrulama
+  // ister (or. teslim fisi silerken belge numarasinin elle yazilmasi).
+  del: (path, body) => request('DELETE', path, body),
   /** CSV indirmesini yeni sekmede acar. */
   download(path, params) {
     window.open(withQuery(path, { ...params, format: 'csv' }), '_blank');

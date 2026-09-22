@@ -41,12 +41,13 @@ const check = (label, condition, detail = '') => {
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
 const consoleErrors = [];
-// Bu test bilerek reddedilen istekler yapiyor (409/403/400); tarayicinin
+// Bu test bilerek reddedilen istekler yapiyor (400/403/404/409); tarayicinin
 // bunlar icin bastigi "failed to load resource" satirlari hata sayilmaz.
+// 404: silinen fisin gercekten gittigini dogrularken bilerek isteniyor.
 // Sayfa yeniden yuklenirken ucusta olan istekler iptal olur ve tarayici
 // "Failed to fetch" basar; bu testin kullanici degistirme adimlarinin
 // dogal sonucu, urun hatasi degil.
-const EXPECTED_HTTP = /Failed to load resource.*\b(400|403|409)\b|TypeError: Failed to fetch/;
+const EXPECTED_HTTP = /Failed to load resource.*\b(400|403|404|409)\b|TypeError: Failed to fetch/;
 const record = (text) => { if (!EXPECTED_HTTP.test(text)) consoleErrors.push(text); };
 page.on('pageerror', (e) => record(e.message));
 page.on('console', (m) => { if (m.type() === 'error') record(m.text()); });
@@ -227,6 +228,63 @@ try {
   const confirmed = await call('GET', `/api/handovers/${handover.id}`);
   check('Dogru kodla onaylandi', confirmed.data.status === 'ONAYLANDI', confirmed.data.status);
   check('Onaylayan kaydedildi', confirmed.data.confirmed_by_name === 'UI Ön Muhasebe', confirmed.data.confirmed_by_name);
+
+  /* ----------------------------------------------------------------
+   * FIS SILME: yalnizca SISTEM YONETICISI
+   *
+   * Fis imzalanmis bir kagidin sistemdeki karsiligidir. Silme yetkisi
+   * genel mudurluk ve on muhasebe icin bile fazla agirdir; ama yanlis
+   * acilmis bir fisin de bir cikisi olmali.
+   * ---------------------------------------------------------------- */
+  console.log('\n8) Fis silme yalnizca sistem yoneticisinde');
+
+  // Su an ON MUHASEBE olarak giriliyiz (onceki adimda onayladik)
+  await page.goto(`${BASE}/#/handoverDetail/${handover.id}`, { waitUntil: 'networkidle' });
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForTimeout(1800);
+  check('On muhasebe silme dugmesini GORMUYOR', !(await page.$('button:has-text("Fişi Sil")')));
+
+  // Arayuzu atlayan bir istek de reddedilmeli
+  const muhSil = await call('DELETE', `/api/handovers/${handover.id}`,
+    { reason: 'arayuzu atlayan istek denemesi', documentNo: handover.document_no });
+  check('Sunucu on muhasebeyi reddediyor (403)', muhSil.status === 403, String(muhSil.status));
+
+  await login(ADMIN);
+  await page.goto(`${BASE}/#/handoverDetail/${handover.id}`, { waitUntil: 'networkidle' });
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForTimeout(1800);
+  const silDugmesi = await page.$('button:has-text("Fişi Sil")');
+  check('Sistem yoneticisi silme dugmesini GORUYOR', !!silDugmesi);
+
+  if (silDugmesi) {
+    await silDugmesi.click();
+    await page.waitForSelector('.modal-backdrop');
+    await page.waitForTimeout(600);
+    const pencere = await page.textContent('.modal-body');
+    check('Ne silinecegi sayiliyor', /gün/.test(pencere), pencere.slice(0, 300));
+    check('Gerekce isteniyor', !!(await page.$('.modal textarea[name=reason]')));
+    check('Belge no dogrulamasi isteniyor', !!(await page.$('.modal input[name=documentNo]')));
+
+    // Yanlis belge no ile SILINMEMELI
+    await page.fill('.modal textarea[name=reason]', 'Yanlış dönemle açıldı, yeniden düzenlenecek');
+    await page.fill('.modal input[name=documentNo]', 'YANLIS-NO');
+    await page.click('.modal-foot .btn-primary');
+    await page.waitForTimeout(1500);
+    const hataMetni = await page.textContent('.modal .alert-danger').catch(() => '');
+    check('Yanlis belge no reddedildi', /eşleşmedi|eslesmedi/i.test(hataMetni), hataMetni.slice(0, 200));
+
+    // Dogru belge no ile silinir ve gunler serbest kalir
+    await page.fill('.modal input[name=documentNo]', handover.document_no);
+    await page.click('.modal-foot .btn-primary');
+    await page.waitForTimeout(2500);
+    const silindi = await call('GET', `/api/handovers/${handover.id}`);
+    check('Dogru belge no ile silindi', silindi.status === 404, String(silindi.status));
+
+    const bekleyen = await call('GET', `/api/handovers/pending?campusId=${campusId}`);
+    const grup = (bekleyen.data.items || []).find((g) => g.campusId === campusId);
+    check('Gunler bekleyenler listesine dondu', !!grup && grup.dayCount >= 3,
+      JSON.stringify(grup || 'grup yok').slice(0, 200));
+  }
 
   check('Tarayici hatasi yok', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '));
 } catch (err) {

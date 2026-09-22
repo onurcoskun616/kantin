@@ -172,7 +172,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Dosya yukleme uclari govdeyi kendileri okur (readRawBody)
-    const body = (!rawBody && ['POST', 'PUT', 'PATCH'].includes(req.method))
+    //
+    // DELETE de govde okur: geri alinamaz silme islemleri gerekce ve
+    // dogrulama ister (or. teslim fisi silme, belge numarasinin elle
+    // yazilmasi). Govdesiz DELETE etkilenmez -- readJsonBody bos govdeyi
+    // {} olarak dondurur.
+    const body = (!rawBody && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method))
       ? await readJsonBody(req)
       : {};
     const ctx = {

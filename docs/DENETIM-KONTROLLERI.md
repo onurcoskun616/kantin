@@ -171,7 +171,25 @@ altındaysa hiçbir şey ifade etmez.
    fiş otomatik olarak **"FARKLI"** durumuna geçer, denetim izine
    `HANDOVER_MISMATCH` kaydı düşer ve fiş ekranında kâğıttaki tutar ile
    sistemdeki tutar **yan yana** gösterilir.
-4. **Fiş silinemez.** İmzalanmış bir belgenin sistemdeki karşılığı kaldırılamaz.
+4. **Fişi yalnızca sistem yöneticisi silebilir.** Genel müdürlük ve ön
+   muhasebe dahil hiçbir rol silemez — imzalanmış bir belgenin sistemdeki
+   karşılığını kaldırmak onlar için bile fazla ağır bir yetkidir. Ama yanlış
+   dönemle ya da yanlış kişi adına açılmış bir fişin de bir çıkışı olmalı:
+   aksi halde o günlerin cirosu sonsuza kadar kilitli kalır ve yeniden teslim
+   edilemez.
+
+   Silme üç şey ister:
+
+   | | |
+   |---|---|
+   | **Gerekçe** | En az 10 karakter; denetim izine yazılır ve silinemez |
+   | **Belge numarası** | Elle yazılır — yanlış fişi silmeyi zorlaştırır |
+   | **Rol** | Yalnızca `ADMIN` (kural sunucuda uygulanır) |
+
+   Silinen belgenin **tam içeriği** denetim izine geçer: belge no, dönem,
+   tutar, durum, teslim eden/alan, doğrulama kodu ve serbest kalan günlerin
+   listesi. Fişe dahil günler serbest kalır (`handover_id = NULL`), yani
+   doğru fiş yeniden oluşturulabilir.
 
 ### Doğrulama kodu
 
@@ -214,6 +232,7 @@ belge girer, **onaylamaz/kesinleştirmez**.
 | Ürün kartı ve satış fiyatı | Reçete tanımı |
 | Günlük ciro girişi | Kampüs ve kullanıcı tanımı |
 | **Ciro teslim fişini onaylama** | Belgeyi **kalıcı silme** (iptal edebilir) |
+| | **Teslim fişini silme** (yalnızca sistem yöneticisi) |
 
 Yetki sunucuda alan alan verilir (`requireWrite(user, alan)`); teslim fişi
 onayı ayrıca `requireRole` ile açılır. **Varsayılan kapalıdır**: alan adı

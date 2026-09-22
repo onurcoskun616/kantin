@@ -1029,6 +1029,95 @@ describe('Ciro teslim fisi', () => {
     assert.notEqual(second.verification_code, handover.verification_code,
       'her belgenin dogrulama kodu farkli olmali');
   });
+
+  /*
+   * SILME — yalnizca SISTEM YONETICISI
+   *
+   * Fis imzalanmis bir kagidin sistemdeki karsiligidir; silinmesi o imzanin
+   * karsiligini ortadan kaldirir. Ama yanlis acilmis bir fis de sonsuza
+   * kadar duramaz: o gunlerin cirosu kilitli kalir ve yeniden teslim
+   * edilemez.
+   */
+  test('SILME: on muhasebe ve kampus gorevlisi silemez', async () => {
+    const m = await asUser(accountingToken, 'DELETE', `/api/handovers/${handover.id}`,
+      { reason: 'Yanlış dönem seçilmiş', documentNo: handover.document_no });
+    assert.equal(m.status, 403, JSON.stringify(m.data));
+    const g = await asUser(staffToken, 'DELETE', `/api/handovers/${handover.id}`,
+      { reason: 'Yanlış dönem seçilmiş', documentNo: handover.document_no });
+    assert.equal(g.status, 403, JSON.stringify(g.data));
+  });
+
+  test('SILME: genel mudurluk de silemez', async () => {
+    const eposta = `teslim-gm-${Date.now()}@topkapiokullari.com`;
+    await ok('POST', '/api/users', {
+      email: eposta, fullName: 'Teslim GM', role: 'GENEL_MUDURLUK', password: 'Mudur123456',
+    });
+    const tok = (await api('POST', '/api/auth/login',
+      { email: eposta, password: 'Mudur123456' }, false)).data.token;
+    const r = await asUser(tok, 'DELETE', `/api/handovers/${handover.id}`,
+      { reason: 'Yanlış dönem seçilmiş', documentNo: handover.document_no });
+    assert.equal(r.status, 403, JSON.stringify(r.data));
+  });
+
+  test('SILME: gerekce ve belge no zorunlu', async () => {
+    const gerekcesiz = await api('DELETE', `/api/handovers/${handover.id}`,
+      { documentNo: handover.document_no });
+    assert.equal(gerekcesiz.status, 400, JSON.stringify(gerekcesiz.data));
+
+    const kisa = await api('DELETE', `/api/handovers/${handover.id}`,
+      { reason: 'kisa', documentNo: handover.document_no });
+    assert.equal(kisa.status, 400, 'cok kisa gerekce kabul edilmemeli');
+
+    const yanlisNo = await api('DELETE', `/api/handovers/${handover.id}`,
+      { reason: 'Yanlış dönem seçilmiş, yeniden açılacak', documentNo: 'BASKA-BELGE' });
+    assert.equal(yanlisNo.status, 400, JSON.stringify(yanlisNo.data));
+    assert.match(yanlisNo.data.error, /eslesmedi|eşleşmedi/i);
+
+    // Hicbiri silmemis olmali
+    assert.equal((await api('GET', `/api/handovers/${handover.id}`)).status, 200);
+  });
+
+  test('SILME: yonetici siler, gunler SERBEST kalir ve yeniden teslim edilebilir', async () => {
+    const oncesi = await ok('GET', `/api/handovers/${handover.id}`);
+    const gunSayisi = oncesi.day_count;
+
+    const r = await ok('DELETE', `/api/handovers/${handover.id}`, {
+      reason: 'Yanlış dönem seçilerek oluşturuldu, yeniden düzenlenecek',
+      documentNo: handover.document_no,
+    });
+    assert.equal(r.ok, true);
+    assert.equal(r.releasedDays, gunSayisi);
+    assert.equal((await api('GET', `/api/handovers/${handover.id}`)).status, 404, 'fis gitmeli');
+
+    // Gunler yeniden teslim edilebilir olmali.
+    // /pending gunleri KAMPUS BAZINDA gruplar; kampusun grubuna bakariz.
+    const bekleyen = await ok('GET', `/api/handovers/pending?campusId=${campusId}`);
+    const grup = bekleyen.items.find((g) => g.campusId === campusId);
+    assert.ok(grup, 'kampus bekleyenler listesinde olmali');
+    assert.ok(grup.dayCount >= gunSayisi,
+      `silinen fisin ${gunSayisi} gunu bekleyenlere donmeli, gorulen: ${grup.dayCount}`);
+    for (const g of oncesi.days || []) {
+      assert.ok(grup.days.some((d) => d.date === g.revenue_date),
+        `${g.revenue_date} bekleyenler listesine donmeli`);
+    }
+
+    const yeni = await ok('POST', '/api/handovers', {
+      campusId, from: oncesi.period_from, to: oncesi.period_to, receivedByName: 'Yeni Muhasebe',
+    });
+    assert.ok(yeni.id, 'ayni donem icin yeni fis acilabilmeli');
+  });
+
+  test('SILME: denetim izinde gerekce ve belgenin ICERIGI duruyor', async () => {
+    const audit = await ok('GET', '/api/audit?entity=revenue_handovers&limit=50');
+    const kayit = audit.items.find((i) => i.action === 'DELETE');
+    assert.ok(kayit, 'silme denetim izine yazilmali');
+    const detay = typeof kayit.detail === 'string' ? JSON.parse(kayit.detail) : kayit.detail;
+    assert.match(detay.gerekce, /Yanlış dönem/);
+    assert.ok(detay.documentNo, 'hangi belgenin silindigi yazmali');
+    assert.ok(detay.tutar > 0, 'silinen belgenin tutari kalmali');
+    assert.ok(Array.isArray(detay.serbestKalanGunler) && detay.serbestKalanGunler.length,
+      'serbest kalan gunler kayitli olmali');
+  });
 });
 
 
