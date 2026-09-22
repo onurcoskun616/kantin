@@ -98,13 +98,16 @@ def build_products(ws):
             cell.fill = EXAMPLE_FILL
 
     for r in range(2, ROWS + 2):
-        # Birim kar: satis(KDV haric) - alis   [F=alis, G=satis, H=KDV]
+        # HER IKI FIYAT DA KDV DAHIL. Alis KDV'si indirilmedigi icin
+        # maliyettir; satisi netlestirip KDV dahil alisla karsilastirmak
+        # KDV'yi IKI KEZ aleyhe saymak olurdu. Bkz. server/lib/money.js
+        # Birim kar: satis - alis   [F=alis, G=satis, H=KDV]
         ws.cell(row=r, column=11).value = (
-            f'=IF(OR($B{r}="",$F{r}="",$G{r}=""),"",ROUND($G{r}/(1+$H{r}/100)-$F{r},2))'
+            f'=IF(OR($B{r}="",$F{r}="",$G{r}=""),"",ROUND($G{r}-$F{r},2))'
         )
-        # Kar marji: birim kar / satis(KDV haric)
+        # Kar marji: birim kar / satis
         ws.cell(row=r, column=12).value = (
-            f'=IF(OR($K{r}="",$G{r}=""),"",IF($G{r}=0,"",ROUND($K{r}/($G{r}/(1+$H{r}/100)),4)))'
+            f'=IF(OR($K{r}="",$G{r}=""),"",IF($G{r}=0,"",ROUND($K{r}/$G{r},4)))'
         )
         for c in range(1, 13):
             cell = ws.cell(row=r, column=c)

@@ -197,9 +197,14 @@ function extractProducts({ rows, headerRow, map }) {
       productType: readProductType(toText(pick('productType'))),
     };
     // Bilgilendirme amaçlı kâr hesabı (sunucu yeniden hesaplar)
-    const saleNet = item.salePrice / (1 + item.vatRate / 100);
-    item.__unitProfit = Math.round((saleNet - item.purchasePrice) * 100) / 100;
-    item.__marginPct = saleNet > 0 ? Math.round((item.__unitProfit / saleNet) * 1000) / 10 : 0;
+    // HER İKİ FİYAT DA KDV DAHİL (alış KDV'si indirilmiyor, maliyettir).
+    // Satışı netleştirip KDV dahil alışla karşılaştırmak KDV'yi İKİ KEZ
+    // aleyhe saymak olurdu: hem gelirden düşülür hem maliyete eklenir.
+    // Bkz. server/lib/money.js — bu hesap oradaki productProfit ile aynıdır.
+    item.__unitProfit = Math.round((item.salePrice - item.purchasePrice) * 100) / 100;
+    item.__marginPct = item.salePrice > 0
+      ? Math.round((item.__unitProfit / item.salePrice) * 1000) / 10
+      : 0;
     valid.push(item);
   }
   return { valid, errors, exampleRows };

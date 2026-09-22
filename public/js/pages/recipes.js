@@ -109,9 +109,14 @@ export async function openEditor(productId, onDone) {
       r.perUnitCell.textContent = `${fmt.num(Math.round((r.line.quantity / yieldQty) * 10000) / 10000)}`;
     }
     const unitCost = batch / yieldQty;
-    const saleNet = data.product.sale_price / (1 + data.product.vat_rate / 100);
-    const unitProfit = saleNet - unitCost;
-    const marginPct = saleNet > 0 ? (unitProfit / saleNet) * 100 : 0;
+    // Hammadde maliyetleri KDV DAHİL tutulur (alış KDV'si indirilmiyor),
+    // satış fiyatı da KDV dahildir. Satışı netleştirip KDV dahil maliyetle
+    // karşılaştırmak KDV'yi İKİ KEZ aleyhe saymak olurdu.
+    // Bkz. server/lib/money.js — productProfit ile aynı hesap.
+    const salePrice = data.product.sale_price;
+    const saleNet = salePrice / (1 + data.product.vat_rate / 100);
+    const unitProfit = salePrice - unitCost;
+    const marginPct = salePrice > 0 ? (unitProfit / salePrice) * 100 : 0;
 
     summaryBox.replaceChildren(
       el('div.grid.grid-4', {}, [
@@ -119,7 +124,8 @@ export async function openEditor(productId, onDone) {
         stat('Birim Maliyet', fmt.money(Math.round(unitCost * 100) / 100)),
         stat('Birim Kâr', fmt.money(Math.round(unitProfit * 100) / 100), {
           tone: unitProfit < 0 ? 'bad' : '',
-          sub: `Satış ${fmt.money(data.product.sale_price)} (KDV hariç ${fmt.money(Math.round(saleNet * 100) / 100)})`,
+          sub: `Satış ${fmt.money(salePrice)} − maliyet ${fmt.money(Math.round(unitCost * 100) / 100)}`
+            + ` · içindeki KDV ${fmt.money(Math.round((salePrice - saleNet) * 100) / 100)}`,
         }),
         stat('Kâr Marjı', fmt.pct(Math.round(marginPct * 10) / 10), {
           tone: marginPct < 0 ? 'bad' : marginPct < 20 ? 'warn' : 'ok',
