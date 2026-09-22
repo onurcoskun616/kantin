@@ -24,11 +24,79 @@ export class ApiError extends Error {
   }
 }
 
+/*
+ * ZAMAN ASIMI ve SURE OLCUMU
+ *
+ * Eskiden bir istek yanitsiz kalirsa tarayici sonsuza kadar beklerdi:
+ * "Kaydediliyor..." yazisi asla degismez, kullanici ne oldugunu bilemez
+ * ve cogu zaman ikinci kez kaydeder. Artik her istegin bir suresi var.
+ *
+ * Sunucu her yanitta `Server-Timing: app;dur=...` gonderiyor. Toplam sure
+ * ile sunucunun harcadigi sureyi karsilastirirsak yavasligin NEREDE
+ * oldugu belli olur ve hata mesajinda bunu soyleyebiliriz.
+ */
+const ZAMAN_ASIMI_MS = 25_000;
+
+/*
+ * Sayfa kapanirken yarim kalan istekler HATA DEGILDIR.
+ *
+ * Kullanici baska bir sayfaya gecerken o an suren fetch'ler iptal edilir.
+ * Bunlari "sunucuya ulasilamadi" diye gostermek yanlis alarm olur: sunucu
+ * ayakta, kullanici yalnizca gezinmis. Sayfa gidiyorsa istegi sessizce
+ * askida birakiriz -- zaten hicbir sey cizilmeyecek.
+ */
+let sayfaKapaniyor = false;
+for (const olay of ['pagehide', 'beforeunload']) {
+  window.addEventListener(olay, () => { sayfaKapaniyor = true; });
+}
+
+/** Son isteklerin sureleri: Sistem Durumu ekrani ve teshis icin. */
+export const sonIstekler = [];
+
+function kaydet(method, path, toplamMs, sunucuMs, durum) {
+  sonIstekler.push({ method, path, toplamMs, sunucuMs, durum, at: Date.now() });
+  if (sonIstekler.length > 50) sonIstekler.shift();
+}
+
 async function request(method, path, body) {
   const headers = { 'Content-Type': 'application/json' };
   if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
 
-  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const t0 = performance.now();
+  const kesici = new AbortController();
+  // Kesintinin BIZDEN gelip gelmedigini ayirt ederiz: zaman asimi ile
+  // sayfa gecisi ayni AbortError'u uretir ama biri hata, oteki degildir.
+  let zamanAsti = false;
+  const sayac = setTimeout(() => { zamanAsti = true; kesici.abort(); }, ZAMAN_ASIMI_MS);
+  let res;
+  try {
+    res = await fetch(path, {
+      method, headers, signal: kesici.signal,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) {
+    if (sayfaKapaniyor) return new Promise(() => {});   // sayfa gidiyor, sessiz kal
+    kaydet(method, path, Math.round(performance.now() - t0), null, 'hata');
+    if (zamanAsti) {
+      throw new ApiError(0,
+        `Sunucu ${ZAMAN_ASIMI_MS / 1000} saniye içinde yanıt vermedi. İşlem yarıda kalmış olabilir; `
+        + 'tekrar denemeden önce kaydın oluşup oluşmadığını kontrol edin.');
+    }
+    if (err.name === 'AbortError') return new Promise(() => {});   // baska bir iptal
+    throw new ApiError(0, 'Sunucuya ulaşılamadı. İnternet bağlantınızı kontrol edip tekrar deneyin.');
+  } finally {
+    clearTimeout(sayac);
+  }
+
+  const toplamMs = Math.round(performance.now() - t0);
+  const sunucuMs = sunucuSuresi(res);
+  kaydet(method, path, toplamMs, sunucuMs, res.status);
+  // Gecikme belirginse konsola NEREDE gectigini yaz: destek isteyen
+  // kullanicidan ekran goruntusu beklemek yerine tek satir yeter.
+  if (toplamMs > 2000) {
+    console.warn(`[YAVAS] ${method} ${path}: toplam ${toplamMs} ms`
+      + (sunucuMs === null ? '' : `, sunucu ${sunucuMs} ms, ağ/vekil ${Math.max(0, toplamMs - sunucuMs)} ms`));
+  }
 
   // Govde AYRI okunur: basarili bir yanitin coz(umlenememesi ile hatali bir
   // yanitin bos govdesi ayni sey degildir.
@@ -61,10 +129,21 @@ async function request(method, path, body) {
   // araya giren bir vekil olabilir. Sessizce bos veri dondurmek yerine
   // soyleriz; tekrar denemek cogu zaman yeterlidir.
   if (cozumlemeHatasi) {
+    // Sayfa gecisi sirasinda govde yarim kalmis olabilir: bu bir hata
+    // degil, kullanicinin gezinmesidir.
+    if (sayfaKapaniyor) return new Promise(() => {});
     throw new ApiError(res.status,
       'Sunucudan geçersiz yanıt alındı (bağlantı yarıda kesilmiş olabilir). Lütfen tekrar deneyin.');
   }
   return data;
+}
+
+/** Sunucunun bildirdigi isleme suresi (ms) -- yoksa null. */
+function sunucuSuresi(res) {
+  const h = res.headers.get('Server-Timing');
+  if (!h) return null;
+  const m = /dur=([\d.]+)/.exec(h);
+  return m ? Math.round(Number(m[1])) : null;
 }
 
 /** Ham dosya gonderir (JSON'a gomulmeden). Fatura ekleri icin. */

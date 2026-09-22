@@ -281,3 +281,69 @@ sudo /opt/kantin/scripts/kontrol.sh
 | "Dosya sunucuda bulunamadı" | `data/ekler` klasörü yerinde mi, uygulama kullanıcısının yazma hakkı var mı (`ls -la /opt/kantin/data`) |
 | Tarih/saat kaymış | Sunucu saat dilimi `Europe/Istanbul` olmalı |
 | Disk doldu | `du -sh /opt/kantin/backups` — eski yedekler birikmiş olabilir |
+
+---
+
+## Yavaşlık teşhisi
+
+"Sistem yavaş" şikâyeti ölçülmeden çözülemez: geçen süre sunucuda mı, ağda
+mı, tarayıcıda mı belli olmaz. Sistem bunu kendisi ayırır.
+
+### 1. Sistem Durumu ekranı
+
+**Yönetim → Sistem Durumu** (yalnızca admin ve genel müdürlük görür)
+
+| Ölçüm | Ne anlama gelir | İyi değer |
+|---|---|---|
+| **Gidiş-Dönüş** | Tarayıcıdan sunucuya ve geri | < 300 ms |
+| **Ağ / Vekil** | Bu sürenin sunucuda geçmeyen kısmı | < 300 ms |
+| **Veritabanı Yazma** | Bir kaydın diske yazılması | < 20 ms |
+| **Disk (fsync)** | Sunucu diskinin yazma gecikmesi | < 20 ms |
+
+Ekran rakamları ayrıca **tek cümleyle yorumlar** — sizin yorumlamanız
+gerekmez.
+
+Altta **bu oturumdaki en yavaş istekler** listelenir. "Sunucu" sütunu
+sunucunun kendi işleme süresidir:
+
+- Toplam büyük, **sunucu küçük** → gecikme ağda ya da vekil sunucuda
+  (Caddy/CDN/internet). Uygulamada değil.
+- **Sunucu da büyük** → sunucu tarafında bir sorun var; aşağıya bakın.
+
+### 2. Sunucu günlüğünde yavaş istekler
+
+Eşiği (varsayılan 400 ms) aşan her istek günlüğe tek satır düşer:
+
+```
+[YAVAS] 1840 ms  PUT /api/products/12 -> 200
+```
+
+Bakmak için:
+
+```bash
+sudo docker compose -f /opt/kantin-uygulama/docker-compose.yml logs --tail=200 | grep YAVAS
+```
+
+Eşiği değiştirmek için `.env` dosyasına: `SLOW_REQUEST_MS=200` (0 = kapalı).
+
+### 3. Tarayıcının kendi ölçümü
+
+Her yanıtta `Server-Timing: app;dur=...` başlığı gider. Tarayıcının **Ağ**
+sekmesinde isteğin yanında sunucunun kaç ms harcadığı görünür. Toplam 2 sn,
+sunucu 4 ms ise sorun uygulamada değildir.
+
+### Sık çıkan sebepler
+
+| Belirti | Sebep | Çözüm |
+|---|---|---|
+| **Disk (fsync) > 100 ms** | Sağlayıcının diski yavaş ya da dolu | Disk doluluğunu kontrol edin (`df -h`); sağlayıcıya başvurun |
+| **Çalışma süresi sürekli küçük** | Konteyner yeniden başlıyor | `docker compose logs` ile çökme sebebine bakın |
+| **Bellek (RSS) sürekli artıyor** | Bellek sınırı dar | Konteyner bellek limitini yükseltin |
+| **Ağ > 1 sn, sunucu hızlı** | İnternet bağlantısı ya da vekil | Vekil sunucu ayarları; başka bir bağlantıdan deneyin |
+
+### Zaman aşımı
+
+İstekler **25 saniye** yanıtsız kalırsa artık sonsuza kadar beklemez;
+açık bir uyarı çıkar ve kaydın oluşup oluşmadığını kontrol etmeniz söylenir.
+Eskiden "Kaydediliyor..." yazısı hiç değişmezdi ve kullanıcı çoğu zaman
+ikinci kez kaydederdi.

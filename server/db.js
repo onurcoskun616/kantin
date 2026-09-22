@@ -18,6 +18,25 @@ db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 db.exec('PRAGMA busy_timeout = 5000');
 
+/*
+ * YAZMA HIZI — ucuz VPS disklerinde belirleyici olan ayar.
+ *
+ * WAL kipinde varsayilan `synchronous = FULL`, HER islem sonunda WAL
+ * dosyasini diske zorlar (fsync). Paylasimli bir sanal diskte tek bir
+ * fsync 10-100 ms surebiliyor; "kaydet"e basan kullanici bunu bekler.
+ *
+ * NORMAL, WAL icin onerilen ayardir: fsync yalnizca checkpoint aninda
+ * yapilir. Isletim sistemi cokerse (elektrik kesintisi gibi) YALNIZCA
+ * son islem kaybolabilir -- veritabani BOZULMAZ. Kantin kaydi icin bu
+ * takas dogrudur; bozulma riski almadan yazma birkac kat hizlanir.
+ */
+db.exec('PRAGMA synchronous = NORMAL');
+// Gecici tablolar/siralamalar diske degil bellege (rapor sorgulari icin)
+db.exec('PRAGMA temp_store = MEMORY');
+// Sayfa onbellegi ~16 MB (negatif deger KB demektir). Veritabani kucuk
+// oldugu icin pratikte tamami bellekte kalir.
+db.exec('PRAGMA cache_size = -16000');
+
 export function migrate() {
   const sql = fs.readFileSync(path.join(ROOT, 'server', 'schema.sql'), 'utf8');
   // ONCE eksik sutunlar: schema.sql yeni sutunlar uzerinde indeks kurabiliyor

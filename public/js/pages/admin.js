@@ -1,7 +1,7 @@
 /** Kampüs, kullanıcı ve denetim izi yönetimi. */
 import { api } from '../api.js';
 import { state } from '../app.js';
-import { el, card, table, fmt, badge, toast, formModal, ROLE_LABELS, empty, alertBox, shortName} from '../ui.js';
+import { el, card, stat, table, fmt, badge, toast, formModal, ROLE_LABELS, empty, alertBox, shortName } from '../ui.js';
 
 /* ============================= Kampüsler ============================ */
 export async function renderCampuses(root) {
@@ -211,3 +211,134 @@ export async function renderAudit(root) {
   }
 }
 
+
+/* =========================== Sistem Durumu ==========================
+ *
+ * "Sistem yavaş" şikâyeti ölçülemediği sürece çözülemez: geçen süre
+ * sunucuda mı, ağda mı, tarayıcıda mı belli olmaz. Bu ekran üçünü
+ * ayırır — DevTools açmadan, tek bakışta.
+ * ------------------------------------------------------------------ */
+export async function renderSystem(root) {
+  const container = el('div.grid');
+  root.replaceChildren(container);
+  await draw();
+
+  async function draw() {
+    container.replaceChildren();
+    container.append(el('div.row', { style: 'justify-content:space-between' }, [
+      el('div', {}, [
+        el('h3', { text: 'Sistem Durumu' }),
+        el('p.card-note', {
+          text: 'Yavaşlık yaşıyorsanız burası nerede geçtiğini söyler: sunucunun kendi '
+            + 'işleme süresi, diskin yazma süresi ve ağda geçen süre ayrı ayrı ölçülür.',
+        }),
+      ]),
+      el('button.btn', { text: '↻ Yenile', onclick: draw }),
+    ]));
+
+    // Ölçümün kendisi de bir istektir: süresini biz tutarız
+    const t0 = performance.now();
+    let sağlık = null;
+    let hata = null;
+    try {
+      sağlık = await api.get('/api/health');
+    } catch (err) {
+      hata = err.message;
+    }
+    const turMs = Math.round(performance.now() - t0);
+
+    if (hata) {
+      container.append(card(null, [alertBox('danger', 'Sunucuya ulaşılamadı', hata)]));
+      return;
+    }
+    if (!sağlık.db) {
+      container.append(card(null, [alertBox('warning', 'Ölçüm alınamadı',
+        'Sunucu ayrıntılı ölçüm döndürmedi. Sunucudaki sürüm güncel olmayabilir.')]));
+      return;
+    }
+
+    const agMs = Math.max(0, turMs - Math.round(sağlık.db.readMs + sağlık.db.writeMs));
+    const ton = (ms, iyi, orta) => (ms <= iyi ? 'ok' : ms <= orta ? 'warn' : 'bad');
+
+    container.append(card(null, [
+      el('div.grid.grid-4', {}, [
+        stat('Gidiş-Dönüş', `${turMs} ms`, {
+          sub: 'Tarayıcıdan sunucuya ve geri', tone: ton(turMs, 300, 1000),
+        }),
+        stat('Ağ / Vekil', `${agMs} ms`, {
+          sub: 'Bu sürenin sunucuda geçmeyen kısmı', tone: ton(agMs, 300, 1000),
+        }),
+        stat('Veritabanı Yazma', `${sağlık.db.writeMs} ms`, {
+          sub: 'Bir kaydın diske yazılması', tone: ton(sağlık.db.writeMs, 20, 100),
+        }),
+        stat('Disk (fsync)', sağlık.diskFsyncMs === null ? '—' : `${sağlık.diskFsyncMs} ms`, {
+          sub: 'Sunucu diskinin yazma gecikmesi',
+          tone: sağlık.diskFsyncMs === null ? '' : ton(sağlık.diskFsyncMs, 20, 100),
+        }),
+      ]),
+      el('p.card-note', { text: yorum(turMs, agMs, sağlık) }),
+    ]));
+
+    container.append(card('Sunucu', [
+      el('dl.kv', {}, [
+        el('dt', { text: 'Çalışma süresi' }),
+        el('dd', { text: sureMetni(sağlık.uptimeSeconds) }),
+        el('dt', { text: 'Bellek (RSS)' }),
+        el('dd', { text: `${sağlık.memoryMb.rss} MB (yığın ${sağlık.memoryMb.heapUsed} MB)` }),
+        el('dt', { text: 'Node sürümü' }),
+        el('dd', { text: sağlık.node }),
+        el('dt', { text: 'Veritabanı' }),
+        el('dd', { text: sağlık.db.path }),
+      ]),
+    ]));
+
+    // Bu oturumda yapılan isteklerin süreleri
+    const { sonIstekler } = await import('../api.js');
+    const yavaslar = [...sonIstekler].sort((a, b) => b.toplamMs - a.toplamMs).slice(0, 15);
+    container.append(card('Bu Oturumdaki En Yavaş İstekler', [
+      yavaslar.length ? table([
+        { label: 'İşlem', value: (r) => `${r.method} ${r.path}`, wrap: true },
+        { label: 'Toplam', num: true, value: (r) => `${r.toplamMs} ms` },
+        { label: 'Sunucu', num: true, value: (r) => (r.sunucuMs === null ? '—' : `${r.sunucuMs} ms`) },
+        {
+          label: 'Ağ', num: true,
+          value: (r) => (r.sunucuMs === null ? '—' : `${Math.max(0, r.toplamMs - r.sunucuMs)} ms`),
+        },
+        { label: 'Durum', value: (r) => String(r.durum) },
+      ], yavaslar) : empty('Henüz ölçüm yok. Birkaç sayfa gezip geri dönün.'),
+    ], {
+      note: '"Sunucu" sütunu sunucunun kendi işleme süresidir. Toplam süre büyük ama '
+        + 'sunucu küçükse gecikme ağda ya da vekil sunucudadır — uygulamada değil.',
+    }));
+  }
+}
+
+/** Ölçümleri tek cümleyle yorumlar: kullanıcı rakamları yorumlamak zorunda kalmasın. */
+function yorum(turMs, agMs, s) {
+  if (s.uptimeSeconds < 120) {
+    return `Sunucu ${s.uptimeSeconds} saniye önce başlamış. Sürekli yeniden başlıyorsa her `
+      + 'istek açılış maliyetini öder; sunucu günlüğüne bakın.';
+  }
+  if (s.diskFsyncMs !== null && s.diskFsyncMs > 100) {
+    return `Sunucu diski yavaş (fsync ${s.diskFsyncMs} ms). Kayıt işlemleri bu yüzden bekliyor; `
+      + 'sunucu sağlayıcısının disk performansı ya da diskin dolu olması sebep olabilir.';
+  }
+  if (s.db.writeMs > 100) {
+    return `Veritabanı yazma süresi yüksek (${s.db.writeMs} ms). Disk ya da dosya kilidi kaynaklı olabilir.`;
+  }
+  if (agMs > 1000) {
+    return `Sunucu hızlı yanıt veriyor ama ağda ${agMs} ms geçiyor. Gecikme internet bağlantınızda `
+      + 'ya da vekil sunucudadır (Caddy/CDN) — uygulamada değil.';
+  }
+  if (turMs > 1000) return `Gidiş-dönüş ${turMs} ms. Bağlantı yavaş ama sunucu sağlıklı.`;
+  return 'Sunucu ve disk normal hızda çalışıyor.';
+}
+
+function sureMetni(saniye) {
+  const g = Math.floor(saniye / 86400);
+  const s = Math.floor((saniye % 86400) / 3600);
+  const d = Math.floor((saniye % 3600) / 60);
+  if (g) return `${g} gün ${s} saat`;
+  if (s) return `${s} saat ${d} dakika`;
+  return `${d} dakika ${saniye % 60} saniye`;
+}

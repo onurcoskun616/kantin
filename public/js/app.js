@@ -34,6 +34,7 @@ const NAV = [
   { id: 'campuses', label: 'Kampüsler', icon: '🏫', roles: ['ADMIN', 'GENEL_MUDURLUK'] },
   { id: 'users', label: 'Kullanıcılar', icon: '👥', roles: ['ADMIN', 'GENEL_MUDURLUK'] },
   { id: 'audit', label: 'Denetim İzi', icon: '🔍', roles: ['ADMIN', 'GENEL_MUDURLUK', 'DENETCI'] },
+  { id: 'system', label: 'Sistem Durumu', icon: '📡', roles: ['ADMIN', 'GENEL_MUDURLUK'] },
 ];
 
 /** Menude yer almayan detay sayfalarinin baslik karsiliklari. */
@@ -61,6 +62,7 @@ const PAGE_LOADERS = {
   campuses: () => import('./pages/admin.js').then((m) => ({ render: m.renderCampuses })),
   users: () => import('./pages/admin.js').then((m) => ({ render: m.renderUsers })),
   audit: () => import('./pages/admin.js').then((m) => ({ render: m.renderAudit })),
+  system: () => import('./pages/admin.js').then((m) => ({ render: m.renderSystem })),
 };
 
 /* ---------------------------- Baslangic ---------------------------- */
