@@ -107,16 +107,20 @@ reportRoutes.get('/product-sales', async (ctx) => {
   );
 
   const items = rows.map((r) => {
+    // Alis KDV'si indirilmedigi icin maliyet KDV DAHIL tutulur; kar da bu
+    // yuzden KDV DAHIL satistan KDV DAHIL maliyet dusulerek bulunur.
+    // (Karsilastirilan iki taraf ayni olmali -- bkz. server/lib/money.js)
     const salesNet = round2(netFromGross(r.sales_value, r.vat_rate));
-    const profit = round2(salesNet - r.cost_value);
+    const profit = round2(r.sales_value - r.cost_value);
     return {
       ...r,
       sold_qty: round2(r.sold_qty),
       sales_value: round2(r.sales_value),
+      // Bilgi amacli: satisin KDV haric karsiligi
       sales_net: salesNet,
       cost_value: round2(r.cost_value),
       profit,
-      margin_pct: pctOf(profit, salesNet),
+      margin_pct: pctOf(profit, r.sales_value),
       unit_profit: r.sold_qty ? round2(profit / r.sold_qty) : 0,
       avg_sale_price: round2(r.avg_sale_price),
       avg_purchase_price: round2(r.avg_purchase_price),
@@ -131,7 +135,8 @@ reportRoutes.get('/product-sales', async (ctx) => {
     profit: a.profit + r.profit,
   }), { soldQty: 0, salesValue: 0, salesNet: 0, costValue: 0, profit: 0 });
   for (const k of Object.keys(totals)) totals[k] = round2(totals[k]);
-  totals.marginPct = pctOf(totals.profit, totals.salesNet);
+  // Marj KDV DAHIL satisa oranlanir (maliyet de KDV dahil)
+  totals.marginPct = pctOf(totals.profit, totals.salesValue);
 
   if (ctx.query.format === 'csv') {
     return sendCsv(ctx.res, `urun-satis-${from}_${to}.csv`, toCsv(items, [
@@ -193,6 +198,8 @@ reportRoutes.get('/monthly', async (ctx) => {
     const expected = c ? round2(c.expected_revenue) : null;
     const difference = expected === null ? null : round2(r.revenue - expected);
     const cogs = c ? round2(c.cogs) : null;
+    // Ciro zaten KDV DAHIL; maliyet de KDV DAHIL oldugu icin kar dogrudan
+    // farktir. "salesNet" yalnizca bilgi amacli tasiniyor.
     const salesNet = c && c.expected_revenue ? round2(netFromGross(r.revenue, 10)) : null;
     return {
       month: r.month,
@@ -210,7 +217,7 @@ reportRoutes.get('/monthly', async (ctx) => {
       difference,
       differencePct: pctOf(difference, expected),
       cogs,
-      grossProfit: cogs === null ? null : round2((salesNet ?? 0) - cogs),
+      grossProfit: cogs === null ? null : round2(r.revenue - cogs),
       purchaseTotal: round2(purchaseMap.get(key) || 0),
     };
   });
@@ -259,7 +266,8 @@ reportRoutes.get('/campus-comparison', async (ctx) => {
     const expected = round2(cnt.expected);
     const difference = expected > 0 ? round2(revenue - expected) : null;
     const salesNet = round2(netFromGross(revenue, 10));
-    const grossProfit = cnt.cogs > 0 ? round2(salesNet - cnt.cogs) : null;
+    // KDV DAHIL ciro - KDV DAHIL maliyet
+    const grossProfit = cnt.cogs > 0 ? round2(revenue - cnt.cogs) : null;
     return {
       campusId: k.id,
       campusName: k.name,
@@ -276,7 +284,7 @@ reportRoutes.get('/campus-comparison', async (ctx) => {
       differencePct: pctOf(difference, expected),
       cogs: round2(cnt.cogs),
       grossProfit,
-      grossMarginPct: pctOf(grossProfit, salesNet),
+      grossMarginPct: pctOf(grossProfit, revenue),
       wasteCost: round2(wasteRow.cost),
       wastePct: pctOf(wasteRow.cost, revenue),
       schoolShare: k.rent_share_pct > 0 ? round2(revenue * k.rent_share_pct / 100) : null,

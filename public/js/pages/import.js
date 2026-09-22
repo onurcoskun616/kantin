@@ -262,7 +262,7 @@ function renderPreview(parsed) {
 
   if (negatives.length) {
     nodes.push(alertBox('danger', 'Zararına satış uyarısı',
-      `${negatives.map((p) => p.name).slice(0, 5).join(', ')}${negatives.length > 5 ? ' ve diğerleri' : ''} için satış fiyatı, alış fiyatının altında kalıyor. Genellikle alış fiyatının KDV dahil, satış fiyatının KDV hariç yazılmasından kaynaklanır.`));
+      `${negatives.map((p) => p.name).slice(0, 5).join(', ')}${negatives.length > 5 ? ' ve diğerleri' : ''} için satış fiyatı, alış fiyatının altında kalıyor. Her iki fiyat da KDV DAHİL girilmelidir; alış fiyatını faturadaki KDV hariç tutarla karıştırmış olabilirsiniz.`));
   }
 
   if (products.errors.length) {

@@ -156,6 +156,27 @@ await page.waitForTimeout(2000);
 await page.click('button:has-text("+ Yeni Mal Girişi")');
 await page.waitForSelector('.modal-backdrop');
 
+/**
+ * Ekranda acik kalan pencereleri kapatir.
+ *
+ * Belge kaydedildikten sonra bilgilendirme pencereleri (or. "alis fiyati
+ * artti") acik kalir; bunlar tiklamalari yutar ve sonraki adim sebebi
+ * anlasilmaz bir zaman asimiyla duser.
+ */
+async function acikPencereleriKapat() {
+  for (let i = 0; i < 5; i += 1) {
+    const kapat = await page.$('.modal-backdrop:last-of-type .modal-head .icon-btn');
+    if (!kapat) break;
+    await kapat.click().catch(() => {});
+    await page.waitForTimeout(350);
+  }
+  // Inatci bir pencere kalirsa dogrudan kaldir
+  await page.evaluate(() => {
+    document.querySelectorAll('.modal-backdrop').forEach((n) => n.remove());
+  });
+  await page.waitForTimeout(200);
+}
+
 console.log('\n1) Karekod okuyamayan tarayicida yapistirma yolu acik');
 // Bu tarayicida BarcodeDetector yok (Firefox/Safari ve headless Chromium
 // ile ayni durum). Kullanici cikmaza girmemeli.
@@ -238,6 +259,10 @@ ok('Net toplam 100,00', created && Math.abs(created.net_total - 100) < 0.01, Str
 ok('KDV 20,00', created && Math.abs(created.vat_total - 20) < 0.01, String(created?.vat_total));
 
 console.log('\n6) Ayni karekod ikinci kez kabul edilmez (ETTN)');
+// Kayittan sonra "alis fiyati artti" gibi bilgilendirme pencereleri acik
+// kalabilir ve sonraki tiklamayi yutar. Bir sonraki adima gecmeden
+// ekrandaki pencereleri kapatiriz.
+await acikPencereleriKapat();
 await page.evaluate(() => { location.hash = '#/purchases'; });
 await page.waitForTimeout(1800);
 await page.click('button:has-text("+ Yeni Mal Girişi")');

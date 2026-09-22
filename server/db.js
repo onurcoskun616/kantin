@@ -88,6 +88,88 @@ function upgradeExistingSchema() {
   rebuildIfMissing('users', "'MUHASEBE'");      // roller -> + MUHASEBE (on muhasebe)
   backfillProductPrices();
   tightenPaymentCampus();
+  alisFiyatlariniKdvDahilYap();
+}
+
+/**
+ * ALIS FIYATLARINI KDV DAHIL HALE GETIRIR — bir kez calisir.
+ *
+ * Onceki surumde alis fiyati ve stok maliyeti KDV HARIC tutuluyordu. Alis
+ * KDV'si beyannamede indirilmedigi icin bu tutar gercek maliyeti eksik
+ * gosteriyordu: kar oldugundan yuksek, stok degeri oldugundan dusuk
+ * cikiyordu. Yeni kabul KDV DAHIL (bkz. server/lib/money.js basligi).
+ *
+ * Mevcut veriler donusturulmezse eski kayitlar KDV haric, yenileri KDV
+ * dahil olur ve ikisi ayni raporda toplanir -- sessiz ve fark edilmesi zor
+ * bir hata. Bu yuzden var olan tutarlar KDV orani kadar yukseltilir.
+ *
+ * KDV orani nereden?
+ *   - Alim belgesine bagli stok hareketlerinde FATURA SATIRININ orani
+ *     (dogru olan budur: satirin kendi KDV'si)
+ *   - Digerlerinde urun kartinin orani (en iyi yaklasim)
+ *
+ * Tekrar calistirilabilir: ayarlarda isaret birakir, ikinci kez donusturmez.
+ */
+function alisFiyatlariniKdvDahilYap() {
+  if (!tableExists('products') || !tableExists('settings')) return;
+  if (getSetting('alis_kdv_dahil_gocu') === 'tamam') return;
+
+  // Hic veri yoksa (yeni kurulum) sessizce isaretleyip cikariz
+  const varMi = db.prepare(
+    'SELECT (SELECT COUNT(*) FROM products) AS u, '
+    + `(SELECT COUNT(*) FROM stock_movements) AS h`
+  ).get();
+
+  let urun = 0;
+  let kampus = 0;
+  let hareket = 0;
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    // 1) Urun karti baslangic alis fiyati
+    urun = db.prepare(
+      'UPDATE products SET purchase_price = ROUND(purchase_price * (1 + vat_rate / 100.0), 4) '
+      + 'WHERE purchase_price > 0'
+    ).run().changes;
+
+    // 2) Kampuse ozel alis fiyatlari
+    if (tableExists('campus_products')) {
+      kampus = db.prepare(
+        `UPDATE campus_products SET purchase_price = ROUND(purchase_price * (1 +
+           (SELECT p.vat_rate FROM products p WHERE p.id = campus_products.product_id) / 100.0), 4)
+          WHERE purchase_price IS NOT NULL AND purchase_price > 0`
+      ).run().changes;
+    }
+
+    // 3) Stok hareketlerinin birim maliyeti
+    if (tableExists('stock_movements')) {
+      hareket = db.prepare(
+        `UPDATE stock_movements SET unit_cost = ROUND(unit_cost * (1 + COALESCE(
+             (SELECT pl.vat_rate FROM purchase_lines pl
+               WHERE stock_movements.ref_type = 'purchase'
+                 AND pl.purchase_id = stock_movements.ref_id
+                 AND pl.product_id = stock_movements.product_id
+               LIMIT 1),
+             (SELECT p.vat_rate FROM products p WHERE p.id = stock_movements.product_id),
+             0) / 100.0), 4)
+          WHERE unit_cost > 0`
+      ).run().changes;
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  setSetting('alis_kdv_dahil_gocu', 'tamam');
+  if (urun || kampus || hareket) {
+    console.log(
+      `[SEMA] Alis fiyatlari KDV DAHIL hale getirildi: ${urun} urun, `
+      + `${kampus} kampus fiyati, ${hareket} stok hareketi.`
+    );
+  } else if (varMi.u || varMi.h) {
+    console.log('[SEMA] Alis fiyatlari KDV dahil kabulune gecildi (donusturulecek tutar yoktu).');
+  }
 }
 
 /**

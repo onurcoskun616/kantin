@@ -448,8 +448,11 @@ async function openPurchaseForm(onDone) {
    */
   function addProductFromLine(line, picker, yazilanAd) {
     const ad = (yazilanAd || line.sourceName || '').trim();
+    // Ürün kartının alış fiyatı KDV DAHİL tutulur (alış KDV'si indirilmiyor,
+    // gerçek maliyet odur). Fatura satırı KDV hariç geldiği için KDV eklenir.
     const birimMaliyet = line.quantity > 0
-      ? Math.round((line.unitPrice * (1 - (line.discountPct || 0) / 100)) * 100) / 100
+      ? Math.round((line.unitPrice * (1 - (line.discountPct || 0) / 100)
+        * (1 + (Number(line.vatRate) || 0) / 100)) * 100) / 100
       : 0;
 
     formModal({
@@ -483,9 +486,9 @@ async function openPurchaseForm(onDone) {
           ],
         },
         {
-          name: 'purchasePrice', label: 'Alış fiyatı (KDV hariç)', type: 'number', step: '0.01', min: '0',
+          name: 'purchasePrice', label: 'Alış fiyatı (KDV dahil)', type: 'number', step: '0.01', min: '0',
           value: birimMaliyet || '', required: true,
-          hint: 'Faturadan geldi (iskonto düşülmüş birim maliyet).',
+          hint: 'Faturadan geldi: iskonto düşülmüş, KDV eklenmiş gerçek birim maliyet.',
         },
         {
           name: 'salePrice', label: 'Satış fiyatı (KDV dahil)', type: 'number', step: '0.01', min: '0',
@@ -715,8 +718,9 @@ async function openPurchaseForm(onDone) {
 
     if (invoice.computed.netTotal > 0) {
       notes.push(el('p.card-note', {
-        text: 'Not: Birim fiyatlar KDV hariç aktarıldı. Alttaki genel toplam faturanın ödenecek tutarıyla '
-          + 'aynı olmalı; değilse eşleşmeyen veya silinen satır vardır.',
+        text: 'Not: Birim fiyatlar faturadaki gibi KDV hariç aktarıldı; stok maliyeti ise '
+          + 'KDV dahil hesaplanır (alış KDV\'si indirilmiyor). Alttaki genel toplam faturanın '
+          + 'ödenecek tutarıyla aynı olmalı; değilse eşleşmeyen veya silinen satır vardır.',
       }));
     }
     importBox.replaceChildren(el('div.grid', { style: 'gap:8px' }, notes));

@@ -102,7 +102,10 @@ await page.reload({ waitUntil: 'networkidle' });
 await page.waitForTimeout(2200);
 const liste = (await apiCall('GET', `/api/products?campusId=${kampusId}`)).data.items;
 const urun = liste.find((p) => p.id === urunId);
-ok('Alis fiyati iskonto dusulmus maliyet (9,00)', Math.abs(urun.effective_purchase_price - 9) < 0.01,
+// 12,00 birim fiyat - %25 iskonto = 9,00 (KDV haric) + %10 KDV = 9,90
+// Alis KDV'si indirilmedigi icin maliyet KDV DAHIL tutulur.
+ok('Alis fiyati iskontolu ve KDV DAHIL maliyet (9,90)',
+  Math.abs(urun.effective_purchase_price - 9.9) < 0.01,
   String(urun.effective_purchase_price));
 ok('Kaynak ALIM olarak isaretlendi', urun.purchase_price_source === 'ALIM', urun.purchase_price_source);
 
@@ -111,7 +114,7 @@ await page.waitForSelector('.modal-backdrop');
 await page.waitForTimeout(500);
 const kart = await page.textContent('.modal-body');
 ok('Kart alis fiyatinin faturadan geldigini soyluyor',
-  /mal girişinden/.test(kart) && /9,00/.test(kart), kart.slice(0, 400));
+  /mal girişinden/.test(kart) && /9,90/.test(kart), kart.slice(0, 600));
 
 console.log('\n3) Urun duzenlemek alis fiyatini SILMIYOR');
 await page.fill('.modal input[name=salePrice]', '24');
@@ -119,7 +122,7 @@ await page.click('.modal-foot .btn-primary');
 await page.waitForTimeout(1800);
 const sonrasi = (await apiCall('GET', `/api/products?campusId=${kampusId}`)).data.items
   .find((p) => p.id === urunId);
-ok('Alis fiyati korundu', Math.abs(sonrasi.effective_purchase_price - 9) < 0.01,
+ok('Alis fiyati korundu', Math.abs(sonrasi.effective_purchase_price - 9.9) < 0.01,
   String(sonrasi.effective_purchase_price));
 ok('Satis fiyati guncellendi', Math.abs(sonrasi.effective_sale_price - 24) < 0.01,
   String(sonrasi.effective_sale_price));

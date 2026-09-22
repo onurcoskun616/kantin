@@ -117,7 +117,9 @@ purchaseRoutes.post('/unmatched/:id/resolve', async (ctx) => {
   if (!(quantity > 0)) throw badRequest('Miktar sifirdan buyuk olmalidir.');
 
   const t = purchaseLineTotals({ quantity, unitPrice, vatRate, discountPct });
-  const effectiveUnitCost = round2(t.netTotal / quantity);
+  // Stok maliyeti KDV DAHIL: alis KDV'si indirilmedigi icin gercek maliyettir
+  // (bkz. server/lib/money.js basligi).
+  const effectiveUnitCost = round2(t.grossTotal / quantity);
 
   tx(() => {
     insert(
@@ -318,8 +320,8 @@ purchaseRoutes.post('/', async (ctx) => {
     return {
       productId, product, quantity, unitPrice, vatRate, discountPct, ...totals,
       expiryDate: date(raw.expiryDate, `Satir ${i + 1} SKT`, { def: null }),
-      // Iskonto sonrasi gercek birim maliyet
-      effectiveUnitCost: quantity > 0 ? round2(totals.netTotal / quantity) : 0,
+      // Iskonto sonrasi gercek birim maliyet — KDV DAHIL
+      effectiveUnitCost: quantity > 0 ? round2(totals.grossTotal / quantity) : 0,
       // Faturada bu kalem hangi ad/kodla geldi? Eslestirme bundan ogrenilir.
       sourceName: str(raw.sourceName, `Satir ${i + 1} fatura adi`, { max: 300 }),
       sourceCode: str(raw.sourceCode, `Satir ${i + 1} satici kodu`, { max: 60 }),

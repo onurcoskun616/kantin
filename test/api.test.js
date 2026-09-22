@@ -154,14 +154,17 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
     assert.equal(r.status, 409);
   });
 
-  test('birim kar ve marj KDV haric hesaplanir', async () => {
+  test('birim kar ve marj KDV DAHIL tutarlardan hesaplanir', async () => {
     const stock = await ok('GET', `/api/stock?campusId=${campusId}`);
     const line = stock.items.find((i) => i.product_id === productId);
-    // 22 TL KDV dahil, %10 KDV -> net 20 TL; maliyet 10 TL -> kar 10 TL, marj %50
-    assert.equal(line.profit.saleNet, 20);
-    assert.equal(line.profit.unitProfit, 10);
+    // Alis KDV'si indirilmedigi icin maliyet KDV DAHIL: 10 + %10 = 11 TL.
+    // Satis 22 TL (KDV dahil) -> kar 11 TL, marj 11/22 = %50.
+    assert.equal(line.purchase_price, 11, 'maliyet KDV dahil olmali');
+    assert.equal(line.profit.unitProfit, 11);
     assert.equal(line.profit.marginPct, 50);
     assert.equal(line.profit.markupPct, 100);
+    // saleNet bilgi amacli tasinmaya devam eder
+    assert.equal(line.profit.saleNet, 20);
   });
 
   test('fire stoktan duser', async () => {
@@ -311,8 +314,10 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
     const row = rep.items.find((i) => i.product_id === productId);
     assert.equal(row.sold_qty, 60);
     assert.equal(row.sales_value, 1320);
-    assert.equal(row.cost_value, 600);
-    assert.equal(row.profit, 600);
+    // 60 adet x 11 TL (KDV dahil maliyet) = 660
+    assert.equal(row.cost_value, 660);
+    // Kar = KDV dahil satis - KDV dahil maliyet
+    assert.equal(row.profit, 660);
   });
 
   test('ayni gune ikinci sayim acilamaz', async () => {
@@ -600,9 +605,10 @@ describe('Recete (BOM)', () => {
       ],
     });
     assert.equal(res.unitCost, 12, 'birim maliyet hammadde toplamindan gelmeli');
-    // Satis 33 TL KDV dahil -> net 30 TL; kar 18 TL, marj %60
-    assert.equal(res.profit.unitProfit, 18);
-    assert.equal(res.profit.marginPct, 60);
+    // Hammadde fiyatlari KDV DAHIL girildi; maliyet de KDV dahil: 12 TL.
+    // Satis 33 TL (KDV dahil) -> kar 21 TL, marj 21/33 = %63,64
+    assert.equal(res.profit.unitProfit, 21);
+    assert.equal(res.profit.marginPct, 63.64);
   });
 
   test('recete yalnizca uretilen urunlere tanimlanir', async () => {
@@ -1683,19 +1689,20 @@ describe('Alis fiyati kaynagi', () => {
     assert.equal(satir.last_purchase_price, null, 'henuz giris yok');
   });
 
-  test('fatura girilince alis fiyati FATURADAN gelir', async () => {
+  test('fatura girilince alis fiyati FATURADAN gelir (KDV DAHIL)', async () => {
     await alim(campusA, 'FY-001', 12.5);
     const satir = (await ok('GET', `/api/stock?campusId=${campusA}`))
       .items.find((x) => x.product_id === productId);
-    assert.equal(satir.purchase_price, 12.5);
-    assert.equal(satir.last_purchase_price, 12.5);
+    // Faturada 12,50 (KDV haric) yaziyor; maliyet %10 KDV ile 13,75
+    assert.equal(satir.purchase_price, 13.75);
+    assert.equal(satir.last_purchase_price, 13.75);
   });
 
   test('iskonto dusulmus GERCEK maliyet kullanilir', async () => {
-    await alim(campusA, 'FY-002', 20, 25);          // 20 - %25 = 15,00
+    await alim(campusA, 'FY-002', 20, 25);          // 20 - %25 = 15,00 + %10 KDV = 16,50
     const satir = (await ok('GET', `/api/stock?campusId=${campusA}`))
       .items.find((x) => x.product_id === productId);
-    assert.equal(satir.purchase_price, 15, 'liste fiyati 20 degil, odenen 15 olmali');
+    assert.equal(satir.purchase_price, 16.5, 'liste fiyati degil, KDV dahil odenen tutar olmali');
   });
 
   test('her kampus KENDI alis fiyatini tasir', async () => {
@@ -1704,28 +1711,28 @@ describe('Alis fiyati kaynagi', () => {
       .items.find((x) => x.product_id === productId);
     const b = (await ok('GET', `/api/stock?campusId=${campusB}`))
       .items.find((x) => x.product_id === productId);
-    assert.equal(a.purchase_price, 15, 'A kampusu kendi fiyatini korumali');
-    assert.equal(b.purchase_price, 9.4, 'B kampusu kendi fiyatini kullanmali');
+    assert.equal(a.purchase_price, 16.5, 'A kampusu kendi fiyatini korumali');
+    assert.equal(b.purchase_price, 10.34, 'B kampusu kendi fiyatini kullanmali (9,40 + %10)');
   });
 
   test('stok degeri kampusun kendi maliyetiyle hesaplanir', async () => {
     const b = await ok('GET', `/api/stock?campusId=${campusB}`);
     const satir = b.items.find((x) => x.product_id === productId);
-    assert.ok(Math.abs(satir.stock_cost_value - satir.stock_qty * 9.4) < 0.01,
-      `${satir.stock_cost_value} vs ${satir.stock_qty} x 9.4`);
+    assert.ok(Math.abs(satir.stock_cost_value - satir.stock_qty * 10.34) < 0.01,
+      `${satir.stock_cost_value} vs ${satir.stock_qty} x 10,34`);
   });
 
   test('belge iptal edilince o giris fiyat kaynagi olmaktan cikar', async () => {
     const b = await alim(campusB, 'FY-004', 30);
     let satir = (await ok('GET', `/api/stock?campusId=${campusB}`))
       .items.find((x) => x.product_id === productId);
-    assert.equal(satir.purchase_price, 30);
+    assert.equal(satir.purchase_price, 33, '30 + %10 KDV');
 
     await ok('POST', `/api/purchases/${b.id}/cancel`);
 
     satir = (await ok('GET', `/api/stock?campusId=${campusB}`))
       .items.find((x) => x.product_id === productId);
-    assert.equal(satir.purchase_price, 9.4, 'iptal sonrasi bir onceki girise donmeli');
+    assert.equal(satir.purchase_price, 10.34, 'iptal sonrasi bir onceki girise donmeli');
   });
 
   test('fire ve satis hareketleri fiyat kaynagi DEGILDIR', async () => {
@@ -1734,7 +1741,7 @@ describe('Alis fiyati kaynagi', () => {
     });
     const satir = (await ok('GET', `/api/stock?campusId=${campusB}`))
       .items.find((x) => x.product_id === productId);
-    assert.equal(satir.purchase_price, 9.4, 'fire fiyati degistirmemeli');
+    assert.equal(satir.purchase_price, 10.34, 'fire fiyati degistirmemeli');
   });
 });
 
@@ -1785,16 +1792,19 @@ describe('Urun karti alis fiyatini korur', () => {
     const sonra = await ok('GET', `/api/products?campusId=${campusId}`);
     const k2 = sonra.items.find((p) => p.id === productId);
     assert.equal(k2.purchase_price_source, 'ALIM');
-    assert.equal(k2.effective_purchase_price, 13.2);
+    // Faturada 13,20 (KDV haric); maliyet %10 KDV ile 14,52
+    assert.equal(k2.effective_purchase_price, 14.52);
     assert.equal(k2.last_purchase_date, daysAgo(1));
   });
 
   test('kar marji gercek maliyet uzerinden hesaplanir', async () => {
     const r = await ok('GET', `/api/products?campusId=${campusId}`);
     const k = r.items.find((p) => p.id === productId);
-    // Satis 26,00 KDV dahil %10 -> net 23,636..., maliyet 13,20
-    assert.ok(Math.abs(k.profit.purchaseNet - 13.2) < 0.01, String(k.profit.purchaseNet));
-    assert.ok(k.profit.unitProfit > 10 && k.profit.unitProfit < 11, String(k.profit.unitProfit));
+    // Iki taraf da KDV DAHIL: satis 26,00 - maliyet 14,52 = 11,48
+    assert.ok(Math.abs(k.profit.purchaseGross - 14.52) < 0.01, String(k.profit.purchaseGross));
+    assert.ok(Math.abs(k.profit.unitProfit - 11.48) < 0.01, String(k.profit.unitProfit));
+    // Marj KDV dahil satisa oranlanir: 11,48 / 26,00 = %44,15
+    assert.ok(Math.abs(k.profit.marginPct - 44.15) < 0.1, String(k.profit.marginPct));
   });
 });
 

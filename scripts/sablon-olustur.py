@@ -56,7 +56,7 @@ PRODUCT_COLUMNS = [
                       "Hammadde = raftan sayılır ama satılmaz; reçetelerde tüketilir (ekmek, kaşar, çay).\n"
                       "Üretilen = kantinde hazırlanır (tost, çay, poğaça). Stoktan ve sayımdan çıkarılır; "
                       "dönem satış adedi sayım ekranında girilir, maliyeti reçetesinden hesaplanır."),
-    ("Alış Fiyatı (KDV hariç) *", 22, "ZORUNLU. Tedarikçi FATURASINDAKİ birim fiyat, KDV HARİÇ."),
+    ("Alış Fiyatı (KDV dahil) *", 22, "ZORUNLU. Faturada ÖDENEN birim fiyat, KDV DAHİL."),
     ("Satış Fiyatı (KDV dahil) *", 22, "ZORUNLU. Öğrenciden tahsil ettiğiniz RAF fiyatı, KDV DAHİL."),
     ("KDV Oranı (%)", 14, "Tedarikçi faturasındaki KDV oranını yazın. Emin değilseniz faturaya bakın."),
     ("Kritik Stok", 12, "Bu miktarın altına inince panel uyarı verir. Haftalık satışın yarısı iyi bir başlangıçtır."),
@@ -248,11 +248,12 @@ def build_instructions(ws):
     title(r, "Fiyatlar — en sık yapılan hata")
     r += 1
     for label, text, bold in [
-        ("Alış Fiyatı", "KDV HARİÇ yazılır. Tedarikçi faturasındaki birim fiyat sütunudur "
-                        "(genel toplam değil, KDV eklenmemiş hâli).", True),
+        ("Alış Fiyatı", "KDV DAHİL yazılır: faturada o kalem için fiilen ödediğiniz birim tutar "
+                        "(genel toplam değil, tek bir adedin tutarı).", True),
         ("Satış Fiyatı", "KDV DAHİL yazılır. Öğrencinin kasada ödediği raf fiyatıdır.", True),
-        ("Neden böyle?", "KDV devlete aittir, kâr değildir. Kâr bu yüzden her iki fiyatın KDV hariç hâli "
-                         "üzerinden hesaplanır. Aksi hâlde kâr marjınız olduğundan %10-20 yüksek görünür.", False),
+        ("Neden böyle?", "Ödediğiniz alış KDV'si beyannamede indirilmediği için gerçekten cebinizden "
+                         "çıkıyor; yani bir maliyettir. Bu yüzden her iki fiyat da KDV DAHİL yazılır ve "
+                         "kâr ikisinin farkıdır: kasanızda kalan gerçek tutar.", False),
         ("KDV oranı", "Tedarikçi faturanızda yazar. Süt, ekmek, taze meyve gibi temel gıdalarda düşük; "
                       "gazlı içecek, kırtasiye gibi ürünlerde yüksektir. Faturadan bakıp yazmanız yeterli.", False),
         ("Kontrol", "Doldururken sağdaki iki gri sütun anında birim kârı ve marjı gösterir. "

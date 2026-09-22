@@ -6,7 +6,7 @@
 |---|---|---|
 | Kim belirler | Tedarikçi (fatura) | Okul |
 | Nereden gelir | **Mal girişlerinden** — fatura veya açılış stoğu | Elle girilir, **bir tarihten itibaren** geçerli olur |
-| KDV | **Hariç** (faturadaki mal bedeli) | **Dahil** (raf etiketi) |
+| KDV | **Dahil** (faturada ödenen tutar) | **Dahil** (raf etiketi) |
 | Kampüse göre | Her kampüs kendi alımının fiyatını taşır | Kampüse özel fiyat tanımlanabilir |
 | Nerede yönetilir | Mal Girişi (Alım) | Ürünler ve Fiyatlar → **🗓️ Fiyat Takvimi** |
 
@@ -40,13 +40,21 @@ anlaşılmaz; kâr marjı, stok değeri ve zararına satış uyarıları yanlı�
 Fire ve sayım farkı bir fiyat **beyanı** değildir; mevcut maliyeti taşır,
 belirlemez.
 
-### İskonto düşülmüş gerçek maliyet
+### İskonto düşülmüş, KDV dahil gerçek maliyet
 
 Kaydedilen fiyat faturadaki liste fiyatı değil, **ödenen** fiyattır:
 
 ```
-20,00 TL birim fiyat, %25 iskonto  →  maliyet 15,00 TL
+20,00 TL birim fiyat, %25 iskonto, %10 KDV  →  maliyet 16,50 TL
 ```
+
+**Neden KDV dahil?** Ödenen alış KDV'si beyannamede indirilmiyor; gerçekten
+kasadan çıkıyor. Böyle bir işletme için KDV maliyettir. Kâr da bu yüzden
+"KDV dahil satış − KDV dahil alış" olarak hesaplanır: kasada kalan gerçek
+fark budur.
+
+Fatura **satırları** yine KDV hariç girilir (faturada öyle yazar); KDV'yi
+sistem ekler. Değişen, maliyetin hangi tutardan sayıldığıdır.
 
 Belge geneli iskonto (ciro primi) da satırlara dağıtılır — ayrıntısı
 **[FATURA-GIRISI.md](FATURA-GIRISI.md)** içindedir.

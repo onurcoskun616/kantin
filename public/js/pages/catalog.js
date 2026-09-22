@@ -69,7 +69,7 @@ export async function renderProducts(root) {
         { label: 'Barkod', value: (r) => r.barcode || '—' },
         { label: 'Ürün', value: (r) => r.name, wrap: true },
         { label: 'Kategori', value: (r) => r.category_name || '—' },
-        { label: 'Alış (KDV hariç)', num: true, value: (r) => fmt.money(r.effective_purchase_price) },
+        { label: 'Alış (KDV dahil)', num: true, value: (r) => fmt.money(r.effective_purchase_price) },
         { label: 'Satış (KDV dahil)', num: true, value: (r) => fmt.money(r.effective_sale_price) },
         { label: 'KDV', num: true, value: (r) => fmt.pct(r.vat_rate) },
         { label: 'Satış (KDV hariç)', num: true, value: (r) => fmt.money(r.profit.saleNet) },
@@ -103,7 +103,7 @@ export async function renderProducts(root) {
         rowClass: (r) => (r.profit.unitProfit < 0 ? 'is-critical' : r.profit.marginPct < 15 ? 'is-warn' : ''),
         emptyText: 'Ürün bulunamadı.',
       }),
-    ], { tight: true, note: 'Kâr marjı = birim kâr / KDV hariç satış fiyatı. Maliyet üzeri kâr = birim kâr / alış fiyatı.' }));
+    ], { tight: true, note: 'Alış ve satış fiyatlarının ikisi de KDV DAHİLDİR; alış KDV\'si indirilmediği için gerçek maliyettir. Birim kâr = satış − alış. Kâr marjı = birim kâr / satış fiyatı. Maliyet üzeri kâr = birim kâr / alış fiyatı.' }));
   }
 }
 
@@ -290,13 +290,14 @@ function alisFiyatiAciklamasi(product) {
   const fiyat = product.effective_purchase_price ?? product.purchase_price ?? 0;
   if (product.purchase_price_source === 'ALIM' && product.last_purchase_date) {
     return `${fmt.money(fiyat)} — ${fmt.date(product.last_purchase_date)} tarihli mal girişinden `
-      + '(iskonto düşülmüş gerçek maliyet). Değiştirmek için yeni bir alım belgesi girin.';
+      + '(iskonto düşülmüş, KDV DAHİL gerçek maliyet). Değiştirmek için yeni bir alım belgesi girin.';
   }
   if (fiyat > 0) {
     return `${fmt.money(fiyat)} — başlangıç değeri. Bu ürün için henüz mal girişi yapılmadı; `
       + 'ilk fatura girildiğinde gerçek maliyetle değişecek.';
   }
-  return 'Henüz mal girişi yapılmadı, alış fiyatı oluşmadı. Kâr hesabı ilk faturadan sonra anlam kazanır.';
+  return 'Henüz mal girişi yapılmadı, alış fiyatı oluşmadı. Kâr hesabı ilk faturadan sonra anlam kazanır. '
+    + 'Alış fiyatı KDV DAHİL tutulur: alış KDV\'si indirilmediği için gerçek maliyettir.';
 }
 
 function openCampusPrice(product, onDone) {

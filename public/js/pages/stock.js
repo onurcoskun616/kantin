@@ -52,7 +52,7 @@ export async function render(root) {
         { label: 'Kategori', value: (r) => r.category_name || '—' },
         { label: 'Stok', num: true, render: (r) => el(r.stock_qty < 0 ? 'strong.neg' : 'strong', { text: fmt.num(r.stock_qty) }) },
         { label: 'Kritik', num: true, value: (r) => (r.critical_stock ? fmt.num(r.critical_stock) : '—') },
-        { label: 'Alış (KDV hariç)', num: true, value: (r) => fmt.money(r.purchase_price) },
+        { label: 'Alış (KDV dahil)', num: true, value: (r) => fmt.money(r.purchase_price) },
         { label: 'Satış (KDV dahil)', num: true, value: (r) => fmt.money(r.sale_price) },
         { label: 'Birim Kâr', num: true, render: (r) => deltaCell(r.profit.unitProfit) },
         { label: 'Kâr Marjı', num: true, render: (r) => marginBadge(r.profit.marginPct) },

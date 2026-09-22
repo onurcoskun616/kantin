@@ -17,7 +17,7 @@ import { notFound, badRequest, conflict } from '../lib/http.js';
 import { requireWrite, assertCampusAccess, campusFilter } from '../lib/auth.js';
 import { logAudit } from '../lib/audit.js';
 import { str, num, int, date, arr, today, oneOf } from '../lib/validate.js';
-import { purchaseLineTotals, round2 } from '../lib/money.js';
+import { purchaseLineTotals, round2, netFromGross } from '../lib/money.js';
 import { addMovement, stockOf, effectivePrices } from '../lib/stock.js';
 import { assertNotLocked } from './stock.js';
 
@@ -136,9 +136,14 @@ returnRoutes.post('/', async (ctx) => {
     }
     const quantity = num(raw.quantity, `Satir ${i + 1} miktar`, { required: true, min: 0.001 });
     const prices = effectivePrices(campusId, productId);
-    const unitPrice = num(raw.unitPrice, `Satir ${i + 1} birim fiyat`, { min: 0, def: prices.purchase_price })
-      ?? prices.purchase_price;
     const vatRate = num(raw.vatRate, `Satir ${i + 1} KDV`, { min: 0, max: 100, def: product.vat_rate }) ?? product.vat_rate;
+    // IADE BELGESI FATURA GIBIDIR: birim fiyati KDV HARIC tasir, KDV ayri
+    // satirda gorunur. Stok maliyeti (purchase_price) ise KDV DAHIL
+    // tutuldugu icin varsayilan deger netlestirilmeden konulursa uzerine
+    // ikinci kez KDV eklenir ve iade tutari sisirdi.
+    const varsayilan = round2(netFromGross(prices.purchase_price, vatRate));
+    const unitPrice = num(raw.unitPrice, `Satir ${i + 1} birim fiyat`, { min: 0, def: varsayilan })
+      ?? varsayilan;
     const totals = purchaseLineTotals({ quantity, unitPrice, vatRate });
     return { product, productId, quantity, unitPrice, vatRate, ...totals };
   });
@@ -170,7 +175,9 @@ returnRoutes.post('/', async (ctx) => {
       );
       addMovement({
         campusId, productId: l.productId, type: 'IADE', quantity: -l.quantity,
-        unitCost: l.unitPrice, date: returnDate,
+        // Stok maliyeti KDV DAHIL tutulur (bkz. server/lib/money.js)
+        unitCost: l.quantity > 0 ? round2(l.grossTotal / l.quantity) : 0,
+        date: returnDate,
         refType: 'return', refId: id, note: `Tedarikciye iade - ${reason}`, userId: ctx.user.id,
       });
     }

@@ -2,10 +2,24 @@
  * Para, KDV ve karlilik hesaplari.
  *
  * Kabuller:
- *   - purchase_price : tedarikciden alis, KDV HARIC (fatura satir tutari)
+ *   - purchase_price : tedarikciden alis, KDV DAHIL (faturada odenen tutar)
  *   - sale_price     : ogrenciye satis, KDV DAHIL (raf etiketi)
- *   - Karlilik her zaman KDV HARIC netler uzerinden hesaplanir; aksi halde
- *     KDV devlet parasi oldugu icin kar yapay olarak yuksek cikar.
+ *   - Karlilik KDV DAHIL tutarlar uzerinden hesaplanir.
+ *
+ * NEDEN KDV DAHIL? (bu bir muhasebe kararidir, keyfi degil)
+ *
+ * Alis KDV'si beyannamede INDIRILMIYOR: odenen KDV gercekten kasadan
+ * cikiyor ve geri gelmiyor. Boyle bir isletme icin KDV bir maliyettir,
+ * devlete emanet bir tutar degildir. Bu yuzden stok degeri, satilan malin
+ * maliyeti ve kar marji KDV dahil tutarlarla hesaplanir.
+ *
+ * IKI TARAF DA AYNI OLMAK ZORUNDA. Alisi KDV dahil alip satisi KDV haric
+ * netlestirmek, KDV'yi iki kez aleyhe saymak olurdu: hem gelirden dusulur
+ * hem maliyete eklenir. Kar bu yuzden "KDV dahil satis - KDV dahil alis"
+ * olarak hesaplanir; isletmenin kasasinda kalan gercek fark budur.
+ *
+ * Alis KDV'sini INDIREN bir isletmeye gecilirse bu dosyadaki kabul ve
+ * `netFromGross` kullanimlari birlikte degistirilmelidir.
  */
 
 /** Kurus hassasiyetinde yuvarlama (yuzen nokta hatalarini temizler). */
@@ -33,24 +47,32 @@ export function grossFromNet(net, vatRate) {
 
 /**
  * Bir urunun birim karlilik metriklerini hesaplar.
- * @param {number} purchasePrice KDV haric alis
- * @param {number} salePrice     KDV dahil satis
- * @param {number} vatRate       Satis KDV orani (%)
+ *
+ * Iki taraf da KDV DAHIL: kar, kasada kalan gercek farktir.
+ *
+ * @param {number} purchasePrice KDV DAHIL alis
+ * @param {number} salePrice     KDV DAHIL satis
+ * @param {number} vatRate       Satis KDV orani (%) -- yalnizca bilgi amacli
+ *                               KDV tutarini gostermek icin kullanilir
  */
 export function productProfit(purchasePrice, salePrice, vatRate) {
-  const purchaseNet = round4(Number(purchasePrice) || 0);
+  const purchaseGross = round4(Number(purchasePrice) || 0);
   const saleGross = round4(Number(salePrice) || 0);
+  // Satisin icindeki KDV: karin parcasidir (indirilmedigi icin), ama
+  // "raf fiyatinin ne kadari KDV" sorusu icin ayrica gosterilir.
   const saleNet = netFromGross(saleGross, vatRate);
   const vatAmount = round4(saleGross - saleNet);
-  const unitProfit = round4(saleNet - purchaseNet);
+  const unitProfit = round4(saleGross - purchaseGross);
 
-  // Kar marji: karin satis netine orani (satistan ne kadari kar kaliyor)
-  const marginPct = saleNet > 0 ? round2((unitProfit / saleNet) * 100) : 0;
+  // Kar marji: karin SATIS FIYATINA orani (raf fiyatindan ne kadari kar)
+  const marginPct = saleGross > 0 ? round2((unitProfit / saleGross) * 100) : 0;
   // Karlilik/markup: karin maliyete orani (maliyetin uzerine ne kadar koyuldu)
-  const markupPct = purchaseNet > 0 ? round2((unitProfit / purchaseNet) * 100) : 0;
+  const markupPct = purchaseGross > 0 ? round2((unitProfit / purchaseGross) * 100) : 0;
 
   return {
-    purchaseNet: round2(purchaseNet),
+    // Eski ad korunuyor (cagiranlar cok); artik KDV DAHIL alisi tasiyor.
+    purchaseNet: round2(purchaseGross),
+    purchaseGross: round2(purchaseGross),
     saleGross: round2(saleGross),
     saleNet: round2(saleNet),
     vatAmount: round2(vatAmount),

@@ -527,8 +527,11 @@ countRoutes.get('/:id/reconciliation', async (ctx) => {
   const openingPeriod = (!isSpot && (!data.period_start || data.is_opening))
     ? buildOpeningNotice(data.campus_id, from, to, difference, !!data.is_opening)
     : null;
+  // Maliyet KDV DAHIL tutuldugu icin (alis KDV'si indirilmiyor), kar da
+  // KDV DAHIL cirodan hesaplanir. Ciroyu netlestirip maliyeti brut
+  // birakmak KDV'yi iki kez aleyhe saymak olurdu.
   const actualNet = round2(netFromGross(actualRevenue, weightedVat(data.lines)));
-  const grossProfit = isSpot ? null : round2(actualNet - cogs);
+  const grossProfit = isSpot ? null : round2(actualRevenue - cogs);
 
   return {
     blind: false,
@@ -569,9 +572,10 @@ countRoutes.get('/:id/reconciliation', async (ctx) => {
     },
     profitability: {
       cogs, actualNet, grossProfit,
-      grossMarginPct: isSpot ? null : pctOf(grossProfit, actualNet),
+      grossMarginPct: isSpot ? null : pctOf(grossProfit, actualRevenue),
+      // Iki taraf da KDV DAHIL: satis fiyati - alis maliyeti
       theoreticalProfit: round2(data.lines.reduce(
-        (s, l) => s + (l.expected_qty - l.counted_qty) * (netFromGross(l.sale_price, l.vat_rate) - l.purchase_price), 0
+        (s, l) => s + (l.expected_qty - l.counted_qty) * (l.sale_price - l.purchase_price), 0
       )),
     },
     purchases: { netTotal: round2(purchases.net), grossTotal: round2(purchases.gross), documentCount: purchases.doc_count },

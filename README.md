@@ -76,7 +76,7 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
   tanımlanır, günü gelince kendiliğinden geçer. Geçmişe dönük raporlar o
   dönemde geçerli olan fiyatı kullanır. Yürürlüğe girmiş fiyat silinemez
   (o dönemin kârlılığını açıklayan kayıttır); ileri tarihli fiyat iptal edilir
-- Alış (KDV hariç) ve satış (KDV dahil) fiyatı ayrı tutulur
+- Alış ve satış fiyatı ayrı tutulur; **ikisi de KDV dahildir** (alış KDV'si indirilmediği için maliyettir)
 - Birim kâr, kâr marjı ve maliyet üzeri kâr oranı otomatik hesaplanır
 - Kampüs bazlı fiyat istisnası (tarihli)
 - Fiyat değişiklik geçmişi; alımda %10 üzeri fiyat artışı uyarısı
@@ -303,14 +303,27 @@ cron yedekleme görevi).
 
 | Alan | Kabul |
 |---|---|
-| `purchase_price` | Tedarikçiden alış, **KDV hariç**. Ürün kartında yalnızca *başlangıç* değeridir; geçerli fiyat mal girişlerinden gelir |
+| `purchase_price` | Tedarikçiden alış, **KDV dahil**. Ürün kartında yalnızca *başlangıç* değeridir; geçerli fiyat mal girişlerinden gelir |
 | `sale_price` | Öğrenciye satış, **KDV dahil** (raf etiketi) |
-| Birim kâr | `satış(KDV hariç) − alış(KDV hariç)` |
-| Kâr marjı % | `birim kâr / satış(KDV hariç) × 100` |
+| Birim kâr | `satış − alış` (ikisi de KDV dahil) |
+| Kâr marjı % | `birim kâr / satış × 100` |
 | Maliyet üzeri kâr % | `birim kâr / alış × 100` |
 
-KDV devlete ait olduğu için kârlılık her zaman KDV hariç netler üzerinden
-hesaplanır; aksi halde kâr yapay olarak yüksek görünür.
+**Neden her iki taraf da KDV dahil?** Ödenen alış KDV'si beyannamede
+indirilmiyor; yani gerçekten kasadan çıkıyor ve geri gelmiyor. Böyle bir
+işletme için KDV bir **maliyettir**, devlete emanet bir tutar değildir. Stok
+değeri, satılan malın maliyeti ve kâr marjı bu yüzden KDV dahil tutarlarla
+hesaplanır.
+
+İki taraf aynı olmak zorunda: alışı KDV dahil alıp satışı KDV hariç
+netleştirmek KDV'yi **iki kez** aleyhe saymak olurdu — hem gelirden düşülür
+hem maliyete eklenir. Kâr bu yüzden kasada kalan gerçek farktır.
+
+> Alış KDV'sini indiren bir işletmeye geçilirse `server/lib/money.js`
+> başlığındaki kabul ve `netFromGross` kullanımları birlikte değiştirilmelidir.
+
+**Fatura satırları KDV hariç girilmeye devam eder** — faturada öyle yazar.
+KDV'yi sistem ekler; değişen, maliyetin hangi tutardan sayıldığıdır.
 
 KDV oranını **tedarikçi faturanızdan** okuyup ürün kartına (veya Excel şablonuna)
 yazmanız yeterlidir. Süt, ekmek ve taze meyve gibi temel gıdalarda oran düşük;

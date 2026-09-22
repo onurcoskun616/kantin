@@ -78,7 +78,7 @@ productRoutes.get('/', async (ctx) => {
       { label: 'Ürün', key: 'name' },
       { label: 'Kategori', key: 'category_name' },
       { label: 'Birim', key: 'unit' },
-      { label: 'Alış (KDV hariç)', value: (r) => fmt(r.effective_purchase_price) },
+      { label: 'Alış (KDV dahil)', value: (r) => fmt(r.effective_purchase_price) },
       { label: 'Satış (KDV dahil)', value: (r) => fmt(r.effective_sale_price) },
       { label: 'KDV %', key: 'vat_rate' },
       { label: 'Birim Kâr', value: (r) => fmt(r.profit.unitProfit) },
