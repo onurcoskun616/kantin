@@ -35,13 +35,16 @@ reportRoutes.get('/dashboard', async (ctx) => {
     );
     const stock = stockValue(campus.id);
     const lastCount = get(
-      `SELECT id, count_date, status, expected_revenue, actual_revenue FROM counts
+      `SELECT id, count_date, status, expected_revenue, actual_revenue, is_opening FROM counts
         WHERE campus_id = ? ORDER BY count_date DESC, id DESC LIMIT 1`, [campus.id]
     );
     const openDraft = get("SELECT id, count_date FROM counts WHERE campus_id = ? AND status = 'TASLAK' LIMIT 1", [campus.id]);
     const missingDays = missingRevenueDays(campus.id, from, minDate(to, today()));
 
-    const difference = lastCount && lastCount.status === 'KESINLESMIS'
+    // ACILIS SAYIMI: farki sistem oncesi donemi tasir, bir sapma degildir.
+    // Panoda alarm olarak gosterilmez; yoksa gecis ayinda her kampus kirmizi
+    // gorunur ve panonun uyari degeri sifirlanir.
+    const difference = lastCount && lastCount.status === 'KESINLESMIS' && !lastCount.is_opening
       ? round2(lastCount.actual_revenue - lastCount.expected_revenue) : null;
 
     return {
@@ -93,7 +96,7 @@ reportRoutes.get('/product-sales', async (ctx) => {
             AVG(l.vat_rate)                            AS vat_rate,
             COUNT(DISTINCT c.id)                       AS count_sessions
        FROM count_lines l
-       JOIN counts   c   ON c.id = l.count_id AND c.status = 'KESINLESMIS'
+       JOIN counts   c   ON c.id = l.count_id AND c.status = 'KESINLESMIS' AND c.is_opening = 0
        JOIN products p   ON p.id = l.product_id
        LEFT JOIN categories cat ON cat.id = p.category_id
       WHERE c.count_date BETWEEN ? AND ? ${f.clause}
@@ -168,6 +171,7 @@ reportRoutes.get('/monthly', async (ctx) => {
     `SELECT substr(c.count_date, 1, 7) AS month, c.campus_id,
             SUM(l.sold_qty) AS sold_qty, SUM(l.sales_value) AS expected_revenue, SUM(l.cost_value) AS cogs
        FROM count_lines l JOIN counts c ON c.id = l.count_id AND c.status = 'KESINLESMIS'
+              AND c.is_opening = 0
       WHERE c.count_date BETWEEN ? AND ? ${fc.clause}
       GROUP BY month, c.campus_id`,
     [from, to, ...fc.params]
@@ -244,6 +248,7 @@ reportRoutes.get('/campus-comparison', async (ctx) => {
       `SELECT COALESCE(SUM(l.sold_qty), 0) AS sold_qty, COALESCE(SUM(l.sales_value), 0) AS expected,
               COALESCE(SUM(l.cost_value), 0) AS cogs
          FROM count_lines l JOIN counts c ON c.id = l.count_id AND c.status = 'KESINLESMIS'
+              AND c.is_opening = 0
         WHERE c.campus_id = ? AND c.count_date BETWEEN ? AND ?`, [k.id, from, to]
     );
     const wasteRow = get(

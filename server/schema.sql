@@ -499,6 +499,18 @@ CREATE TABLE IF NOT EXISTS counts (
                        CHECK (status IN ('TASLAK','SAYILDI','KESINLESMIS')),
   -- Kor sayim: girerken "olmasi gereken" miktar gizlenir (bkz. docs/DENETIM-KONTROLLERI.md)
   is_blind           INTEGER NOT NULL DEFAULT 1,
+  -- ACILIS SAYIMI: sisteme gecis sayimi.
+  --
+  -- Stok gecmis faturalar girilerek olusturuldugunda ilk sayimin farki bir
+  -- DONEM SATISI degildir: sistem oncesi satisi, fireyi, ikrami ve kaydedilmemis
+  -- her seyi tek kalemde tasir. Stok duzeltmesi gerceklesir ve donem kilitlenir
+  -- (isleyisi normal DONEM sayimi gibidir) ama ISTATISTIKLERE GIRMEZ: aylik
+  -- karlilik, urun satis ve kampus karsilastirma raporlari bu sayimi disarida
+  -- birakir. Aksi halde gecise denk gelen ay, sistemin gordugu en karli ya da
+  -- en zararli ay olarak kalirdi.
+  --
+  -- Yalnizca kampusun ILK donem sayimi acilis olarak isaretlenebilir.
+  is_opening         INTEGER NOT NULL DEFAULT 0,
   note               TEXT,
   -- Sayima fiilen katilan ikinci kisi (sistem kullanicisi olmayabilir)
   witness_name       TEXT,

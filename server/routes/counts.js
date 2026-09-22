@@ -25,7 +25,7 @@ import { all, get, insert, run, tx } from '../db.js';
 import { notFound, badRequest, conflict, forbidden, sendCsv, toCsv } from '../lib/http.js';
 import { requireWrite, assertCampusAccess, campusFilter, requireRole } from '../lib/auth.js';
 import { logAudit } from '../lib/audit.js';
-import { str, num, int, date, arr, today, oneOf } from '../lib/validate.js';
+import { str, num, int, bool, date, arr, today, oneOf } from '../lib/validate.js';
 import { stockSnapshot, addMovement, effectivePrices } from '../lib/stock.js';
 import { round2, round4, netFromGross, pctOf } from '../lib/money.js';
 import { recipeConsumption, recipeUnitCost } from '../lib/recipe.js';
@@ -83,12 +83,27 @@ countRoutes.post('/', async (ctx) => {
   }
 
   let periodStart = null;
+  let isOpening = false;
   if (countType === 'DONEM') {
     const last = lastFinalizedCount(campusId);
     if (last && countDate <= last.count_date) {
       throw badRequest(`Son kesinlesmis sayim ${last.count_date} tarihli. Sayim tarihi bundan sonra olmalidir.`);
     }
     periodStart = last ? addDays(last.count_date, 1) : null;
+
+    // ACILIS SAYIMI yalnizca kampusun ILK donem sayimi olabilir. Sonraki bir
+    // sayimin acilis sayilmasi, o donemin satisini raporlardan silmek olurdu.
+    if (bool(ctx.body.isOpening, false)) {
+      if (last) {
+        throw badRequest(
+          `Acilis sayimi yalnizca kampusun ilk donem sayimi olabilir. `
+          + `Bu kampuste ${last.count_date} tarihli kesinlesmis bir sayim zaten var.`
+        );
+      }
+      isOpening = true;
+    }
+  } else if (bool(ctx.body.isOpening, false)) {
+    throw badRequest('Acilis sayimi donem sayimidir; nokta sayimi acilis olamaz.');
   }
 
   // Nokta sayiminda yalnizca secilen urunler sayilir
@@ -98,9 +113,10 @@ countRoutes.post('/', async (ctx) => {
 
   const countId = tx(() => {
     const id = insert(
-      `INSERT INTO counts (campus_id, count_date, period_start, count_type, status, is_blind, note, created_by)
-       VALUES (?, ?, ?, ?, 'TASLAK', ?, ?, ?)`,
-      [campusId, countDate, periodStart, countType, isBlind ? 1 : 0, note, ctx.user.id]
+      `INSERT INTO counts (campus_id, count_date, period_start, count_type, status, is_blind,
+                           is_opening, note, created_by)
+       VALUES (?, ?, ?, ?, 'TASLAK', ?, ?, ?, ?)`,
+      [campusId, countDate, periodStart, countType, isBlind ? 1 : 0, isOpening ? 1 : 0, note, ctx.user.id]
     );
 
     const snapshot = stockSnapshot(campusId, { untilDate: countDate })
@@ -406,7 +422,7 @@ countRoutes.get('/:id/reconciliation', async (ctx) => {
       count: {
         id: data.id, campusId: data.campus_id, campusName: data.campus_name,
         countDate: data.count_date, periodStart: data.period_start,
-        status: data.status, countType: data.count_type,
+        status: data.status, countType: data.count_type, isOpening: !!data.is_opening,
       },
       progress: data.progress,
     };
@@ -508,8 +524,8 @@ countRoutes.get('/:id/reconciliation', async (ctx) => {
   //
   // Uyarmazsak ilk mutabakat devasa bir kayip gibi gorunur ve sistemin ilk
   // verdigi rakam yanlis bir suclama olur.
-  const openingPeriod = (!isSpot && !data.period_start)
-    ? buildOpeningNotice(data.campus_id, from, to, difference)
+  const openingPeriod = (!isSpot && (!data.period_start || data.is_opening))
+    ? buildOpeningNotice(data.campus_id, from, to, difference, !!data.is_opening)
     : null;
   const actualNet = round2(netFromGross(actualRevenue, weightedVat(data.lines)));
   const grossProfit = isSpot ? null : round2(actualNet - cogs);
@@ -520,7 +536,7 @@ countRoutes.get('/:id/reconciliation', async (ctx) => {
     count: {
       id: data.id, campusId: data.campus_id, campusName: data.campus_name,
       countDate: data.count_date, periodStart: data.period_start,
-      status: data.status, countType: data.count_type,
+      status: data.status, countType: data.count_type, isOpening: !!data.is_opening,
       submittedByName: data.submitted_by_name, witnessName: data.witness_name,
       finalizedByName: data.finalized_by_name, reopenedCount: data.reopened_count,
     },
@@ -700,7 +716,7 @@ function periodRevenue(campusId, from, to) {
  * girilen malin bedelini de veririz: ilk mutabakattaki farkin ne kadari
  * "sistemden onceki satis" diye bakilabilsin.
  */
-function buildOpeningNotice(campusId, from, to, difference) {
+function buildOpeningNotice(campusId, from, to, difference, isMarkedOpening) {
   const ilkCiro = get(
     'SELECT MIN(revenue_date) AS d FROM daily_revenues WHERE campus_id = ?', [campusId]
   )?.d || null;
@@ -720,6 +736,9 @@ function buildOpeningNotice(campusId, from, to, difference) {
 
   return {
     isFirstCount: true,
+    // Kullanici bu sayimi ACILIS olarak isaretledi mi? Isaretliyse rakamlari
+    // raporlara girmez; isaretli degilse yalnizca uyari verilir.
+    isMarkedOpening: !!isMarkedOpening,
     firstMovementDate: ilkHareket,
     firstRevenueDate: ilkCiro,
     // Ciro kaydi olmayan, ama mal girisi olan donem

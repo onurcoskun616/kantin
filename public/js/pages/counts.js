@@ -22,7 +22,12 @@ export async function render(root) {
       el('p.card-note', { text: 'Sayım, kantin denetiminin temelidir: kayıtlara göre olması gereken stok ile fiilen sayılan stok arasındaki fark, dönemin satışını verir.' }),
     ]),
     canWrite() ? el('div.btn-row', {}, [
-      el('button.btn.btn-primary', { text: '+ Dönem Sayımı', onclick: () => startCount(root, 'DONEM') }),
+      el('button.btn.btn-primary', {
+        text: '+ Dönem Sayımı',
+        // Kampusun kesinlesmis bir donem sayimi yoksa bu ILK sayimdir ve
+        // "acilis sayimi" olarak isaretlenebilir.
+        onclick: () => startCount(root, 'DONEM', !data.items.some(isSettled)),
+      }),
       el('button.btn', { text: '🔍 Habersiz Nokta Sayımı', onclick: () => startCount(root, 'NOKTA') }),
     ]) : null,
   ]));
@@ -40,7 +45,12 @@ export async function render(root) {
   root.append(card(null, [
     table([
       { label: 'Tarih', value: (r) => fmt.date(r.count_date) },
-      { label: 'Tip', render: (r) => (r.count_type === 'NOKTA' ? badge('Nokta', 'info') : badge('Dönem')) },
+      {
+        label: 'Tip',
+        render: (r) => (r.count_type === 'NOKTA'
+          ? badge('Nokta', 'info')
+          : (r.is_opening ? badge('Açılış', 'warn') : badge('Dönem'))),
+      },
       { label: 'Kampüs', value: (r) => shortName(r.campus_name) },
       { label: 'Dönem Başı', value: (r) => (r.count_type === 'NOKTA' ? '—' : (r.period_start ? fmt.date(r.period_start) : 'Açılış')) },
       { label: 'Durum', render: (r) => (STATUS_BADGE[r.status] || (() => badge(r.status)))() },
@@ -53,7 +63,9 @@ export async function render(root) {
       { label: 'Fark', num: true, render: (r) => (isSettled(r) ? deltaCell(r.difference) : el('span.muted', { text: '—' })) },
       { label: '', render: (r) => el('a.btn.btn-sm', { href: `#/countDetail/${r.id}`, text: r.status === 'KESINLESMIS' ? 'İncele' : 'Devam Et' }) },
     ], data.items, {
-      rowClass: (r) => (isSettled(r) && r.difference < -1 ? 'is-warn' : ''),
+      // Acilis sayiminin farki sistem oncesi donemi tasir; satiri kirmizi
+      // isaretlemek yanlis alarm olurdu.
+      rowClass: (r) => (isSettled(r) && !r.is_opening && r.difference < -1 ? 'is-warn' : ''),
       emptyText: 'Henüz sayım yapılmamış. Denetimin başlaması için ilk sayımı girin.',
     }),
   ], { tight: true }));
@@ -62,19 +74,34 @@ export async function render(root) {
 const isSettled = (r) => r.status === 'KESINLESMIS' && r.count_type === 'DONEM';
 
 /* -------------------------- Yeni sayım açma ------------------------ */
-async function startCount(root, countType) {
+async function startCount(root, countType, ilkDonemSayimi = false) {
   if (countType === 'DONEM') {
     formModal({
       title: 'Yeni Dönem Sayımı',
       fields: [
         { name: 'countDate', label: 'Sayım tarihi', type: 'date', value: dateUtil.today(), required: true,
           hint: 'Sayımın fiilen yapıldığı gün. Bu tarihe kadarki tüm hareketler sayıma dahil edilir.' },
+        // AÇILIŞ SAYIMI seçeneği yalnızca ilk dönem sayımında anlamlıdır;
+        // sonraki bir sayımın açılış sayılması o dönemin satışını
+        // raporlardan silmek olurdu. Sunucu da aynı kuralı uygular.
+        ...(ilkDonemSayimi ? [{
+          name: 'isOpening', type: 'checkbox', value: false,
+          label: 'Bu bir AÇILIŞ sayımıdır (sisteme geçiş)',
+        }, {
+          type: 'info', label: ' ',
+          value: 'Stoğu geçmiş faturalardan oluşturduysanız işaretleyin. Stok yine '
+            + 'gerçeğe oturur ve dönem kilitlenir, ama bu sayımın farkı aylık kârlılık, '
+            + 'ürün satış ve kampüs karşılaştırma raporlarına GİRMEZ — çünkü sistem '
+            + 'öncesi satışı taşır, gerçek dönem satışını değil.',
+        }] : []),
         { name: 'note', label: 'Açıklama', type: 'textarea', placeholder: 'Örn: Mart ayı dönem sonu sayımı' },
       ],
       submitText: 'Sayımı Başlat',
       onSubmit: async (v) => {
         const count = await api.post('/api/counts', { ...v, campusId: state.campusId, countType: 'DONEM' });
-        toast(`Kör sayım açıldı (${count.lines.length} ürün). Olması gereken miktarlar gizlidir.`);
+        toast(v.isOpening
+          ? `Açılış sayımı açıldı (${count.lines.length} ürün). Bu sayım raporlara girmeyecek.`
+          : `Kör sayım açıldı (${count.lines.length} ürün). Olması gereken miktarlar gizlidir.`);
         navigate('countDetail', [count.id]);
       },
     });
@@ -297,7 +324,11 @@ function buildReconciliation(data, rec) {
   const acilis = rec.openingPeriod;
   if (acilis?.isFirstCount) {
     const bosluk = acilis.unrecordedPeriod;
-    wrap.append(alertBox('info', 'Bu ilk dönem sayımı — fark dönem satışı değil, TÜM geçmişi kapsıyor',
+    wrap.append(alertBox(
+      acilis.isMarkedOpening ? 'success' : 'info',
+      acilis.isMarkedOpening
+        ? 'AÇILIŞ SAYIMI — bu sayımın rakamları raporlara girmez'
+        : 'Bu ilk dönem sayımı — fark dönem satışı değil, TÜM geçmişi kapsıyor',
       (bosluk
         ? `Mal girişi ${fmt.date(bosluk.from)} tarihinde başlamış, ciro kaydı ise `
           + `${acilis.firstRevenueDate ? fmt.date(acilis.firstRevenueDate) : 'hiç girilmemiş'}. `
@@ -307,13 +338,23 @@ function buildReconciliation(data, rec) {
         : 'Bu kampüsün ilk sayımı olduğu için beklenen ciro, ilk mal girişinden bugüne kadarki '
           + 'tüm stok hareketini kapsıyor. ')
       + 'Sistemi kurarken geçmiş faturaları girdiyseniz bu farkın büyük bölümü sistemden önceki '
-      + 'satıştır — kasa açığı değildir. Bu sayımı bir DÜZELTME sayımı gibi değerlendirin: '
-      + 'kesinleştirdiğinizde stok gerçeğe oturur ve bundan sonraki sayımlar gerçek dönem '
-      + 'satışını gösterir.'));
+      + (acilis.isMarkedOpening
+        ? 'satıştır. Bu sayım AÇILIŞ olarak işaretlendiği için farkı aylık kârlılık, ürün '
+          + 'satış ve kampüs karşılaştırma raporlarına girmeyecek. Kesinleştirdiğinizde stok '
+          + 'gerçeğe oturur ve dönem kilitlenir; gerçek ölçüm bir sonraki sayımdan başlar.'
+        : 'satıştır — kasa açığı değildir. Bu sayımı bir DÜZELTME sayımı gibi değerlendirin: '
+          + 'kesinleştirdiğinizde stok gerçeğe oturur ve bundan sonraki sayımlar gerçek dönem '
+          + 'satışını gösterir. Rakamların raporlara hiç girmemesini istiyorsanız sayımı '
+          + 'silip "açılış sayımı" işaretiyle yeniden açabilirsiniz.')));
   }
 
   if (data.status === 'KESINLESMIS') {
-    if (diff < -1 && acilis?.likelyExplainedByHistory) {
+    if (diff < -1 && acilis?.isMarkedOpening) {
+      wrap.append(alertBox('success', 'Açılış tamamlandı',
+        `Stok sayılan miktarlara oturdu. Hesaplanan ${fmt.money(Math.abs(diff))} fark, sistem `
+        + 'öncesi dönemi taşıdığı için raporlara yazılmadı. Bundan sonraki sayımlarda çıkacak '
+        + 'fark gerçek dönem satışıdır ve ciroyla karşılaştırılabilir.'));
+    } else if (diff < -1 && acilis?.likelyExplainedByHistory) {
       // Ayni fark, ama sucplayici olmayan dille: ilk sayimda bu beklenen bir sonuc
       wrap.append(alertBox('warning', `${fmt.money(Math.abs(diff))} fark — ilk sayımda beklenen`,
         'Bu farkı kasa açığı olarak okumayın: ciro kaydının başlamadığı bir dönemin satışını '

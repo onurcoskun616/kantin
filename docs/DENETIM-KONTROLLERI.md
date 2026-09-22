@@ -253,6 +253,23 @@ hiç kaydedilmezse mal satılmış sayılır ve **olmayan bir ciro açığı** d
 faturayla birebir eşleşir. Aynı irsaliye numarası ikinci kez girilemez, üretilen
 ürünler (tost, çay) iade edilemez ve iadesi olan alım belgesi iptal edilemez.
 
+### Açılış sayımı denetim verisi değildir
+
+Sisteme geçiş sayımı (**açılış sayımı**) stoğu düzeltir ve dönemi kilitler
+ama farkı bir denetim sinyali değildir: sistem öncesi satışı, fireyi ve
+kaydedilmemiş her şeyi tek kalemde taşır. Bu yüzden aylık kârlılık, ürün
+satış ve kampüs karşılaştırma raporlarına **girmez**; panoda alarm üretmez;
+listede *Açılış* rozetiyle ayrılır.
+
+Yalnızca bir kampüsün **ilk** dönem sayımı açılış olarak işaretlenebilir —
+sonraki bir sayımın açılış sayılması, o dönemin satışını raporlardan silmek
+olurdu. Kural hem arayüzde hem sunucuda uygulanır.
+
+Denetim açısından okunuşu: **gerçek ölçüm ikinci sayımdan başlar.** Açılış
+sayımından sonraki ilk dönemde çıkan fark, karşılaştırılabilir tek rakamdır.
+
+---
+
 ### Cari hesap kampüs bazlıdır
 
 Tedarikçi **kartı** beş kampüste ortaktır (tek firma, tek VKN); **hesabı**

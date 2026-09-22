@@ -2232,3 +2232,120 @@ describe('Ilk sayimda gecmis fatura uyarisi', () => {
     assert.equal(stok.items.find((x) => x.product_id === productId).stock_qty, 50);
   });
 });
+
+/**
+ * ACILIS SAYIMI: stogu duzeltir, donemi kilitler, ISTATISTIKLERE GIRMEZ
+ *
+ * Sisteme gecis sayiminin farki bir donem satisi degildir: sistem oncesi
+ * satisi, fireyi, ikrami ve kaydedilmemis her seyi tek kalemde tasir. Bu
+ * rakam aylik karlilik raporuna girerse gecise denk gelen ay, sistemin
+ * gordugu en karli (ya da en zararli) ay olarak kalir.
+ */
+describe('Acilis sayimi', () => {
+  let campusId; let supplierId; let productId; let ikinciJeton;
+
+  const ay = () => iso(new Date()).slice(0, 7);
+
+  before(async () => {
+    campusId = (await ok('POST', '/api/campuses', { name: 'Devir Kampüsü', code: 'DVR' })).id;
+    supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'Devir Tedarikçi', taxNo: '1717171717' })).id;
+    productId = (await ok('POST', '/api/products',
+      { name: 'Devir Ürünü', salePrice: 20, vatRate: 10, unit: 'ADET' })).id;
+
+    // Gecmis fatura: 200 adet girdi
+    await ok('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'DVR-1', documentDate: daysAgo(40),
+      lines: [{ productId, quantity: 200, unitPrice: 10, vatRate: 10 }],
+    });
+
+    // Kesinlestirmeyi baska bir yetkili yapar (iki imza kurali)
+    const eposta = `devir.mudur.${Date.now()}@topkapiokullari.com`;
+    await ok('POST', '/api/users', {
+      email: eposta, fullName: 'Devir Müdür', role: 'GENEL_MUDURLUK', password: 'Mudur123456',
+    });
+    ikinciJeton = (await api('POST', '/api/auth/login',
+      { email: eposta, password: 'Mudur123456' }, false)).data.token;
+  });
+
+  const kesinlestir = async (countId) => {
+    const res = await fetch(`${BASE}/api/counts/${countId}/finalize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ikinciJeton}` },
+      body: '{}',
+    });
+    assert.equal(res.status, 200, JSON.stringify(await res.json().catch(() => ({}))));
+  };
+
+  test('acilis sayimi acilabilir ve isaretli doner', async () => {
+    const c = await ok('POST', '/api/counts', {
+      // DUN: boylece ikinci sayim bugun acilabilir ve "acilis olamaz"
+      // kuralini tarih kontrolune takilmadan sinayabiliriz.
+      campusId, countDate: daysAgo(1), isBlind: false, isOpening: true,
+      note: 'Sisteme geçiş açılış sayımı',
+    });
+    assert.equal(c.is_opening, 1);
+
+    const rec = await ok('GET', `/api/counts/${c.id}/reconciliation`);
+    assert.equal(rec.count.isOpening, true);
+    assert.equal(rec.openingPeriod.isMarkedOpening, true);
+  });
+
+  test('acilis sayimi stogu GERCEGE oturtur ve donemi kilitler', async () => {
+    const acik = await ok('GET', `/api/counts?campusId=${campusId}`);
+    const c = acik.items.find((x) => x.status !== 'KESINLESMIS');
+    // Rafta 30 adet: 170 adet "cikmis" gorunuyor
+    await ok('PUT', `/api/counts/${c.id}/lines`, { lines: [{ productId, countedQty: 30 }] });
+    await ok('POST', `/api/counts/${c.id}/submit`, { witnessName: 'Tanık' });
+    await kesinlestir(c.id);
+
+    const stok = await ok('GET', `/api/stock?campusId=${campusId}`);
+    assert.equal(stok.items.find((x) => x.product_id === productId).stock_qty, 30);
+
+    // Donem kilitlendi: sayim tarihinden onceye stok hareketi girilemez
+    const gecmisFire = await api('POST', '/api/waste', {
+      campusId, productId, quantity: 1, reason: 'SKT', wasteDate: daysAgo(5),
+    });
+    assert.equal(gecmisFire.status, 409, JSON.stringify(gecmisFire.data));
+  });
+
+  test('acilis sayimi aylik karlilik raporuna GIRMEZ', async () => {
+    const rapor = await ok('GET', `/api/reports/monthly?campusId=${campusId}&from=${daysAgo(60)}&to=${iso(new Date())}`);
+    const satir = rapor.items.find((r) => r.month === ay() && r.campusId === campusId);
+    // Ciro kaydi olmadigi icin satir hic olmayabilir; varsa beklenen ciro bos olmali
+    if (satir) {
+      assert.equal(satir.expectedRevenue, null,
+        `acilis sayimi raporda gorunmemeli: ${JSON.stringify(satir)}`);
+    }
+  });
+
+  test('acilis sayimi urun satis raporuna GIRMEZ', async () => {
+    const rapor = await ok('GET', `/api/reports/product-sales?campusId=${campusId}&from=${daysAgo(60)}&to=${iso(new Date())}`);
+    assert.equal(rapor.items.some((r) => r.product_id === productId), false,
+      '170 adetlik acilis farki urun satisi olarak sayilmamali');
+  });
+
+  test('acilis sayimi panoda ALARM uretmez', async () => {
+    const pano = await ok('GET', `/api/reports/dashboard?month=${ay()}`);
+    const kampus = pano.campuses.find((r) => r.campusId === campusId);
+    assert.equal(kampus.lastCount.difference, null,
+      'acilis sayiminin farki pano alarmi olmamali');
+  });
+
+  test('IKINCI sayim acilis olarak isaretlenemez', async () => {
+    const r = await api('POST', '/api/counts', {
+      campusId, countDate: iso(new Date()), isBlind: false, isOpening: true,
+    });
+    assert.equal(r.status, 400, JSON.stringify(r.data));
+    assert.match(r.data.error, /ilk donem sayimi/i);
+  });
+
+  test('nokta sayimi acilis olamaz', async () => {
+    const r = await api('POST', '/api/counts', {
+      campusId, countDate: iso(new Date()), countType: 'NOKTA',
+      productIds: [productId], isOpening: true,
+    });
+    assert.equal(r.status, 400, JSON.stringify(r.data));
+    assert.match(r.data.error, /nokta sayimi acilis olamaz/i);
+  });
+});

@@ -167,6 +167,7 @@ function backfillProductPrices() {
 function addMissingColumns() {
   addColumn('products', 'product_type', "TEXT NOT NULL DEFAULT 'SATIN_ALINAN'");
   addColumn('counts', 'count_type', "TEXT NOT NULL DEFAULT 'DONEM'");
+  addColumn('counts', 'is_opening', 'INTEGER NOT NULL DEFAULT 0');
   addColumn('counts', 'is_blind', 'INTEGER NOT NULL DEFAULT 1');
   addColumn('counts', 'witness_name', 'TEXT');
   addColumn('counts', 'production_revenue', 'REAL NOT NULL DEFAULT 0');

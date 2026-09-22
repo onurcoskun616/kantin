@@ -52,25 +52,55 @@ tüm alış faturalarını girersiniz; stok bunlardan oluşur.
 **1. Faturaları girin.** Belge tarihleri gerçek tarihleri olsun. Stok
 girdikçe şişecek — bu normaldir, henüz satış bilgisi yok.
 
-**2. Bir "kapanış günü" belirleyip o gün rafları sayın.** Sayımı normal
-dönem sayımı olarak açın, gerçek miktarları girin ve **kesinleştirin**.
-Stok bu anda gerçeğe oturur; aradaki fark `SATIS` hareketi olarak yazılır.
+**2. Bir "kapanış günü" belirleyip o gün rafları sayın —
+sayımı AÇILIŞ SAYIMI olarak işaretleyin.**
 
-**3. Asıl denetim bundan SONRAKİ sayımdır.** İlk sayımın farkı geçmişin
-tamamını kapsar, denetim anlamı taşımaz. İkinci sayımdan itibaren fark
-gerçek dönem satışıdır ve ciro ile karşılaştırılabilir.
+Sayım açarken çıkan **“Bu bir AÇILIŞ sayımıdır (sisteme geçiş)”**
+kutusunu işaretleyin. Gerçek miktarları girin ve kesinleştirin.
 
-#### İlk sayımda çıkacak farkı açık sanmayın
+**3. Asıl denetim bundan SONRAKİ sayımdır.** İkinci sayımdan itibaren
+fark gerçek dönem satışıdır ve ciro ile karşılaştırılabilir.
 
-İlk sayımda "beklenen ciro" ile "kaydedilen ciro" **aynı dönemi
-anlatmaz**: beklenen ciro ilk faturadan bugüne kadarki tüm malı kapsar,
-kaydedilen ciro ise ancak sistemi kullanmaya başladığınız günden sonrasını.
+---
 
-Sistem bunu kendisi söyler: ilk dönem sayımının mutabakat ekranında mavi
-bir uyarı çıkar ve mal girişinin hangi tarihte başladığını, ciro kaydının
-hangi tarihte başladığını, aradaki kayıtsız dönemde kaç belgeyle ne kadar
-mal girdiğini yazar. Fark da "ciro açığı" değil, **"ilk sayımda beklenen
-fark"** olarak gösterilir.
+### Açılış sayımı nedir?
+
+Sisteme geçiş sayımıdır. Normal bir dönem sayımı gibi çalışır — **stok
+sayılan miktara oturur, dönem kilitlenir** — ama **rakamları istatistiklere
+girmez.**
+
+| | Açılış sayımı | Normal dönem sayımı |
+|---|---|---|
+| Stoğu düzeltir | ✅ | ✅ |
+| Dönemi kilitler | ✅ | ✅ |
+| Aylık kârlılık raporuna girer | ❌ | ✅ |
+| Ürün satış raporuna girer | ❌ | ✅ |
+| Kampüs karşılaştırmasına girer | ❌ | ✅ |
+| Panoda "ciro açığı" alarmı üretir | ❌ | ✅ |
+
+**Neden dışarıda kalıyor?** Açılış sayımının farkı bir dönem satışı
+değildir: sistem öncesi satışı, fireyi, ikramı ve kaydedilmemiş her şeyi
+tek kalemde taşır. Bu rakam aylık kârlılık raporuna girerse geçişe denk
+gelen ay, sistemin gördüğü en kârlı (ya da en zararlı) ay olarak kalır ve
+bütün karşılaştırmaları bozar.
+
+**Yalnızca kampüsün ilk dönem sayımı** açılış olarak işaretlenebilir.
+Kesinleşmiş bir dönem sayımı olan kampüste seçenek görünmez; sunucu da
+aynı kuralı uygular. Nokta sayımı açılış olamaz.
+
+Listede tip sütununda **“Açılış”** rozetiyle görünür — altı ay sonra
+o sayıma bakan biri rakamı yanlış okumasın diye.
+
+### İşaretlemezseniz ne olur?
+
+Sistem yine uyarır ama rakamlar raporlara girer. İlk dönem sayımının
+mutabakat ekranında mal girişinin hangi tarihte başladığını, ciro kaydının
+hangi tarihte başladığını ve aradaki kayıtsız dönemde kaç belgeyle ne
+kadar mal girdiğini yazan bir uyarı çıkar; fark "ciro açığı" yerine
+**"ilk sayımda beklenen fark"** olarak gösterilir.
+
+Sayımı silip açılış işaretiyle yeniden açabilirsiniz — ama yalnızca
+**kesinleşmeden önce**. Kesinleşmiş sayım silinemez.
 
 > Geçmiş ciroları da elinizde varsa **Günlük Ciro** ekranından geçmiş
 > tarihlerle girebilirsiniz. O zaman ilk sayımın mutabakatı da anlamlı

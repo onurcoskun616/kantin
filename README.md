@@ -28,6 +28,12 @@ Fark          = Girilen ciro − Beklenen ciro     (eksi ise ciro açığı)
 - **Habersiz nokta sayımı** — seçili ürünlerde ara kontrol; stoğa dokunmaz, silinemez
 - **Ciro teslim fişi** — günlük ciro beyanı imzayla sabitlenir: fiş kesildiği an tutar
   dondurulur, o günler görevliye kapanır, yönetim düzeltirse fiş "FARKLI" olarak işaretlenir
+- **Açılış sayımı** — sisteme geçerken stoğu geçmiş faturalardan oluşturduysanız
+  ilk sayımı "açılış" olarak işaretlersiniz: stok gerçeğe oturur ve dönem
+  kilitlenir, ama farkı aylık kârlılık, ürün satış ve kampüs karşılaştırma
+  raporlarına girmez. O fark bir dönem satışı değil, sistem öncesi her şeydir;
+  raporlara girse geçiş ayı bütün karşılaştırmaları bozardı. Gerçek ölçüm
+  ikinci sayımdan başlar
 - Ayrıntılar: **[docs/DENETIM-KONTROLLERI.md](docs/DENETIM-KONTROLLERI.md)**
 
 ### Stok ve envanter
