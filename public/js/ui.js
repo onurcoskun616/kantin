@@ -195,13 +195,19 @@ export function toast(message, kind = 'success', ms = 4000) {
 }
 
 /* ------------------------------- Modal ----------------------------- */
-export function modal({ title, body, actions = [], wide = false, onClose = null }) {
+/**
+ * @param wide  Genis pencere (900px) -- liste ve tablolar icin.
+ * @param xwide COK genis (1180px) -- fatura satiri gibi yan yana bes-alti
+ *              girdinin oldugu veri girisi formlari icin. 900px'te miktar,
+ *              iskonto ve KDV kutulari okunamayacak kadar daraliyordu.
+ */
+export function modal({ title, body, actions = [], wide = false, xwide = false, onClose = null }) {
   const root = document.getElementById('modalRoot');
   const backdrop = el('div.modal-backdrop');
   const close = () => { backdrop.remove(); document.removeEventListener('keydown', onKey); onClose?.(); };
   const onKey = (e) => { if (e.key === 'Escape') close(); };
 
-  const box = el(`div.modal${wide ? '.wide' : ''}`, {}, [
+  const box = el(`div.modal${xwide ? '.xwide' : wide ? '.wide' : ''}`, {}, [
     el('div.modal-head', {}, [el('h3', { text: title }), el('button.icon-btn', { text: '✕', onclick: close })]),
     el('div.modal-body', {}, [].concat(body)),
     actions.length ? el('div.modal-foot', {}, actions) : null,
@@ -248,7 +254,7 @@ export function confirmDialog(message, { title = 'Onay', confirmText = 'Evet, de
  *             donmez; "bu alan artik elle girilmiyor, su kaynaktan geliyor"
  *             demek icin kullanilir.
  */
-export function formModal({ title, fields, submitText = 'Kaydet', wide = false, onSubmit }) {
+export function formModal({ title, fields, submitText = 'Kaydet', wide = false, xwide = false, onSubmit }) {
   const inputs = {};
   const errorBox = el('div.alert.alert-danger', { hidden: true });
 
@@ -289,7 +295,7 @@ export function formModal({ title, fields, submitText = 'Kaydet', wide = false, 
 
   const submitBtn = el('button.btn.btn-primary', { text: submitText });
   const m = modal({
-    title, wide,
+    title, wide, xwide,
     body: [errorBox, ...body],
     actions: [el('button.btn', { text: 'Vazgeç', onclick: () => m.close() }), submitBtn],
   });

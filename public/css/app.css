@@ -371,6 +371,8 @@ tr.row-active > td { background: var(--brand-soft); font-weight: 600; }
   display: flex; flex-direction: column;
 }
 .modal.wide { max-width: min(900px, calc(100vw - 32px)); }
+/* Fatura satiri gibi yan yana bes-alti girdinin oldugu formlar */
+.modal.xwide { max-width: min(1180px, calc(100vw - 32px)); }
 .modal-head { padding: 15px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
 .modal-head h3 { font-size: 15px; flex: 1; }
 /* Dikey yigin. GRID DEGIL, flex: `.table-wrap` bir kaydirma kutusudur
@@ -422,6 +424,26 @@ tr.row-active > td { background: var(--brand-soft); font-weight: 600; }
 .tab.active { color: var(--brand-600); border-bottom-color: var(--brand-600); }
 
 .line-table input, .line-table select { padding: 6px 8px; font-size: 13px; }
+
+/*
+ * SATIR GIRDILERININ OKUNABILIR GENISLIGI
+ *
+ * Girdilere genislik verilmezse sutun neyse o kadar daralirlar. Fatura
+ * formunda urun sutunu genis oldugu icin miktar, iskonto ve KDV kutulari
+ * iki-uc karakter gosterecek kadar sikisiyordu: "454,57" yazdiginizda
+ * rakamin yarisini goremiyordunuz.
+ *
+ * Artan-azalan oklari da gizlenir: sag hizali mono rakamlarin uzerine
+ * binip okumayi zorlastiriyorlar ve bu tabloda zaten yazarak giriliyor.
+ */
+.line-table input.num { min-width: 92px; }
+.line-table input[type="date"] { min-width: 142px; }
+.line-table input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+.line-table input[type="number"]::-webkit-outer-spin-button,
+.line-table input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+/* Basliklar da sarmasin: "Birim Fiyat (KDV hariç)" iki satira dusunce
+   sutun daha da daraliyordu. */
+.line-table th { white-space: nowrap; }
 
 /* ---------------------------- Duyarlılık --------------------------- */
 @media (max-width: 900px) {

@@ -135,10 +135,12 @@ export function createProductPicker({
     liste.hidden = false;
     node.classList.add('open');
     ciz();
+    takipBasla();
   }
 
   function kapat() {
     acik = false;
+    takipDur();
     liste.hidden = true;
     liste.replaceChildren();   // kapalı listede eski satırlar DOM'da kalmasın
     node.classList.remove('open');
@@ -158,6 +160,38 @@ export function createProductPicker({
   const kaydirmaIzle = () => { if (acik) konumla(); };
   window.addEventListener('resize', kaydirmaIzle);
   window.addEventListener('scroll', kaydirmaIzle, true);
+
+  /**
+   * Liste acikken girdiyi ADIM ADIM izler.
+   *
+   * Kaydirma ve pencere boyutu dinleyicileri yetmiyor: girdi, hicbir sey
+   * kaydirilmadan da yerinden oynayabiliyor. Fatura XML'i yuklendiginde
+   * satirin ustune bilgi kutulari ekleniyor ve o sirada ACIK olan liste
+   * (satir eklenince kendiliginden odaklanir) yerinde kalip GIRDININ
+   * USTUNU kapatiyordu: kullanici kutuya tiklayamiyordu.
+   *
+   * Cozum, liste acikken her karede girdinin yerine bakmak: kare basina
+   * TEK bir getBoundingClientRect, ve yalnizca yer degistiyse yeniden
+   * konumlama. Liste kapaliyken dongu hic donmez.
+   */
+  let takipId = 0;
+  let sonYer = '';
+  function takipBasla() {
+    if (takipId) return;
+    const adim = () => {
+      if (!acik) { takipId = 0; return; }
+      const r = input.getBoundingClientRect();
+      const yer = `${r.top}|${r.left}|${r.width}`;
+      if (yer !== sonYer) { sonYer = yer; konumla(); }
+      takipId = requestAnimationFrame(adim);
+    };
+    takipId = requestAnimationFrame(adim);
+  }
+  function takipDur() {
+    if (takipId) cancelAnimationFrame(takipId);
+    takipId = 0;
+    sonYer = '';
+  }
 
   input.addEventListener('focus', () => { input.select(); ac(true); });
   input.addEventListener('input', () => {

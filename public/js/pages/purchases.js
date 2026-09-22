@@ -556,7 +556,10 @@ async function openPurchaseForm(onDone) {
     // O kampusun cari hesabina yazilir. Yanlis kampus secili oldugunda hata
     // iki yerde birden olusur ve sonradan ayiklanmasi zordur.
     title: `Yeni Mal Girişi — ${shortName(campusName())}`,
-    wide: true,
+    // Bu formda urun, miktar, fiyat, iskonto, KDV, SKT ve tutar YAN YANA
+    // durur. 900px'te sayi kutulari iki-uc karakterlik kalip "454,57"
+    // okunamaz hale geliyordu; bu yuzden en genis pencere kullanilir.
+    xwide: true,
     body: [
       errorBox,
       el('div.row', { style: 'justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap' }, [
