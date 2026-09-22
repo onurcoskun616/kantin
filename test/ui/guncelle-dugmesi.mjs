@@ -83,7 +83,7 @@ if (!c.kurulu) {
   ok('Dugme YOK', !dugme);
   ok('Komut gosteriliyor', /kur\.sh/.test(ekran), ekran.slice(0, 900));
   ok('Nasil etkinlestirilecegi yaziyor',
-    /guncelleyici-kur\.sh/.test(ekran), ekran.slice(0, 1200));
+    /Tek tıkla güncelleme isterseniz/.test(ekran), ekran.slice(0, 1200));
   const t = await api('POST', '/api/health/guncelleme');
   ok('Tetikleme ACIK bir mesajla reddediliyor',
     t.status === 409 && /kurulu değil/.test(t.data.error || ''), JSON.stringify(t).slice(0, 200));

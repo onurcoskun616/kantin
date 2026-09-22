@@ -477,9 +477,9 @@ function guncellemeBolumu(durum, kutu) {
     return el('div.grid', { style: 'gap:8px' }, [
       komutKutusu(),
       el('p.card-note', {
-        text: 'Tek tıkla güncelleme isterseniz sunucuda bir kez şunu çalıştırın: '
-          + 'sudo bash /opt/kantin-uygulama/kaynak/deploy/guncelleyici-kur.sh — '
-          + 'konteynere hiçbir yetki verilmez, host tarafında bir servis kurulur.',
+        text: 'Tek tıkla güncelleme isterseniz sunucuda bir kez kurulum betiğini '
+          + 'çalıştırın (docs/VPS-KURULUM.md → "Tek tıkla güncelleme"). '
+          + 'Konteynere hiçbir yetki verilmez; host tarafında bir servis kurulur.',
       }),
     ]);
   }

@@ -383,12 +383,22 @@ sudo bash /tmp/kur.sh
 ## Tek tıkla güncelleme (isteğe bağlı)
 
 Ekrandaki **"⬆ Şimdi Güncelle"** düğmesini etkinleştirmek isterseniz
-sunucuda **bir kez** şunu çalıştırın:
+sunucuda **bir kez** şunu çalıştırın. Komutları **tek tek** yapıştırın:
 
 ```bash
-sudo bash /opt/kantin-uygulama/kaynak/deploy/guncelleyici-kur.sh
-sudo bash /tmp/kur.sh      # konteyner yeni kontrol klasörünü görsün diye
+curl -fsSL https://raw.githubusercontent.com/onurcoskun616/kantin/main/deploy/guncelleyici-kur.sh -o /tmp/g.sh
 ```
+
+```bash
+sudo bash /tmp/g.sh
+```
+
+Betik sonunda ne yapmanız gerektiğini kendisi söyler: konteyner yeni
+kontrol klasörünü henüz görmüyorsa bir kez daha `kur.sh` çalıştırmanızı
+ister, görüyorsa "hemen kullanabilirsiniz" der.
+
+> Betiği doğrudan depodan indirdiğimiz için **sıra önemli değildir**:
+> `kur.sh`'tan önce de sonra da çalıştırılabilir.
 
 Kurmazsanız hiçbir şey bozulmaz: düğme yerine komut gösterilir.
 
