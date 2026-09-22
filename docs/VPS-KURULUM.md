@@ -347,3 +347,62 @@ sunucu 4 ms ise sorun uygulamada değildir.
 açık bir uyarı çıkar ve kaydın oluşup oluşmadığını kontrol etmeniz söylenir.
 Eskiden "Kaydediliyor..." yazısı hiç değişmezdi ve kullanıcı çoğu zaman
 ikinci kez kaydederdi.
+
+
+---
+
+## Sürüm ve güncelleme bildirimi
+
+**Yönetim → Sistem Durumu → Sürüm**
+
+Ekran çalışan sürümü gösterir ve GitHub'daki `main` dalıyla karşılaştırır.
+Geride kalınmışsa **bekleyen değişiklikleri tek tek listeler** ve
+çalıştırılacak komutu kopyalanabilir biçimde verir.
+
+### Uygulama neden kendi kendini güncellemiyor?
+
+Bir konteynerin kendi imajını yeniden kurabilmesi için **Docker soketine**
+erişmesi gerekir. Docker soketi host üzerinde root yetkisine denktir:
+uygulamada bulunacak herhangi bir açık, o anda sunucunun tamamını ele
+geçirmeye dönüşür. Kantin uygulaması internete açık ve birden çok rolün
+giriş yaptığı bir uygulamadır; bu riski almaya değmez.
+
+Ayrıca konteyner kendini yeniden başlatırken kendi isteğini keser —
+"güncelleniyor" ekranı hiçbir zaman sonuçlanmaz.
+
+Bu yüzden sistem **haber verir, uygulamaz**. Güncellemeyi sunucuda siz
+çalıştırırsınız:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/onurcoskun616/kantin/main/deploy/kur.sh -o /tmp/kur.sh
+sudo bash /tmp/kur.sh
+```
+
+> Tek tıkla güncelleme isterseniz güvenli yolu vardır: host tarafında bir
+> systemd servisi paylaşılan klasördeki istek dosyasını izler, uygulama o
+> dosyayı yazar. Konteynere hiçbir yetki verilmez. Bunu kurmak isterseniz
+> söyleyin.
+
+### Sürüm damgası nasıl oluşuyor?
+
+Konteynerin içinde `.git` yoktur (`.dockerignore`). `kur.sh`, imajı
+derlemeden hemen önce çalışan commit'i `surum.json` dosyasına yazar:
+
+```
+==> 5/8  Imaj ve konteyner
+  ✓ Surum damgasi yazildi (9718d16)
+```
+
+`kur.sh` ile derlenmemiş bir imajda sürüm **"geliştirme"** görünür ve
+güncelleme kontrolü yapılmaz — bu normaldir.
+
+### Kontrol edilemiyorsa
+
+| Mesaj | Sebep |
+|---|---|
+| *"Sunucunun dışarı internet erişimi engelleniyor olabilir"* | Sunucu GitHub'a çıkamıyor; güvenlik duvarı |
+| *"GitHub istek sınırına takıldı"* | Saatlik API limiti (IP başına 60); bir süre sonra düzelir |
+| *"Çalışan sürüm bilinmiyor"* | İmaj `kur.sh` ile derlenmemiş |
+
+Sonuç **15 dakika önbelleklenir**; "Güncellemeleri kontrol et" düğmesi
+önbelleği atlar.

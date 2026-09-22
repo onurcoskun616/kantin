@@ -154,6 +154,22 @@ else
 fi
 
 bilgi "5/8  Imaj ve konteyner"
+# SURUM DAMGASI — imaja hangi commit'ten derlendigini yazariz.
+#
+# Konteynerin icinde .git yoktur (.dockerignore); bu dosya olmazsa uygulama
+# hangi surumu calistirdigini bilemez ve "yeni surum var mi" sorusu
+# cevaplanamaz. Her kosuda yeniden yazilir.
+# Alanlar AYRI okunur: commit basligi tirnak ya da ters bolu icerirse
+# tek parca format dizesi bozuk JSON uretirdi ve uygulama surumu okuyamazdi.
+S_TAM="$(git -C "$DIZIN/kaynak"   log -1 --format=%H)"
+S_KISA="$(git -C "$DIZIN/kaynak"  log -1 --format=%h)"
+S_TARIH="$(git -C "$DIZIN/kaynak" log -1 --format=%cd --date=iso-strict)"
+S_BASLIK="$(git -C "$DIZIN/kaynak" log -1 --format=%s | tr -d '"\\' | cut -c1-200)"
+printf '{"commit":"%s","short":"%s","date":"%s","subject":"%s","branch":"%s","builtAt":"%s"}\n' \
+  "$S_TAM" "$S_KISA" "$S_TARIH" "$S_BASLIK" "$DAL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  > "$DIZIN/kaynak/surum.json"
+ok "Surum damgasi yazildi ($S_KISA)"
+
 cd "$DIZIN"
 docker compose up -d --build
 ok "Konteyner ayakta"

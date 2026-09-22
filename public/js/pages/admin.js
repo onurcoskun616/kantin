@@ -279,6 +279,10 @@ export async function renderSystem(root) {
       el('p.card-note', { text: yorum(turMs, agMs, sağlık) }),
     ]));
 
+    // SÜRÜM ve GÜNCELLEME — ölçümlerin hemen altında, çünkü "yavaş" sorusunun
+    // cevabı bazen "eski sürüm çalışıyor" oluyor.
+    await surumKarti(container, sağlık.version);
+
     container.append(card('Sunucu', [
       el('dl.kv', {}, [
         el('dt', { text: 'Çalışma süresi' }),
@@ -341,4 +345,116 @@ function sureMetni(saniye) {
   if (g) return `${g} gün ${s} saat`;
   if (s) return `${s} saat ${d} dakika`;
   return `${d} dakika ${saniye % 60} saniye`;
+}
+
+
+/**
+ * SÜRÜM ve GÜNCELLEME BİLDİRİMİ
+ *
+ * Uygulama kendi kendini GÜNCELLEMEZ. Bunun için konteynere Docker soketi
+ * verilmesi gerekirdi ve o an uygulamadaki herhangi bir açık, sunucunun
+ * tamamını ele geçirmeye dönüşürdü. Bu yüzden burası yalnızca "yeni sürüm
+ * var" der ve çalıştırılacak komutu kopyalanabilir biçimde verir.
+ */
+async function surumKarti(container, calisan) {
+  const kutu = el('div');
+  container.append(kutu);
+
+  const ciz = (durum) => {
+    const s = durum?.surum || calisan;
+    const satirlar = [
+      el('dl.kv', {}, [
+        el('dt', { text: 'Çalışan sürüm' }),
+        el('dd', {}, [
+          el('code', { text: s?.short || 'bilinmiyor' }),
+          s?.subject ? el('div.muted.small', { text: s.subject }) : null,
+        ]),
+        el('dt', { text: 'Sürüm tarihi' }),
+        el('dd', { text: s?.date ? fmt.dateTime(s.date) : '—' }),
+        el('dt', { text: 'Kurulum zamanı' }),
+        el('dd', { text: s?.builtAt ? fmt.dateTime(s.builtAt) : '—' }),
+      ]),
+    ];
+
+    if (!durum) {
+      satirlar.push(el('p.card-note', { text: 'Güncelleme kontrol ediliyor...' }));
+    } else if (durum.kontrolEdilemedi) {
+      satirlar.push(alertBox('info', 'Güncelleme kontrol edilemedi', durum.kontrolEdilemedi));
+    } else if (durum.guncel) {
+      satirlar.push(alertBox('success', 'Sürüm güncel',
+        `GitHub'daki ${durum.dal} dalıyla aynı sürümü çalıştırıyorsunuz.`));
+    } else {
+      satirlar.push(alertBox('warning', `${durum.gerideCommit} yeni değişiklik var`,
+        'Sunucu eski sürümü çalıştırıyor. Aşağıdaki komutu sunucuda çalıştırarak güncelleyin.'));
+      satirlar.push(el('h4', { text: 'Bekleyen değişiklikler', style: 'font-size:13px;color:var(--text-muted)' }));
+      satirlar.push(table([
+        { label: 'Sürüm', render: (r) => el('code', { text: r.short }) },
+        { label: 'Değişiklik', value: (r) => r.subject, wrap: true },
+        { label: 'Tarih', value: (r) => (r.date ? fmt.date(r.date) : '—') },
+      ], durum.bekleyenler));
+      satirlar.push(komutKutusu());
+    }
+
+    satirlar.push(el('div.btn-row', {}, [
+      el('button.btn.btn-sm', {
+        text: '↻ Güncellemeleri kontrol et',
+        onclick: async () => {
+          kutu.replaceChildren(card('Sürüm', ciz(null)));
+          kutu.replaceChildren(card('Sürüm', ciz(await kontrol(true))));
+        },
+      }),
+      durum?.kontrolZamani
+        ? el('span.muted.small', { text: `Son kontrol: ${fmt.dateTime(durum.kontrolZamani)}` })
+        : null,
+    ]));
+    return satirlar;
+  };
+
+  kutu.replaceChildren(card('Sürüm', ciz(null)));
+  kutu.replaceChildren(card('Sürüm', ciz(await kontrol(false))));
+}
+
+async function kontrol(tazele) {
+  try {
+    return await api.get('/api/health/guncelleme', tazele ? { tazele: '1' } : undefined);
+  } catch (err) {
+    return { kontrolEdilemedi: err.message };
+  }
+}
+
+/** Sunucuda çalıştırılacak güncelleme komutu — kopyalanabilir. */
+function komutKutusu() {
+  const komut = 'curl -fsSL https://raw.githubusercontent.com/onurcoskun616/kantin/main/deploy/kur.sh'
+    + ' -o /tmp/kur.sh\nsudo bash /tmp/kur.sh';
+  const pre = el('pre.kod', { text: komut });
+  const kopyala = el('button.btn.btn-sm', {
+    text: '📋 Komutu kopyala',
+    onclick: async () => {
+      try {
+        await navigator.clipboard.writeText(komut);
+        toast('Komut kopyalandı. Sunucuya SSH ile bağlanıp yapıştırın.');
+      } catch {
+        // Güvenli olmayan bağlamda pano kapalı olabilir: seçmeyi kolaylaştır
+        const aralik = document.createRange();
+        aralik.selectNodeContents(pre);
+        const secim = window.getSelection();
+        secim.removeAllRanges();
+        secim.addRange(aralik);
+        toast('Pano kullanılamadı; komut seçildi, Ctrl+C ile kopyalayın.', 'warning');
+      }
+    },
+  });
+  return el('div.grid', { style: 'gap:8px' }, [
+    el('p.card-note', {
+      text: 'Güncelleme sunucuda çalıştırılır. Uygulama kendi kendini güncelleyemez: '
+        + 'bunun için konteynere sunucu yönetim yetkisi vermek gerekirdi ve bu, uygulamadaki '
+        + 'herhangi bir açığı sunucunun tamamını ele geçirmeye dönüştürürdü.',
+    }),
+    pre,
+    el('div.btn-row', {}, [kopyala]),
+    el('p.card-note', {
+      text: 'Betik önce yedek alır, sonra kodu çeker ve konteyneri yeniler. .env dosyanıza, '
+        + 'veritabanına ve fatura eklerine dokunmaz. Güncelleme sırasında sistem birkaç saniye erişilemez.',
+    }),
+  ]);
 }

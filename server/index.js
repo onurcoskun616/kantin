@@ -5,9 +5,10 @@ import path from 'node:path';
 import { config } from './config.js';
 import { migrate, get as dbGet, setSetting } from './db.js';
 import { Router } from './lib/router.js';
-import { HttpError, readJsonBody, sendJson, serveStatic, clientIp, parseCookies } from './lib/http.js';
+import { HttpError, readJsonBody, sendJson, serveStatic, clientIp, parseCookies, forbidden } from './lib/http.js';
 import { resolveSession, purgeExpiredSessions, requireAuth } from './lib/auth.js';
 import { ensureSeedData } from './seed.js';
+import { guncellemeVarMi, calisanSurum } from './lib/surum.js';
 
 import { authRoutes } from './routes/auth.js';
 import { campusRoutes } from './routes/campuses.js';
@@ -50,7 +51,19 @@ router.get('/api/health', async (ctx) => {
   // Olcumler sunucu ic bilgisidir (veritabani yolu, bellek, surum):
   // yalnizca Sistem Durumu ekranini gorebilen roller alir.
   if (!ctx.user || !TESHIS_ROLLERI.includes(ctx.user.role)) return temel;
-  return { ...temel, ...olcumAl(ctx.user.role === 'ADMIN') };
+  return { ...temel, version: calisanSurum(), ...olcumAl(ctx.user.role === 'ADMIN') };
+});
+
+/**
+ * GUNCELLEME KONTROLU — ayri bir uctur, bilerek.
+ *
+ * GitHub'a disari istek yapar; /api/health'e koysaydik "sunucu ne kadar
+ * hizli" olcumu internet gecikmesiyle kirlenirdi. `?tazele=1` onbellegi
+ * atlar (varsayilan 15 dk).
+ */
+router.get('/api/health/guncelleme', async (ctx) => {
+  if (!ctx.user || !TESHIS_ROLLERI.includes(ctx.user.role)) throw forbidden();
+  return guncellemeVarMi({ tazele: ctx.query.tazele === '1' });
 });
 router.use('/api/auth', authRoutes);
 router.use('/api/campuses', campusRoutes);

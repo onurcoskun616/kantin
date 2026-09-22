@@ -335,6 +335,21 @@ input:disabled, select:disabled { background: var(--surface-2); color: var(--tex
 .neg { color: var(--danger); font-weight: 650; }
 .muted { color: var(--text-muted); }
 
+/* Kopyalanacak komut kutusu (Sistem Durumu -> guncelleme) */
+pre.kod {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--surface-2, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+}
+
 /* Listede "su an baktiginiz kayit" satiri (or. cari hesapta secili kampus) */
 tr.row-active > td { background: var(--brand-soft); font-weight: 600; }
 .small { font-size: 12px; }

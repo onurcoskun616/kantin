@@ -9,6 +9,9 @@ RUN apk add --no-cache bash
 WORKDIR /app
 
 COPY package.json ./
+# Surum damgasi: kur.sh derlemeden once yazar. Yoksa imaj yine kurulur,
+# uygulama "surum bilinmiyor" der (gelistirme ortaminda normaldir).
+COPY surum.json ./
 COPY server ./server
 COPY public ./public
 COPY scripts ./scripts
