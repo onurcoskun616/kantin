@@ -1,16 +1,15 @@
 /**
  * Arayuz regresyon testi: SURUM ve GUNCELLEME BILDIRIMI.
  *
- * Uygulama kendi kendini GUNCELLEMEZ -- bunun icin konteynere Docker
+ * Uygulama guncellemeyi KENDI CALISTIRMAZ -- bunun icin konteynere Docker
  * yetkisi vermek gerekirdi ve o an uygulamadaki herhangi bir acik
- * sunucunun tamamini ele gecirmeye donusurdu. Bu ekran yalnizca "yeni
- * surum var" der ve calistirilacak komutu verir.
+ * sunucunun tamamini ele gecirmeye donusurdu. En fazla, host tarafindaki
+ * yardimci servise "guncelleme istiyorum" diyen bir dosya birakir.
  *
  * Kontrol edilen zincir:
  *   Calisan surum ekranda yaziyor -> GitHub ile karsilastiriliyor ->
  *   geride kalindiysa bekleyen degisiklikler listeleniyor ve komut
- *   kopyalanabilir sekilde veriliyor -> ekranda "guncelle" diye bir sey
- *   CALISTIRMIYOR.
+ *   kopyalanabilir sekilde veriliyor.
  *
  * Gereksinim: Playwright (global kurulum yeterli)
  * Kullanim (KANTIN_GITHUB_API ile taklit sunucuya baglanmis olmali):
@@ -105,15 +104,21 @@ if (durum.kontrolEdilemedi) {
   ok('Neden uygulamadan calistirilmadigi aciklanmis',
     /kendi kendini güncelleyemez/.test(ekran), ekran.slice(0, 1500));
 }
-// Guncellemeyi TETIKLEYEN bir uc olmamali
-const tetikleme = await page.evaluate(async () => {
-  const t = localStorage.getItem('kantin_token');
-  const r = await fetch('/api/health/guncelle', {
-    method: 'POST', headers: { Authorization: `Bearer ${t}` },
+// Host tarafindaki calistirici KURULU DEGILSE tetikleme sessizce
+// yutulmamali, acik bir mesajla reddedilmeli. (Kurulu oldugu ortamda bu
+// yol test/ui/guncelle-dugmesi.mjs icinde sinaniyor.)
+if (!durum.calistirici?.kurulu) {
+  const tetikleme = await page.evaluate(async () => {
+    const t = localStorage.getItem('kantin_token');
+    const r = await fetch('/api/health/guncelleme', {
+      method: 'POST', headers: { Authorization: `Bearer ${t}` },
+    });
+    return { status: r.status, data: await r.json().catch(() => ({})) };
   });
-  return r.status;
-});
-ok('Guncellemeyi CALISTIRAN bir uc YOK', tetikleme === 404, String(tetikleme));
+  ok('Calistirici yoksa tetikleme ACIKCA reddediliyor',
+    tetikleme.status === 409 && /kurulu değil/.test(tetikleme.data.error || ''),
+    JSON.stringify(tetikleme).slice(0, 200));
+}
 
 console.log('\n4) Tekrar kontrol dugmesi calisiyor');
 await page.click('button:has-text("Güncellemeleri kontrol et")');

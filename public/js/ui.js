@@ -226,7 +226,9 @@ export function confirmDialog(message, { title = 'Onay', confirmText = 'Evet, de
     };
     const m = modal({
       title,
-      body: [el('p', { text: message })],
+      // Metin de dugum de kabul edilir: bazi onaylar ("sunucu guncellenecek")
+      // birkac paragraf aciklama ister ve tek satira sigmaz.
+      body: [message instanceof Node ? message : el('p', { text: message })],
       actions: [
         el('button.btn', { text: 'Vazgeç', onclick: () => decide(false) }),
         el(`button.btn.${danger ? 'btn-danger' : 'btn-primary'}`, { text: confirmText, onclick: () => decide(true) }),

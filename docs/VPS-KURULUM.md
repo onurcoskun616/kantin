@@ -378,10 +378,83 @@ curl -fsSL https://raw.githubusercontent.com/onurcoskun616/kantin/main/deploy/ku
 sudo bash /tmp/kur.sh
 ```
 
-> Tek tıkla güncelleme isterseniz güvenli yolu vardır: host tarafında bir
-> systemd servisi paylaşılan klasördeki istek dosyasını izler, uygulama o
-> dosyayı yazar. Konteynere hiçbir yetki verilmez. Bunu kurmak isterseniz
-> söyleyin.
+---
+
+## Tek tıkla güncelleme (isteğe bağlı)
+
+Ekrandaki **"⬆ Şimdi Güncelle"** düğmesini etkinleştirmek isterseniz
+sunucuda **bir kez** şunu çalıştırın:
+
+```bash
+sudo bash /opt/kantin-uygulama/kaynak/deploy/guncelleyici-kur.sh
+sudo bash /tmp/kur.sh      # konteyner yeni kontrol klasörünü görsün diye
+```
+
+Kurmazsanız hiçbir şey bozulmaz: düğme yerine komut gösterilir.
+
+### Nasıl çalışıyor?
+
+```
+Yönetici "Şimdi Güncelle" der
+        ↓
+Uygulama paylaşılan klasöre bir İSTEK DOSYASI yazar   ← uygulamanın yetkisi burada BİTER
+        ↓
+host'taki systemd (kantin-guncelle.path) dosyayı görür
+        ↓
+kantin-guncelle.service SABİT bir komut çalıştırır: kur.sh
+        ↓
+sonuç aynı klasöre yazılır, ekran okuyup gösterir
+```
+
+### Neden Docker soketi vermiyoruz?
+
+Konteynerin kendi imajını yeniden kurabilmesi için `/var/run/docker.sock`
+bağlanması gerekir. **Docker soketi host üzerinde root yetkisine denktir**:
+o soketle herhangi bir konteyner, host'un kök dizinini bağlayıp her şeyi
+okuyup değiştirebilir. Uygulamada bulunacak tek bir açık, o anda sunucunun
+tamamını ele geçirmeye dönüşür.
+
+Bu yolda uygulamanın yetkisi **"bir dosya yazmak"** ile sınırlıdır.
+Uygulamadaki bir açık güncellemenin **zamanını** etkileyebilir, ama
+**hangi komutun çalışacağını değiştiremez**.
+
+### Korumalar
+
+| Koruma | Nasıl |
+|---|---|
+| İstek dosyasının içeriği asla çalıştırılmaz | Yalnızca günlüğe, sadeleştirilerek yazılır |
+| Çalışan komut sabittir | `kur.sh`, depodan indirilir |
+| Yalnızca **admin** tetikleyebilir | Genel müdürlük durumu görür ama tetikleyemez |
+| Aynı anda iki güncelleme olmaz | `flock` + "zaten süren güncelleme var" kontrolü |
+| Üst üste tetikleme olmaz | En az 60 saniye aralık (`KANTIN_UPDATE_MIN_INTERVAL`) |
+| İstek tekrar tetiklenmez | Koşucu dosyayı ilk iş olarak siler |
+| Her istek kayda geçer | Denetim izine yazılır (kim, ne zaman) |
+
+### Ekranda ne olur?
+
+Onay penceresi kaç değişikliğin uygulanacağını, sistemin birkaç saniye
+erişilemez olacağını ve yedek alınacağını söyler. Onaylayınca ilerleme ve
+kurulum günlüğü canlı gösterilir; sunucu yeniden başlarken bağlantı kopması
+**beklenen durumdur** ve ekran bunu bekler. Bitince sayfa yeni sürümle
+kendiliğinden yenilenir.
+
+### Geri almak
+
+```bash
+sudo systemctl disable --now kantin-guncelle.path
+sudo rm /etc/systemd/system/kantin-guncelle.path
+sudo rm /etc/systemd/system/kantin-guncelle.service
+sudo rm /usr/local/sbin/kantin-guncelle.sh
+sudo systemctl daemon-reload
+```
+
+### Sorun giderme
+
+```bash
+journalctl -u kantin-guncelle.service -n 100     # servis günlüğü
+cat /opt/kantin-uygulama/kontrol/guncelleme.log  # kurulum çıktısı
+systemctl status kantin-guncelle.path            # izleyici çalışıyor mu
+```
 
 ### Sürüm damgası nasıl oluşuyor?
 

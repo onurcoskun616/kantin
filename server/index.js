@@ -5,10 +5,14 @@ import path from 'node:path';
 import { config } from './config.js';
 import { migrate, get as dbGet, setSetting } from './db.js';
 import { Router } from './lib/router.js';
-import { HttpError, readJsonBody, sendJson, serveStatic, clientIp, parseCookies, forbidden } from './lib/http.js';
-import { resolveSession, purgeExpiredSessions, requireAuth } from './lib/auth.js';
+import {
+  HttpError, readJsonBody, sendJson, serveStatic, clientIp, parseCookies, forbidden, conflict,
+} from './lib/http.js';
+import { resolveSession, purgeExpiredSessions, requireAuth, requireRole } from './lib/auth.js';
+import { logAudit } from './lib/audit.js';
 import { ensureSeedData } from './seed.js';
 import { guncellemeVarMi, calisanSurum } from './lib/surum.js';
+import { istekBirak, guncellemeDurumu } from './lib/guncelleyici.js';
 
 import { authRoutes } from './routes/auth.js';
 import { campusRoutes } from './routes/campuses.js';
@@ -63,7 +67,39 @@ router.get('/api/health', async (ctx) => {
  */
 router.get('/api/health/guncelleme', async (ctx) => {
   if (!ctx.user || !TESHIS_ROLLERI.includes(ctx.user.role)) throw forbidden();
-  return guncellemeVarMi({ tazele: ctx.query.tazele === '1' });
+  const [surum, calistirici] = [
+    await guncellemeVarMi({ tazele: ctx.query.tazele === '1' }),
+    guncellemeDurumu(),
+  ];
+  return { ...surum, calistirici };
+});
+
+/**
+ * GUNCELLEMEYI BASLAT — yalnizca ADMIN.
+ *
+ * Uygulama guncellemeyi CALISTIRMAZ; paylasimli klasore bir istek dosyasi
+ * birakir, host uzerindeki systemd birimi onu gorup SABIT bir komut
+ * calistirir (bkz. deploy/kantin-guncelle.sh). Uygulamanin yetkisi "bir
+ * dosya yazmak" ile sinirlidir; calistirilacak komutu etkileyemez.
+ *
+ * Guncelleme konteyneri yeniden kurar: bu istegin yaniti dondukten kisa
+ * sure sonra sunucu birkac saniye erisilemez olur. Arayuz bunu bekler.
+ */
+router.post('/api/health/guncelleme', async (ctx) => {
+  requireRole(ctx.user, 'ADMIN');
+  const sonuc = istekBirak(ctx.user);
+  logAudit({
+    user: ctx.user, action: 'UPDATE', entity: 'sistem', entityId: 0,
+    detail: { islem: 'guncelleme-istegi', sonuc: sonuc.kod || 'baslatildi' }, ip: ctx.ip,
+  });
+  if (!sonuc.ok) throw conflict(sonuc.mesaj);
+  return { ...sonuc, calistirici: guncellemeDurumu() };
+});
+
+/** Guncelleme ilerlemesi: arayuz sunucu geri geldikten sonra bunu okur. */
+router.get('/api/health/guncelleme/durum', async (ctx) => {
+  if (!ctx.user || !TESHIS_ROLLERI.includes(ctx.user.role)) throw forbidden();
+  return guncellemeDurumu();
 });
 router.use('/api/auth', authRoutes);
 router.use('/api/campuses', campusRoutes);

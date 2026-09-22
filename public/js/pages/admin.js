@@ -1,7 +1,7 @@
 /** Kampüs, kullanıcı ve denetim izi yönetimi. */
 import { api } from '../api.js';
 import { state } from '../app.js';
-import { el, card, stat, table, fmt, badge, toast, formModal, ROLE_LABELS, empty, alertBox, shortName } from '../ui.js';
+import { el, card, stat, table, fmt, badge, toast, formModal, confirmDialog, ROLE_LABELS, empty, alertBox, shortName } from '../ui.js';
 
 /* ============================= Kampüsler ============================ */
 export async function renderCampuses(root) {
@@ -380,6 +380,9 @@ async function surumKarti(container, calisan) {
       satirlar.push(el('p.card-note', { text: 'Güncelleme kontrol ediliyor...' }));
     } else if (durum.kontrolEdilemedi) {
       satirlar.push(alertBox('info', 'Güncelleme kontrol edilemedi', durum.kontrolEdilemedi));
+      // Yeni sürüm olup olmadığını doğrulayamasak da yönetici güncellemek
+      // isteyebilir: sunucu internete çıkamıyorsa tam da yapılacak şey budur.
+      satirlar.push(guncellemeBolumu(durum, kutu));
     } else if (durum.guncel) {
       satirlar.push(alertBox('success', 'Sürüm güncel',
         `GitHub'daki ${durum.dal} dalıyla aynı sürümü çalıştırıyorsunuz.`));
@@ -392,7 +395,7 @@ async function surumKarti(container, calisan) {
         { label: 'Değişiklik', value: (r) => r.subject, wrap: true },
         { label: 'Tarih', value: (r) => (r.date ? fmt.date(r.date) : '—') },
       ], durum.bekleyenler));
-      satirlar.push(komutKutusu());
+      satirlar.push(guncellemeBolumu(durum, kutu));
     }
 
     satirlar.push(el('div.btn-row', {}, [
@@ -457,4 +460,133 @@ function komutKutusu() {
         + 'veritabanına ve fatura eklerine dokunmaz. Güncelleme sırasında sistem birkaç saniye erişilemez.',
     }),
   ]);
+}
+
+
+/**
+ * GÜNCELLEME BÖLÜMÜ — buton ya da komut.
+ *
+ * Host tarafındaki güncelleyici kuruluysa tek tık yeter; değilse komut
+ * gösterilir. Uygulama hiçbir durumda güncellemeyi kendi çalıştırmaz:
+ * paylaşılan klasöre bir istek dosyası bırakır, host o dosyayı görüp
+ * SABİT bir komut çalıştırır.
+ */
+function guncellemeBolumu(durum, kutu) {
+  const c = durum.calistirici;
+  if (!c?.kurulu) {
+    return el('div.grid', { style: 'gap:8px' }, [
+      komutKutusu(),
+      el('p.card-note', {
+        text: 'Tek tıkla güncelleme isterseniz sunucuda bir kez şunu çalıştırın: '
+          + 'sudo bash /opt/kantin-uygulama/kaynak/deploy/guncelleyici-kur.sh — '
+          + 'konteynere hiçbir yetki verilmez, host tarafında bir servis kurulur.',
+      }),
+    ]);
+  }
+  if (!c.yazilabilir) {
+    return el('div.grid', { style: 'gap:8px' }, [
+      alertBox('warning', 'Güncelleyici kurulu ama klasöre yazılamıyor',
+        'Kontrol klasörünün izinlerini kontrol edin; şimdilik komutla güncelleyin.'),
+      komutKutusu(),
+    ]);
+  }
+
+  const buton = el('button.btn.btn-primary', {
+    text: '⬆ Şimdi Güncelle',
+    onclick: async () => {
+      const onay = await confirmDialog(
+        el('div', {}, [
+          el('p', {
+            text: durum.gerideCommit
+              ? `${durum.gerideCommit} değişiklik sunucuya uygulanacak.`
+              : 'Sunucu GitHub\'daki son sürüme güncellenecek. (Yeni bir şey olup '
+                + 'olmadığı doğrulanamadı; güncelleme yine de güvenlidir.)',
+          }),
+          el('p', {
+            text: 'Güncelleme sırasında sistem birkaç saniye erişilemez olacak. '
+              + 'Önce otomatik yedek alınır; veritabanına, fatura eklerine ve '
+              + 'ayarlarınıza dokunulmaz.',
+          }),
+          el('p.muted.small', {
+            text: 'Bu sırada kimsenin kayıt girmediğinden emin olun: yarıda kalan '
+              + 'bir form kaydedilemez.',
+          }),
+        ]),
+        { title: 'Sunucuyu güncelle', confirmText: 'Evet, güncelle' }
+      );
+      if (!onay) return;
+      await guncellemeyiBaslat(kutu);
+    },
+  });
+
+  return el('div.grid', { style: 'gap:8px' }, [
+    el('div.btn-row', {}, [buton]),
+    el('p.card-note', {
+      text: 'Güncellemeyi sunucudaki yardımcı servis çalıştırır. Uygulamanın yetkisi '
+        + '"güncelleme istiyorum" demekle sınırlıdır; hangi komutun çalışacağını '
+        + 'etkileyemez.',
+    }),
+    el('details', {}, [
+      el('summary', { text: 'Komutla güncellemeyi tercih ederim' }),
+      komutKutusu(),
+    ]),
+  ]);
+}
+
+/** İsteği bırakır ve sunucu geri gelene kadar ilerlemeyi izler. */
+async function guncellemeyiBaslat(kutu) {
+  const gunlukKutusu = el('pre.kod', { text: 'Başlatılıyor...' });
+  const baslik = el('strong', { text: 'Güncelleme başlatıldı' });
+  const not = el('p.card-note', {
+    text: 'Sistem birkaç saniye yanıt vermeyebilir; bu normaldir. Sayfayı kapatmayın.',
+  });
+  kutu.replaceChildren(card('Güncelleme', [
+    el('div.grid', { style: 'gap:8px' }, [baslik, not, gunlukKutusu]),
+  ]));
+
+  try {
+    await api.post('/api/health/guncelleme');
+  } catch (err) {
+    baslik.textContent = 'Güncelleme başlatılamadı';
+    gunlukKutusu.textContent = err.message;
+    return;
+  }
+
+  // Sunucu birazdan yeniden kurulacak: hata almak BEKLENEN durumdur,
+  // sessizce tekrar deneriz.
+  const bitis = Date.now() + 10 * 60 * 1000;
+  let sonDurum = null;
+  while (Date.now() < bitis) {
+    await new Promise((r) => setTimeout(r, 3000));
+    let d = null;
+    try {
+      d = await api.get('/api/health/guncelleme/durum');
+    } catch {
+      gunlukKutusu.textContent = 'Sunucu yeniden başlıyor, bekleniyor...';
+      continue;
+    }
+    sonDurum = d?.son;
+    if (d?.gunluk) gunlukKutusu.textContent = d.gunluk;
+    if (sonDurum?.durum === 'tamam' || sonDurum?.durum === 'hata' || sonDurum?.durum === 'reddedildi') break;
+    baslik.textContent = sonDurum?.mesaj || 'Güncelleme sürüyor...';
+  }
+
+  if (sonDurum?.durum === 'tamam') {
+    baslik.textContent = 'Güncelleme tamamlandı';
+    not.replaceChildren(alertBox('success', 'Tamamlandı',
+      'Sayfa yeni sürümle yeniden yükleniyor...'));
+    toast('Güncelleme tamamlandı.');
+    setTimeout(() => location.reload(), 2500);
+  } else if (sonDurum) {
+    baslik.textContent = `Güncelleme sonucu: ${sonDurum.durum}`;
+    not.replaceChildren(alertBox(
+      sonDurum.durum === 'hata' ? 'danger' : 'warning',
+      sonDurum.durum === 'hata' ? 'Güncelleme başarısız' : 'Güncelleme yapılmadı',
+      sonDurum.mesaj || ''
+    ));
+  } else {
+    baslik.textContent = 'Sonuç alınamadı';
+    not.replaceChildren(alertBox('warning', 'Durum okunamadı',
+      'Güncelleme çalışmış olabilir. Sayfayı yenileyip sürümü kontrol edin.'));
+  }
 }

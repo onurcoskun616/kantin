@@ -31,6 +31,17 @@ services:
       - kantin-data:/app/data
       # Yedekler host'ta dursun ki disari kopyalamak kolay olsun
       - ./backups:/app/backups
+      # GUNCELLEME KANALI (bkz. deploy/guncelleyici-kur.sh)
+      #
+      # Uygulamaya Docker yetkisi VERMEDEN "guncelle" dugmesini calistirmak
+      # icin kullanilan paylasimli klasor. Uygulama buraya bir ISTEK DOSYASI
+      # yazar; host'taki systemd birimi dosyayi gorup kur.sh'i calistirir ve
+      # sonucu yine buraya yazar. Konteyner hicbir sekilde docker
+      # calistiramaz; yalnizca "guncelleme istiyorum" diyebilir.
+      #
+      # Klasor yoksa dugme "guncelleyici kurulu degil" der; sistem calismaya
+      # devam eder.
+      - ./kontrol:/app/kontrol
 
     environment:
       NODE_ENV: production
