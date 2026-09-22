@@ -2142,3 +2142,93 @@ describe('Kampus bazli tedarikci cari hesabi', () => {
     assert.equal(yasak.status, 403);
   });
 });
+
+/**
+ * ILK DONEM SAYIMI: fark "donem satisi" degil, TUM gecmis
+ *
+ * Stok gecmis faturalar girilerek olusturuldugunda (dokumandaki Yol B) ilk
+ * sayimin "beklenen cirosu" o gecmisin tamamini kapsar; kayitli ciro ise
+ * ancak sistem kullanilmaya baslandiktan sonrasini. Aradaki fark bir kasa
+ * acigi DEGILDIR. Sistem bunu soylemezse ilk mutabakat devasa bir kayip
+ * gibi gorunur ve yanlis bir suclama uretir.
+ */
+describe('Ilk sayimda gecmis fatura uyarisi', () => {
+  let campusId; let supplierId; let productId;
+
+  before(async () => {
+    campusId = (await ok('POST', '/api/campuses', { name: 'Açılış Kampüsü', code: 'ACK' })).id;
+    supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'Açılış Tedarikçi', taxNo: '1616161616' })).id;
+    productId = (await ok('POST', '/api/products',
+      { name: 'Açılış Ürünü', salePrice: 20, vatRate: 10, unit: 'ADET' })).id;
+
+    // GECMIS faturalar: 60 ve 45 gun once, toplam 300 adet
+    for (const [gun, adet, no] of [[60, 200, 'ESK-1'], [45, 100, 'ESK-2']]) {
+      await ok('POST', '/api/purchases', {
+        campusId, supplierId, documentNo: no, documentDate: daysAgo(gun),
+        lines: [{ productId, quantity: adet, unitPrice: 10, vatRate: 10 }],
+      });
+    }
+    // Ciro kaydi ancak 10 gun once basliyor: arada 50 gunluk kayitsiz donem
+    await ok('POST', '/api/revenues', { campusId, revenueDate: daysAgo(10), cashAmount: 500 });
+  });
+
+  test('ilk sayimin mutabakati acilis uyarisi tasir', async () => {
+    const sayim = await ok('POST', '/api/counts', { campusId, countDate: iso(new Date()), isBlind: false });
+    // Rafta 50 adet kaldi: 250 adet "satilmis" gorunecek
+    await ok('PUT', `/api/counts/${sayim.id}/lines`, {
+      lines: [{ productId, countedQty: 50 }],
+    });
+    const rec = await ok('GET', `/api/counts/${sayim.id}/reconciliation`);
+
+    assert.ok(rec.openingPeriod, 'ilk sayimda acilis bilgisi verilmeli');
+    assert.equal(rec.openingPeriod.isFirstCount, true);
+    assert.equal(rec.openingPeriod.firstMovementDate, daysAgo(60));
+    assert.equal(rec.openingPeriod.firstRevenueDate, daysAgo(10));
+    // Ciro kaydinin baslamadigi donemde giren mal: iki belge de bu araliktadir
+    assert.equal(rec.openingPeriod.unrecordedPurchaseCount, 2);
+    assert.ok(rec.openingPeriod.unrecordedPurchaseTotal > 0,
+      String(rec.openingPeriod.unrecordedPurchaseTotal));
+    assert.equal(rec.openingPeriod.unrecordedPeriod.from, daysAgo(60));
+    assert.equal(rec.openingPeriod.unrecordedPeriod.to, daysAgo(11));
+    // Beklenen ciro kayitli cirodan cok yuksek: fark eksi ve "gecmisle aciklanir"
+    assert.ok(rec.revenue.difference < 0, String(rec.revenue.difference));
+    assert.equal(rec.openingPeriod.likelyExplainedByHistory, true);
+  });
+
+  test('donem basi belli olan sayimda uyari YOK', async () => {
+    // Nokta sayimi ciro ile karsilastirilmaz; acilis uyarisi da anlamsizdir.
+    const nokta = await ok('POST', '/api/counts', {
+      campusId, countDate: iso(new Date()), isBlind: false,
+      countType: 'NOKTA', productIds: [productId],
+    });
+    const rec = await ok('GET', `/api/counts/${nokta.id}/reconciliation`);
+    assert.equal(rec.openingPeriod, null, 'nokta sayiminda acilis uyarisi olmamali');
+    await ok('DELETE', `/api/counts/${nokta.id}`);
+  });
+
+  test('ilk sayim kesinlesince stok GERCEGE oturur', async () => {
+    const acik = await ok('GET', `/api/counts?campusId=${campusId}`);
+    const ilk = acik.items.find((c) => c.status !== 'KESINLESMIS');
+    await ok('POST', `/api/counts/${ilk.id}/submit`, { witnessName: 'Tanık' });
+
+    // IKI IMZA: kilitleyen kisi kendi sayimini kesinlestiremez
+    await ok('POST', '/api/users', {
+      email: 'acilis.mudur@topkapiokullari.com', fullName: 'Açılış Müdür',
+      role: 'GENEL_MUDURLUK', password: 'Mudur123456',
+    });
+    const login = await api('POST', '/api/auth/login',
+      { email: 'acilis.mudur@topkapiokullari.com', password: 'Mudur123456' }, false);
+    const res = await fetch(`${BASE}/api/counts/${ilk.id}/finalize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${login.data.token}` },
+      body: '{}',
+    });
+    assert.equal(res.status, 200, JSON.stringify(await res.json().catch(() => ({}))));
+
+    // Sayimdan sonra stok sayilan miktardir: gecmis faturalarin sisirdigi
+    // rakam duzeldi
+    const stok = await ok('GET', `/api/stock?campusId=${campusId}`);
+    assert.equal(stok.items.find((x) => x.product_id === productId).stock_qty, 50);
+  });
+});

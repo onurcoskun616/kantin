@@ -285,8 +285,41 @@ function buildReconciliation(data, rec) {
     }),
   ]));
 
+  /*
+   * İLK DÖNEM SAYIMI UYARISI
+   *
+   * Stok, geçmiş faturalar girilerek oluşturulduysa "beklenen ciro" o
+   * geçmişin tamamını kapsar; kayıtlı ciro ise ancak sistem kullanılmaya
+   * başlandıktan sonrasını. Aradaki fark bir kasa açığı DEĞİL, sistemden
+   * önceki satıştır. Uyarmazsak sistemin verdiği ilk rakam yanlış bir
+   * suçlama olur.
+   */
+  const acilis = rec.openingPeriod;
+  if (acilis?.isFirstCount) {
+    const bosluk = acilis.unrecordedPeriod;
+    wrap.append(alertBox('info', 'Bu ilk dönem sayımı — fark dönem satışı değil, TÜM geçmişi kapsıyor',
+      (bosluk
+        ? `Mal girişi ${fmt.date(bosluk.from)} tarihinde başlamış, ciro kaydı ise `
+          + `${acilis.firstRevenueDate ? fmt.date(acilis.firstRevenueDate) : 'hiç girilmemiş'}. `
+          + `Arada ciro kaydı olmayan bir dönem var ve o dönemde `
+          + `${acilis.unrecordedPurchaseCount} belgeyle ${fmt.money(acilis.unrecordedPurchaseTotal)} `
+          + 'tutarında mal girmiş. '
+        : 'Bu kampüsün ilk sayımı olduğu için beklenen ciro, ilk mal girişinden bugüne kadarki '
+          + 'tüm stok hareketini kapsıyor. ')
+      + 'Sistemi kurarken geçmiş faturaları girdiyseniz bu farkın büyük bölümü sistemden önceki '
+      + 'satıştır — kasa açığı değildir. Bu sayımı bir DÜZELTME sayımı gibi değerlendirin: '
+      + 'kesinleştirdiğinizde stok gerçeğe oturur ve bundan sonraki sayımlar gerçek dönem '
+      + 'satışını gösterir.'));
+  }
+
   if (data.status === 'KESINLESMIS') {
-    if (diff < -1) {
+    if (diff < -1 && acilis?.likelyExplainedByHistory) {
+      // Ayni fark, ama sucplayici olmayan dille: ilk sayimda bu beklenen bir sonuc
+      wrap.append(alertBox('warning', `${fmt.money(Math.abs(diff))} fark — ilk sayımda beklenen`,
+        'Bu farkı kasa açığı olarak okumayın: ciro kaydının başlamadığı bir dönemin satışını '
+        + 'içeriyor. Stok bu sayımla gerçeğe oturdu. Asıl denetim bir SONRAKİ sayımdadır — '
+        + 'orada aynı büyüklükte bir fark çıkarsa o gerçek bir açıktır.'));
+    } else if (diff < -1) {
       wrap.append(alertBox('danger', `${fmt.money(Math.abs(diff))} ciro açığı`,
         'Stoktan çıkan malın karşılığı kadar ciro kaydedilmemiş. Olası nedenler: kayıt dışı satış, eksik ciro beyanı, '
         + 'kaydedilmemiş fire/ikram, hatalı sayım veya eksik mal girişi. Fire kayıtlarını ve alım belgelerini kontrol edin.'));

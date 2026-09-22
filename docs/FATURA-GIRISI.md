@@ -47,8 +47,34 @@ tüm alış faturalarını girersiniz; stok bunlardan oluşur.
 - Bu yüzden ilk sayımı yaptığınızda büyük bir "eksik" farkı görürsünüz —
   bu fark gerçekte o dönemin satışıdır
 
-Yol B'yi seçerseniz **ilk sayımı bir düzeltme sayımı gibi düşünün**: fark
-normaldir, kesinleştirdiğinizde stok gerçeğe oturur.
+#### Yol B'yi seçtiyseniz: üç adım
+
+**1. Faturaları girin.** Belge tarihleri gerçek tarihleri olsun. Stok
+girdikçe şişecek — bu normaldir, henüz satış bilgisi yok.
+
+**2. Bir "kapanış günü" belirleyip o gün rafları sayın.** Sayımı normal
+dönem sayımı olarak açın, gerçek miktarları girin ve **kesinleştirin**.
+Stok bu anda gerçeğe oturur; aradaki fark `SATIS` hareketi olarak yazılır.
+
+**3. Asıl denetim bundan SONRAKİ sayımdır.** İlk sayımın farkı geçmişin
+tamamını kapsar, denetim anlamı taşımaz. İkinci sayımdan itibaren fark
+gerçek dönem satışıdır ve ciro ile karşılaştırılabilir.
+
+#### İlk sayımda çıkacak farkı açık sanmayın
+
+İlk sayımda "beklenen ciro" ile "kaydedilen ciro" **aynı dönemi
+anlatmaz**: beklenen ciro ilk faturadan bugüne kadarki tüm malı kapsar,
+kaydedilen ciro ise ancak sistemi kullanmaya başladığınız günden sonrasını.
+
+Sistem bunu kendisi söyler: ilk dönem sayımının mutabakat ekranında mavi
+bir uyarı çıkar ve mal girişinin hangi tarihte başladığını, ciro kaydının
+hangi tarihte başladığını, aradaki kayıtsız dönemde kaç belgeyle ne kadar
+mal girdiğini yazar. Fark da "ciro açığı" değil, **"ilk sayımda beklenen
+fark"** olarak gösterilir.
+
+> Geçmiş ciroları da elinizde varsa **Günlük Ciro** ekranından geçmiş
+> tarihlerle girebilirsiniz. O zaman ilk sayımın mutabakatı da anlamlı
+> olur — ama bu ekstra iştir ve zorunlu değildir.
 
 ### Hangisi?
 

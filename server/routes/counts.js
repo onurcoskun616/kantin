@@ -497,6 +497,20 @@ countRoutes.get('/:id/reconciliation', async (ctx) => {
   const actualRevenue = round2(revenue.total);
   // Nokta sayimi urunlerin yalnizca bir bolumunu kapsar; ciro ile karsilastirilamaz
   const difference = isSpot ? null : round2(actualRevenue - expectedRevenue);
+
+  // ILK DONEM SAYIMI — "beklenen ciro" ile "kayitli ciro" ayni donemi
+  // anlatmiyor olabilir.
+  //
+  // period_start bos demek "en bastan beri" demektir. Stok, gecmis faturalar
+  // girilerek olusturulduysa beklenen ciro O GECMISIN TAMAMINI kapsar; kayitli
+  // ciro ise ancak sistem kullanilmaya baslandiktan sonrasini. Aradaki fark
+  // bir KASA ACIGI DEGIL, sistemden onceki satistir.
+  //
+  // Uyarmazsak ilk mutabakat devasa bir kayip gibi gorunur ve sistemin ilk
+  // verdigi rakam yanlis bir suclama olur.
+  const openingPeriod = (!isSpot && !data.period_start)
+    ? buildOpeningNotice(data.campus_id, from, to, difference)
+    : null;
   const actualNet = round2(netFromGross(actualRevenue, weightedVat(data.lines)));
   const grossProfit = isSpot ? null : round2(actualNet - cogs);
 
@@ -511,6 +525,7 @@ countRoutes.get('/:id/reconciliation', async (ctx) => {
       finalizedByName: data.finalized_by_name, reopenedCount: data.reopened_count,
     },
     period: { from, to, dayCount: revenue.day_count, schoolDays: revenue.school_days },
+    openingPeriod,
     revenue: {
       expected: expectedRevenue,
       counted: countedRevenue,
@@ -675,6 +690,45 @@ function periodRevenue(campusId, from, to) {
   let sql = 'SELECT COALESCE(SUM(total_amount), 0) AS total FROM daily_revenues WHERE campus_id = ? AND revenue_date <= ?';
   if (from) { sql += ' AND revenue_date >= ?'; params.push(from); }
   return get(sql, params).total;
+}
+
+/**
+ * Ilk donem sayimi icin "bu fark neden bu kadar buyuk" aciklamasi.
+ *
+ * Mal girisinin basladigi gun ile ciro kaydinin basladigi gun arasindaki
+ * bosluk, beklenen ciroda olup kayitli ciroda olmayan donemdir. Bu boslukta
+ * girilen malin bedelini de veririz: ilk mutabakattaki farkin ne kadari
+ * "sistemden onceki satis" diye bakilabilsin.
+ */
+function buildOpeningNotice(campusId, from, to, difference) {
+  const ilkCiro = get(
+    'SELECT MIN(revenue_date) AS d FROM daily_revenues WHERE campus_id = ?', [campusId]
+  )?.d || null;
+  const ilkHareket = firstMovementDate(campusId);
+
+  // Ciro kaydi, mal girisinden SONRA basladiysa arada kayitsiz bir donem var
+  const bosluk = ilkHareket && ilkCiro && ilkCiro > ilkHareket
+    ? { from: ilkHareket, to: addDays(ilkCiro, -1) }
+    : (ilkHareket && !ilkCiro ? { from: ilkHareket, to } : null);
+
+  const kayitsizAlim = bosluk ? get(
+    `SELECT COALESCE(SUM(gross_total), 0) AS tutar, COUNT(*) AS adet
+       FROM purchases WHERE campus_id = ? AND status <> 'IPTAL'
+            AND document_date BETWEEN ? AND ?`,
+    [campusId, bosluk.from, bosluk.to]
+  ) : null;
+
+  return {
+    isFirstCount: true,
+    firstMovementDate: ilkHareket,
+    firstRevenueDate: ilkCiro,
+    // Ciro kaydi olmayan, ama mal girisi olan donem
+    unrecordedPeriod: bosluk,
+    unrecordedPurchaseTotal: kayitsizAlim ? round2(kayitsizAlim.tutar) : 0,
+    unrecordedPurchaseCount: kayitsizAlim ? kayitsizAlim.adet : 0,
+    // Fark eksiyse ve bosluk varsa, farkin buyuk bolumu muhtemelen o donemin satisi
+    likelyExplainedByHistory: !!(bosluk && difference !== null && difference < 0),
+  };
 }
 
 function firstMovementDate(campusId) {
