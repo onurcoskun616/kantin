@@ -70,6 +70,11 @@ const ekran = await page.textContent('#pageContent');
 ok('Calisan surum yaziyor', /Çalışan sürüm/.test(ekran), ekran.slice(0, 400));
 ok('Surum tarihi ve kurulum zamani var',
   /Sürüm tarihi/.test(ekran) && /Kurulum zamanı/.test(ekran));
+// Surum guncelken guncelleme bolumu cizilmez; tek tikla guncellemenin
+// kurulu olup olmadigi yine de gorunmeli.
+ok('Tek tikla guncellemenin durumu HER ZAMAN yaziyor',
+  /Tek tıkla güncelleme/.test(ekran)
+  && /(Etkin|Kurulu değil|klasör yazılamıyor)/.test(ekran), ekran.slice(0, 900));
 
 // Sunucunun hangi durumda oldugunu API'den ogrenip ONA gore dogrulariz:
 // "geride kalindi" ve "kontrol edilemedi" ikisi de gercek durumlardir.

@@ -320,6 +320,16 @@ export async function renderSystem(root) {
 /** Ölçümleri tek cümleyle yorumlar: kullanıcı rakamları yorumlamak zorunda kalmasın. */
 function yorum(turMs, agMs, s) {
   if (s.uptimeSeconds < 120) {
+    // GÜNCELLEMEDEN HEMEN SONRA kısa çalışma süresi BEKLENEN durumdur:
+    // konteyner zaten güncelleme yüzünden yeniden kuruldu. Bunu "sürekli
+    // yeniden başlıyor olabilir" diye okumak her güncellemede yanlış alarm
+    // üretirdi. Kurulum zamanı yakınsa sebebi biliyoruz demektir.
+    const kurulum = s.version?.builtAt ? Date.parse(s.version.builtAt) : NaN;
+    const kurulumYakin = Number.isFinite(kurulum) && (Date.now() - kurulum) < 15 * 60 * 1000;
+    if (kurulumYakin) {
+      return `Sunucu ${s.uptimeSeconds} saniye önce yeniden başladı — bu, az önce yapılan `
+        + 'güncellemenin normal sonucudur.';
+    }
     return `Sunucu ${s.uptimeSeconds} saniye önce başlamış. Sürekli yeniden başlıyorsa her `
       + 'istek açılış maliyetini öder; sunucu günlüğüne bakın.';
   }
@@ -373,6 +383,14 @@ async function surumKarti(container, calisan) {
         el('dd', { text: s?.date ? fmt.dateTime(s.date) : '—' }),
         el('dt', { text: 'Kurulum zamanı' }),
         el('dd', { text: s?.builtAt ? fmt.dateTime(s.builtAt) : '—' }),
+        // Sürüm güncelken güncelleme bölümü hiç çizilmiyor; o yüzden tek
+        // tıkla güncellemenin kurulu olup olmadığı BURADA görünmeli. Aksi
+        // halde kurulumun tuttuğu ancak yeni bir sürüm çıkınca anlaşılır.
+        el('dt', { text: 'Tek tıkla güncelleme' }),
+        el('dd', {}, [durum?.calistirici?.kurulu
+          ? badge(durum.calistirici.yazilabilir ? 'Etkin' : 'Kurulu ama klasör yazılamıyor',
+            durum.calistirici.yazilabilir ? 'ok' : 'warn')
+          : badge('Kurulu değil')]),
       ]),
     ];
 
