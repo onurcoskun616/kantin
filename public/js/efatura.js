@@ -58,6 +58,11 @@ function number(node, ...names) {
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const round4 = (n) => Math.round((Number(n) || 0) * 10000) / 10000;
+// Koli fiyati stok birimine BOLUNURKEN dort hane yetmez: 290,909 / 24 =
+// 12,12120833... dort haneye kirpilinca 720 adette bir kurus kayboluyor ve
+// belge toplami faturanin odenecek tutarini tutmuyordu. Faturalarin kendisi
+// de birim fiyati uc-alti haneyle yaziyor.
+const round6 = (n) => Math.round((Number(n) || 0) * 1e6) / 1e6;
 
 /* ------------------------------ Çözümleme --------------------------- */
 /**
@@ -388,14 +393,28 @@ export function matchProducts(lines, products, aliases = []) {
     // Miktar çarpılır, birim fiyat bölünür — tutar değişmez.
     const factor = alias && alias.factor > 0 ? Number(alias.factor) : 1;
     const cevrildi = factor !== 1;
+    // Faturanin birimi ile urun kartinin birimi ayni mi?
+    //
+    // Toptancilar faturayi KOLI/PAKET (PK) uzerinden keser: "30 PK ×
+    // 454,57". Urun karti ADET tutuyorsa ve cevrim carpani 1 ise stoga
+    // 30 ADET girer — oysa gerceginde 30 koli, yani belki 720 adet
+    // girmistir. Sayimda kocaman bir fark cikar ve nereden geldigi
+    // anlasilmaz. Bu yuzden uyusmazligi ISARETLERIZ; carpan verilmisse
+    // (cevrildi) is zaten cozulmustur, uyarmayiz.
+    const faturaBirimi = unitFromCode(line.unitCode);
+    const kartBirimi = product && product.unit ? String(product.unit).toUpperCase() : null;
     return {
       ...line,
       product,
       matchedBy: how,
       aliasFactor: factor,
       convertedByFactor: cevrildi,
+      sourceUnit: faturaBirimi,
+      unitMismatch: Boolean(product && !cevrildi && faturaBirimi && kartBirimi
+        && faturaBirimi !== kartBirimi),
+      productUnit: kartBirimi,
       quantity: cevrildi ? round4(line.quantity * factor) : line.quantity,
-      unitPrice: cevrildi ? round4(line.unitPrice / factor) : line.unitPrice,
+      unitPrice: cevrildi ? round6(line.unitPrice / factor) : line.unitPrice,
       // Faturadaki hâli gösterim ve denetim için saklanır
       sourceQuantity: line.quantity,
       sourceUnitPrice: line.unitPrice,

@@ -271,6 +271,63 @@ async function openPurchaseForm(onDone) {
   const noteInput = el('textarea', { placeholder: 'Açıklama (isteğe bağlı)' });
   const errorBox = el('div.alert.alert-danger', { hidden: true });
 
+  /**
+   * "Fatura koli diyor, kart adet tutuyor" uyarisini cizer.
+   *
+   * Toptanci faturayi koli uzerinden keser: satirda `unitCode="PK"` ve
+   * "30 × 454,57" yazar. Bu 30 oldugu gibi alinirsa stoga 30 ADET girer,
+   * oysa 30 KOLI gelmistir. Hata SESSIZDIR: belge toplami faturayla
+   * tutar, kimse fark etmez; fark aylar sonra sayimda patlar ve nereden
+   * geldigi anlasilmaz.
+   *
+   * Bu yuzden uyari bir SORU olarak gelir ve cevabi burada verilir:
+   * "1 PAKET kac ADET?". Girilen sayi satira uygulanir (miktar carpilir,
+   * birim fiyat bolunur; belge tutari degismez) ve belge kaydedilince bu
+   * tedarikci icin ogrenilir: ayni kalem bir daha sorulmaz.
+   */
+  function birimUyarisiCiz() {
+    const uyusmaz = lines.filter((l) => l.unitMismatch && l.productId);
+    if (!uyusmaz.length) { birimBox.replaceChildren(); return; }
+
+    const satirlar = uyusmaz.map((l) => {
+      const giris = el('input.num', {
+        type: 'number', step: '0.01', min: '0.01', placeholder: '?', style: 'width:90px',
+      });
+      const uygula = () => {
+        if (!l.cevrimUygula(giris.value)) { giris.focus(); return; }
+        recalcTotals();
+        birimUyarisiCiz();
+      };
+      giris.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); uygula(); } });
+      return el('div.row', { style: 'gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px' }, [
+        el('small', {
+          text: `${l.sourceName || 'Satır'}: fatura ${fmt.num(l.sourceQuantity ?? l.quantity)} `
+            + `${l.sourceUnit}, ürün kartı ${l.productUnit}. 1 ${l.sourceUnit} =`,
+        }),
+        giris,
+        el('small', { text: l.productUnit || 'birim' }),
+        el('button.btn.btn-sm', { type: 'button', text: 'Uygula', onclick: uygula }),
+      ]);
+    });
+
+    birimBox.replaceChildren(el('div.alert.alert-danger', {}, [
+      el('strong', { text: `${uyusmaz.length} kalemde birim faturadan farklı` }),
+      el('div', {
+        style: 'margin:4px 0 2px',
+        text: 'Fatura bu kalemleri koli/paket üzerinden kesmiş, ürün kartı başka birim '
+          + 'tutuyor. Çevrim verilmezse stoğa yanlış miktar girer (ör. 30 koli yerine '
+          + '30 adet) ve fark sayımda ortaya çıkar. Bir kolide kaç birim olduğunu yazın: '
+          + 'belge tutarı değişmez, yalnızca stoğa girecek miktar düzelir.',
+      }),
+      ...satirlar,
+      el('small.muted', {
+        style: 'display:block;margin-top:8px',
+        text: 'Birim gerçekten aynıysa (tedarikçi "PAKET" yazmış ama tek tek satıyorsa) '
+          + 'bir şey yapmanız gerekmez; satırlar faturadaki gibi kaydedilir.',
+      }),
+    ]));
+  }
+
   function recalcTotals() {
     let net = 0; let vat = 0;
     for (const l of lines) { net += l.net; vat += l.vat; }
@@ -343,6 +400,13 @@ async function openPurchaseForm(onDone) {
       sourceBarcode: p0.sourceBarcode || null,
       sourceCode: p0.sourceCode || null,
       sourceUnit: p0.sourceUnit || null,
+      // Faturanin YAZDIGI miktar/fiyat: cevrim carpani uygulandiginda
+      // satirdaki degerler degisir, faturayla karsilastirabilmek icin
+      // aslini da tasiriz.
+      sourceQuantity: p0.sourceQuantity ?? p0.quantity ?? null,
+      sourceUnitPrice: p0.sourceUnitPrice ?? p0.unitPrice ?? null,
+      productUnit: p0.productUnit || null,
+      unitMismatch: Boolean(p0.unitMismatch),
       aliasFactor: p0.aliasFactor ?? 1,
       matchedBy: p0.matchedBy || null,
     };
@@ -376,7 +440,17 @@ async function openPurchaseForm(onDone) {
       } else if (p && hasPreset && !vatIn.value) {
         vatIn.value = p.vat_rate;
       }
+      // Urun elle secildiginde de birim kontrolu yapilir: faturada "30 PK"
+      // yazarken ADET tutan bir kart secilmisse satirda uyari cikar.
+      if (line.sourceUnit && p && p.unit && line.aliasFactor === 1) {
+        line.unitMismatch = String(p.unit).toUpperCase() !== line.sourceUnit;
+        line.productUnit = String(p.unit).toUpperCase();
+      } else if (!p) {
+        line.unitMismatch = false;
+      }
       picker.markMissing(!line.productId);
+      kaynakCiz();
+      birimUyarisiCiz();
       recalcLine();
     };
     const recalcLine = () => {
@@ -392,22 +466,68 @@ async function openPurchaseForm(onDone) {
     };
     [qty, price, disc, vatIn, expiry].forEach((n) => n.addEventListener('input', recalcLine));
 
+    // Faturanin kendi miktari ve BIRIMI satirin altinda yazar. Fatura
+    // "30 PK" diyorsa kullanici bunu gormeli: miktar kutusundaki 30,
+    // 30 adet mi 30 koli mi sorusunun cevabi yalnizca burada.
+    const kaynakBilgi = el('small.muted', { style: 'display:block;margin-top:2px' });
+    const kaynakCiz = () => {
+      if (!line.sourceName) { kaynakBilgi.replaceChildren(); return; }
+      const parcalar = [`Faturada: ${line.sourceName}`];
+      if (line.sourceQuantity != null) {
+        parcalar.push(` · ${fmt.num(line.sourceQuantity)}${line.sourceUnit ? ' ' + line.sourceUnit : ''}`
+          + `${line.sourceUnitPrice != null ? ' × ' + fmt.money(line.sourceUnitPrice) : ''}`);
+      }
+      const ekler = [
+        // Öğrenilmiş bir eşleştirmeyle bulunduysa söyle: kullanıcı
+        // "bunu ben seçmedim, nereden geldi" diye tereddüt etmesin.
+        /öğrenilmiş/.test(line.matchedBy || '')
+          ? el('span', { text: ' · öğrenilmiş eşleştirme', style: 'color:var(--success)' })
+          : null,
+        line.aliasFactor !== 1
+          ? el('span', {
+            text: ` · ×${line.aliasFactor} çevrildi → ${fmt.num(line.quantity)}`
+              + `${line.productUnit ? ' ' + line.productUnit : ''}`,
+            style: 'color:var(--warning)',
+          })
+          : null,
+        line.unitMismatch
+          ? el('span', {
+            text: ` · ⚠ kart birimi ${line.productUnit}`,
+            style: 'color:var(--danger);font-weight:600',
+          })
+          : null,
+      ];
+      kaynakBilgi.replaceChildren(...parcalar, ...ekler.filter(Boolean));
+    };
+    kaynakCiz();
+
+    /**
+     * Koli/paket çevrimini satıra uygular: miktar çarpılır, birim fiyat
+     * bölünür — belge tutarı DEĞİŞMEZ, yalnızca stoğa kaç adet gireceği
+     * düzelir. Çarpan belge kaydedilince öğrenilir; aynı tedarikçinin
+     * sonraki faturalarında bu kalem kendiliğinden çevrilir.
+     */
+    line.cevrimUygula = (carpan) => {
+      const n = Number(carpan);
+      if (!(n > 0)) return false;
+      const ham = line.sourceQuantity ?? line.quantity;
+      const hamFiyat = line.sourceUnitPrice ?? line.unitPrice;
+      line.aliasFactor = n;
+      line.unitMismatch = false;
+      qty.value = String(Math.round(ham * n * 10000) / 10000);
+      // Birim fiyat ALTI haneye yuvarlanir: dort hane, 290,909/24 gibi
+      // bolmelerde 720 adette bir kurus kaybettiriyor ve belge toplami
+      // faturanin odenecek tutarini tutmuyordu.
+      price.value = String(Math.round((hamFiyat / n) * 1e6) / 1e6);
+      recalcLine();
+      kaynakCiz();
+      return true;
+    };
+
     const tr = el('tr', {}, [
       el('td', { style: 'min-width:240px' }, [
         picker.node,
-        line.sourceName
-          ? el('small.muted', { style: 'display:block;margin-top:2px' }, [
-            `Faturada: ${line.sourceName}`,
-            // Öğrenilmiş bir eşleştirmeyle bulunduysa söyle: kullanıcı
-            // "bunu ben seçmedim, nereden geldi" diye tereddüt etmesin.
-            /öğrenilmiş/.test(line.matchedBy || '')
-              ? el('span', { text: ' · öğrenilmiş eşleştirme', style: 'color:var(--success)' })
-              : null,
-            line.aliasFactor !== 1
-              ? el('span', { text: ` · ×${line.aliasFactor} çevrildi`, style: 'color:var(--warning)' })
-              : null,
-          ])
-          : null,
+        line.sourceName ? kaynakBilgi : null,
       ]),
       el('td', {}, [qty]), el('td', {}, [price]), el('td', {}, [disc]), el('td', {}, [vatIn]),
       el('td', {}, [expiry]), totalCell,
@@ -430,6 +550,7 @@ async function openPurchaseForm(onDone) {
           }
           lines.splice(lines.indexOf(line), 1);
           tr.remove();
+          birimUyarisiCiz();
           recalcTotals();
         },
       })]),
@@ -518,6 +639,11 @@ async function openPurchaseForm(onDone) {
   const imported = { uuid: null, file: null, karekod: null };
   const importBox = el('div');
   const karekodBox = el('div');
+  // Birim uyusmazligi kutusu CANLIDIR: yalnizca fatura okunurken degil,
+  // kullanici satirda elle urun sectiginde ya da carpani uyguladiginda da
+  // yeniden cizilir. Uyari "fatura okundu" ozetinin icinde kalsaydi elle
+  // secilen satirlar icin hic gorunmezdi.
+  const birimBox = el('div');
 
   const xmlInput = el('input', { type: 'file', accept: '.xml,application/xml,text/xml', style: 'display:none' });
   const importBtn = el('button.btn', { text: '🧾 e-Fatura XML\'den Doldur', onclick: () => xmlInput.click() });
@@ -571,6 +697,7 @@ async function openPurchaseForm(onDone) {
         el('div.btn-row', {}, [importBtn, qrBtn, xmlInput]),
       ]),
       importBox,
+      birimBox,
       el('div.grid.grid-3', {}, [
         el('label.field', {}, [
           el('span', { text: 'Tedarikçi *' }),
@@ -637,12 +764,17 @@ async function openPurchaseForm(onDone) {
         sourceName: line.name,
         sourceBarcode: line.barcode || null,
         sourceCode: line.supplierCode || line.barcode || null,
-        sourceUnit: unitFromCode(line.unitCode),
+        sourceUnit: line.sourceUnit || unitFromCode(line.unitCode),
+        sourceQuantity: line.sourceQuantity,
+        sourceUnitPrice: line.sourceUnitPrice,
+        productUnit: line.productUnit,
+        unitMismatch: line.unitMismatch,
         aliasFactor: line.aliasFactor,
         matchedBy: line.matchedBy,
         unmatched: !line.product,
       });
     }
+    birimUyarisiCiz();
     recalcTotals();
 
     // Ozet ve uyarilar
