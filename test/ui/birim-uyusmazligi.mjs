@@ -151,7 +151,7 @@ ok('Satirda kart biriminin farkli oldugu isaretli',
 
 const uyari = await toplamMetni();
 ok('Birim uyusmazligi uyarisi cikti', /birim faturadan farklı/.test(uyari), uyari.slice(0, 300));
-ok('Ne yapilacagi soruluyor', /1 PAKET =/.test(uyari), uyari.slice(0, 400));
+ok('Ne yapilacagi soruluyor', /1 PAKET kaç ADET/.test(uyari), uyari.slice(0, 400));
 
 console.log('\n2) Carpan uygulanir: miktar carpilir, tutar DEGISMEZ');
 const tutarOnce = await page.textContent(`${tr1} td.num`);
@@ -196,6 +196,79 @@ ok('Carpan ogrenilmis ve uygulanmis',
   Math.abs(miktar2 - KOLI * ADET_KOLIDE) < 0.01, `miktar=${miktar2}`);
 ok('Birim cevrimi bildirildi', /birim çevrimi yapıldı/.test(metin2), metin2.slice(0, 300));
 ok('Ikinci faturada birim uyarisi CIKMADI', !/birim faturadan farklı/.test(metin2), metin2.slice(0, 300));
+
+console.log('\n5) Kart da PAKET tutuyorsa yine SORULUR (asil tuzak)');
+// Urun kartlari cogu zaman faturadan acilir ve birimi faturadan miras
+// alir. O zaman birimler "tutuyor" gorunur ama stok yanlistir: kantin
+// urunu tek tek satar. Bu durumda soru yine sorulmali ve cevap verilince
+// KARTIN BIRIMI de ADET'e cevrilmeli.
+const VKN2 = String(Date.now() + 4242).slice(-10);
+const URUN2 = `Koli Testi Gofret ${RUN}`;
+await apiCall('POST', '/api/suppliers', { name: `Koli Toptan İki ${RUN}`, taxNo: VKN2 });
+const urun2 = await apiCall('POST', '/api/products', {
+  name: URUN2, salePrice: 30, vatRate: 10, unit: 'PAKET',
+});
+const XML3 = path.join(dir, 'k3.xml');
+xmlYaz(XML3, { belgeNo: `KL3${RUN}`, ettn: `3333${RUN}-aaaa-bbbb-cccc-000000000003` });
+// Ucuncu fatura ikinci tedarikciden gelsin: ogrenilmis carpan karismasin
+fs.writeFileSync(XML3, fs.readFileSync(XML3, 'utf8')
+  .replace(`>${VKN}<`, `>${VKN2}<`)
+  .replace(AD_FATURA, `GOFRET ÇEŞİTLERİ ${RUN}`));
+
+await formAc(XML3);
+await page.click(`${tr1} .picker-input`);
+await page.fill(`${tr1} .picker-input`, URUN2);
+await page.waitForTimeout(400);
+await page.click(`${tr1} .picker-list .picker-item:not(.picker-new)`);
+await page.waitForTimeout(500);
+
+const metin3 = await toplamMetni();
+ok('Kart PAKET olsa da soru soruldu',
+  /koli\/paket olarak faturalanmış/.test(metin3), metin3.slice(0, 300));
+ok('Hedef birim ADET soruluyor', /1 PAKET kaç ADET/.test(metin3), metin3.slice(0, 400));
+
+await page.fill('.alert-warning input[type=number]', '12');
+await page.click('.alert-warning button:has-text("Uygula")');
+await page.waitForTimeout(900);
+const miktar3 = await satirDegeri(2);
+ok('Miktar adede cevrildi', Math.abs(miktar3 - KOLI * 12) < 0.01, `miktar=${miktar3}`);
+
+const kart = (await apiCall('GET', `/api/products/${urun2.data.id}`)).data;
+ok('Urun kartinin birimi ADET oldu', kart && kart.unit === 'ADET', `birim=${kart?.unit}`);
+ok('Soru kutusu kapandi', !/1 PAKET kaç ADET/.test(await toplamMetni()));
+
+console.log('\n6) Kalem faturadan URUN OLARAK TANIMLANINCA da sorulur');
+// Kullanicinin gercek akisi bu: kalem eslesmiyor, "+ yeni urun tanimla"
+// ile karti faturadan aciyor. Kart birimi faturadan miras kaldigi icin
+// PAKET oluyor ve hicbir sey uyusmaz gorunmuyor. Soru burada sorulmazsa
+// hic sorulmaz.
+const VKN3 = String(Date.now() + 9191).slice(-10);
+const AD3 = `KEK ÇEŞİTLERİ ${RUN}`;
+await apiCall('POST', '/api/suppliers', { name: `Koli Toptan Üç ${RUN}`, taxNo: VKN3 });
+const XML4 = path.join(dir, 'k4.xml');
+xmlYaz(XML4, { belgeNo: `KL4${RUN}`, ettn: `3333${RUN}-aaaa-bbbb-cccc-000000000004` });
+fs.writeFileSync(XML4, fs.readFileSync(XML4, 'utf8')
+  .replace(`>${VKN}<`, `>${VKN3}<`)
+  .replace(AD_FATURA, AD3));
+
+await formAc(XML4);
+await page.click(`${tr1} .picker-input`);
+await page.fill(`${tr1} .picker-input`, AD3);
+await page.waitForTimeout(400);
+await page.click(`${tr1} .picker-list .picker-new`);
+await page.waitForSelector('.modal-backdrop:last-of-type input[name=salePrice]');
+const birimSecili = await page.$eval('.modal-backdrop:last-of-type select[name=unit]', (n) => n.value);
+ok('Yeni urun formunda birim faturadan geldi', birimSecili === 'PAKET', `birim=${birimSecili}`);
+const ipucu = await page.textContent('.modal-backdrop:last-of-type .modal-body');
+ok('Tek tek satanlar icin ADET onerisi var', /TEK TEK/.test(ipucu), ipucu.slice(0, 200));
+
+await page.fill('.modal-backdrop:last-of-type input[name=salePrice]', '20');
+await page.click('.modal-backdrop:last-of-type .modal-foot .btn-primary');
+await page.waitForTimeout(1200);
+
+const metin4 = await toplamMetni();
+ok('Faturadan acilan kart icin de soruldu',
+  /1 PAKET kaç ADET/.test(metin4), metin4.slice(0, 400));
 
 await b.close();
 if (problems.length) {

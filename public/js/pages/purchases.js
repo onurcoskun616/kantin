@@ -272,58 +272,135 @@ async function openPurchaseForm(onDone) {
   const errorBox = el('div.alert.alert-danger', { hidden: true });
 
   /**
-   * "Fatura koli diyor, kart adet tutuyor" uyarisini cizer.
+   * Koli/paket faturalarinda "bir pakette kac adet var?" sorusunu sorar.
    *
    * Toptanci faturayi koli uzerinden keser: satirda `unitCode="PK"` ve
-   * "30 × 454,57" yazar. Bu 30 oldugu gibi alinirsa stoga 30 ADET girer,
+   * "30 × 454,57" yazar. O 30 oldugu gibi alinirsa stoga 30 birim girer,
    * oysa 30 KOLI gelmistir. Hata SESSIZDIR: belge toplami faturayla
-   * tutar, kimse fark etmez; fark aylar sonra sayimda patlar ve nereden
-   * geldigi anlasilmaz.
+   * tuttugu icin kimse fark etmez, fark aylar sonra sayimda patlar.
    *
-   * Bu yuzden uyari bir SORU olarak gelir ve cevabi burada verilir:
-   * "1 PAKET kac ADET?". Girilen sayi satira uygulanir (miktar carpilir,
-   * birim fiyat bolunur; belge tutari degismez) ve belge kaydedilince bu
-   * tedarikci icin ogrenilir: ayni kalem bir daha sorulmaz.
+   * SORU IKI DURUMDA DA SORULUR:
+   *
+   *   1. Kart ADET, fatura PAKET -> apacik uyusmazlik, stok yanlis girer.
+   *   2. Kart da PAKET  -> "tutuyor" gibi gorunur ama tuzak asil budur:
+   *      kart cogu zaman bu faturadan acilmistir ve birimi faturadan
+   *      miras almistir. Kantin urunu tek tek sattigi icin stok ADET
+   *      olmaliydi. Bu durumda soru sorulur ve cevap verilirse KARTIN
+   *      BIRIMI de ADET'e cevrilir; yoksa stok "720 PAKET" gibi yanlis
+   *      etiketlenirdi.
+   *
+   * Cevap satira uygulanir (miktar carpilir, birim fiyat bolunur, belge
+   * tutari DEGISMEZ) ve belge kaydedilince bu tedarikci icin ogrenilir:
+   * ayni kalem bir daha sorulmaz. "Koli olarak sayacagim" diyen kullanici
+   * icin de kapatma dugmesi vardir.
    */
-  function birimUyarisiCiz() {
-    const uyusmaz = lines.filter((l) => l.unitMismatch && l.productId);
-    if (!uyusmaz.length) { birimBox.replaceChildren(); return; }
+  const TOPTAN_BIRIMLER = new Set(['PAKET', 'KUTU', 'KOLI']);
 
-    const satirlar = uyusmaz.map((l) => {
+  async function kartBirimiDegistir(product, birim, carpan = 1) {
+    // Stok artik ADET tutuyorsa kart da ADET demeli. Kart alanlarinin
+    // tamami gonderilir: sunucu eksik alani varsayilana cekiyor.
+    //
+    // Alis fiyati da bolunur: kart koli fiyatini tutuyordu, artik bir
+    // adedin maliyetini tutmali. (Belge kaydedilince zaten faturadan
+    // gelen gercek maliyetle guncellenecek; arada kalan an icin dogru
+    // olsun.) SATIS fiyatina dokunmayiz: koli icin girilen rakamin
+    // adede bolunmesi dogru olmayabilir, kullaniciya soyleriz.
+    const alis = carpan > 1
+      ? Math.round((product.purchase_price / carpan) * 100) / 100
+      : product.purchase_price;
+    const yeni = await api.put(`/api/products/${product.id}`, {
+      barcode: product.barcode || '', name: product.name,
+      categoryId: product.category_id, unit: birim,
+      productType: product.product_type, purchasePrice: alis,
+      salePrice: product.sale_price, vatRate: product.vat_rate,
+      criticalStock: product.critical_stock, mebApproved: !!product.meb_approved,
+      maxPrice: product.max_price, trackExpiry: !!product.track_expiry,
+      isActive: !!product.is_active,
+    });
+    productMap.set(product.id, { ...product, ...yeni });
+    const i = products.items.findIndex((x) => x.id === product.id);
+    if (i >= 0) products.items[i] = { ...products.items[i], ...yeni };
+    return yeni;
+  }
+
+  function birimUyarisiCiz() {
+    const aday = lines.filter((l) => l.productId && l.aliasFactor === 1 && !l.birimOnaylandi
+      && l.sourceUnit && (l.unitMismatch || TOPTAN_BIRIMLER.has(l.sourceUnit)));
+    if (!aday.length) { birimBox.replaceChildren(); return; }
+
+    // Kart birimi faturayla AYNI toptan birimse stok birimi ADET olacak;
+    // farkliysa kartin kendi birimi zaten stok birimidir.
+    const hedefBirim = (l) => (l.productUnit === l.sourceUnit ? 'ADET' : (l.productUnit || 'ADET'));
+
+    const satirlar = aday.map((l) => {
       const giris = el('input.num', {
-        type: 'number', step: '0.01', min: '0.01', placeholder: '?', style: 'width:90px',
+        type: 'number', step: '1', min: '0.01', placeholder: '?', style: 'width:90px',
       });
-      const uygula = () => {
-        if (!l.cevrimUygula(giris.value)) { giris.focus(); return; }
-        recalcTotals();
-        birimUyarisiCiz();
+      const durum = el('small', { style: 'color:var(--text-muted)' });
+      const uygula = async () => {
+        const n = Number(giris.value);
+        if (!(n > 0)) { giris.focus(); return; }
+        const kartDegisecek = l.productUnit === l.sourceUnit;
+        if (!l.cevrimUygula(n)) { giris.focus(); return; }
+        try {
+          if (kartDegisecek) {
+            const p = productMap.get(l.productId);
+            if (p) {
+              await kartBirimiDegistir(p, 'ADET', n);
+              l.productUnit = 'ADET';
+              // Satis fiyati koli icin girilmis olabilir: bunu ancak
+              // kullanici bilir, sessizce bolmek yanlis olur.
+              toast(`${p.name}: kart birimi ADET oldu. SATIŞ fiyatını adet `
+                + 'üzerinden kontrol edin (Ürünler ve Fiyatlar).');
+            }
+          }
+          recalcTotals();
+          birimUyarisiCiz();
+        } catch (err) {
+          durum.textContent = `Kart birimi değiştirilemedi: ${err.message}`;
+          durum.style.color = 'var(--danger)';
+        }
       };
       giris.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); uygula(); } });
-      return el('div.row', { style: 'gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px' }, [
-        el('small', {
-          text: `${l.sourceName || 'Satır'}: fatura ${fmt.num(l.sourceQuantity ?? l.quantity)} `
-            + `${l.sourceUnit}, ürün kartı ${l.productUnit}. 1 ${l.sourceUnit} =`,
-        }),
-        giris,
-        el('small', { text: l.productUnit || 'birim' }),
-        el('button.btn.btn-sm', { type: 'button', text: 'Uygula', onclick: uygula }),
+
+      return el('div', { style: 'margin-top:8px' }, [
+        el('div.row', { style: 'gap:8px;align-items:center;flex-wrap:wrap' }, [
+          el('small', {
+            text: `${l.sourceName || 'Satır'} — fatura ${fmt.num(l.sourceQuantity ?? l.quantity)} `
+              + `${l.sourceUnit}${l.unitMismatch ? `, ürün kartı ${l.productUnit}` : ''}. `
+              + `1 ${l.sourceUnit} kaç ${hedefBirim(l)}?`,
+          }),
+          giris,
+          el('small', { text: hedefBirim(l) }),
+          el('button.btn.btn-sm', { type: 'button', text: 'Uygula', onclick: uygula }),
+          el('button.btn.btn-sm', {
+            type: 'button', text: `${l.sourceUnit} olarak sayacağım`,
+            onclick: () => { l.birimOnaylandi = true; birimUyarisiCiz(); },
+          }),
+        ]),
+        durum,
       ]);
     });
 
-    birimBox.replaceChildren(el('div.alert.alert-danger', {}, [
-      el('strong', { text: `${uyusmaz.length} kalemde birim faturadan farklı` }),
+    const uyusmazSayisi = aday.filter((l) => l.unitMismatch).length;
+    birimBox.replaceChildren(el(`div.alert.alert-${uyusmazSayisi ? 'danger' : 'warning'}`, {}, [
+      el('strong', {
+        text: uyusmazSayisi
+          ? `${aday.length} kalemde birim faturadan farklı`
+          : `${aday.length} kalem koli/paket olarak faturalanmış`,
+      }),
       el('div', {
         style: 'margin:4px 0 2px',
-        text: 'Fatura bu kalemleri koli/paket üzerinden kesmiş, ürün kartı başka birim '
-          + 'tutuyor. Çevrim verilmezse stoğa yanlış miktar girer (ör. 30 koli yerine '
-          + '30 adet) ve fark sayımda ortaya çıkar. Bir kolide kaç birim olduğunu yazın: '
-          + 'belge tutarı değişmez, yalnızca stoğa girecek miktar düzelir.',
+        text: 'Fatura bu kalemleri koli/paket üzerinden kesmiş. Kantinde tek tek '
+          + 'satıyorsanız bir kolide kaç adet olduğunu yazın: miktar adede çevrilir, '
+          + 'birim fiyat bölünür, BELGE TUTARI DEĞİŞMEZ. Çarpan belge kaydedilince '
+          + 'öğrenilir; bu tedarikçinin sonraki faturalarında bir daha sorulmaz.',
       }),
       ...satirlar,
       el('small.muted', {
-        style: 'display:block;margin-top:8px',
-        text: 'Birim gerçekten aynıysa (tedarikçi "PAKET" yazmış ama tek tek satıyorsa) '
-          + 'bir şey yapmanız gerekmez; satırlar faturadaki gibi kaydedilir.',
+        style: 'display:block;margin-top:10px',
+        text: 'Ürünü gerçekten koli olarak sayıp satıyorsanız "koli olarak sayacağım" '
+          + 'deyin; satır faturadaki gibi kaydedilir.',
       }),
     ]));
   }
@@ -598,6 +675,11 @@ async function openPurchaseForm(onDone) {
         {
           name: 'unit', label: 'Birim', type: 'select', value: line.sourceUnit || 'ADET',
           options: ['ADET', 'KG', 'LT', 'PAKET', 'KUTU', 'PORSIYON'].map((u) => ({ value: u, label: u })),
+          hint: TOPTAN_BIRIMLER.has(line.sourceUnit || '')
+            ? `Fatura ${line.sourceUnit} yazdığı için öyle geldi. Ürünü öğrenciye TEK TEK `
+              + 'satıyorsanız ADET seçin; kaydettikten sonra "1 ' + line.sourceUnit
+              + ' kaç ADET?" diye sorulacak ve miktar kendiliğinden çevrilecek.'
+            : 'Stoğun sayılacağı birim.',
         },
         {
           name: 'productType', label: 'Ürün tipi', type: 'select', value: 'SATIN_ALINAN',
