@@ -2,7 +2,7 @@ import { api } from '../api.js';
 import { state, canWrite, canDeleteDocuments, campusName } from '../app.js';
 import { el, card, stat, table, fmt, badge, modal, toast, confirmDialog, dateUtil, alertBox, empty, shortName, formModal } from '../ui.js';
 import { createProductPicker } from '../urun-secici.js';
-import { parseEFatura, matchProducts, matchSupplier, unitFromCode } from '../efatura.js';
+import { parseEFatura, matchProducts, matchSupplier, unitFromCode, xmlMetniOku } from '../efatura.js';
 import { parseKarekod, compareWithLines } from '../karekod.js';
 import { openKarekodScanner } from '../karekod-tarayici.js';
 
@@ -815,7 +815,7 @@ async function openPurchaseForm(onDone) {
    * isaretlenir ve kullanici onaylamadan belge olusmaz.
    */
   async function importFromXml(file) {
-    const invoice = parseEFatura(await file.text());
+    const invoice = parseEFatura(await xmlMetniOku(file));
     const { supplier, matchedBy } = matchSupplier(invoice.supplier, suppliers.items);
 
     // Baslik alanlari — ESLESTIRMEDEN ONCE tedarikci secilir ki o

@@ -64,28 +64,141 @@ const round4 = (n) => Math.round((Number(n) || 0) * 10000) / 10000;
 // de birim fiyati uc-alti haneyle yaziyor.
 const round6 = (n) => Math.round((Number(n) || 0) * 1e6) / 1e6;
 
+/* ------------------------------ Okuma ------------------------------- */
+/**
+ * XML dosyasini DOGRU KODLAMAYLA metne cevirir.
+ *
+ * `file.text()` dosyayi her zaman UTF-8 sayar. Turkiye'de kullanilan
+ * ticari programlarin (LOGO vb.) urettigi dosyalar ise cogu zaman
+ * iso-8859-9 (Turkce Latin-5) kodludur: UTF-8 diye okunursa "LİEVİTO"
+ * yerine bozuk karakterler gelir, urun adlari eslesmez ve tedarikci
+ * unvani okunamaz. Bu yuzden once XML bildirimindeki encoding'e bakariz.
+ */
+export async function xmlMetniOku(file) {
+  const buf = await file.arrayBuffer();
+  // Bildirim ASCII'dir; ilk 200 bayti latin1 okumak her kodlamada guvenli
+  const bas = new TextDecoder('latin1').decode(buf.slice(0, 200));
+  const bildirilen = (bas.match(/encoding\s*=\s*["']([\w-]+)["']/i)?.[1] || 'utf-8').toLowerCase();
+  const kodlama = { 'iso-8859-9': 'iso-8859-9', 'windows-1254': 'windows-1254', 'iso-8859-1': 'iso-8859-1' }[bildirilen]
+    || 'utf-8';
+  try {
+    return new TextDecoder(kodlama).decode(buf);
+  } catch {
+    return new TextDecoder('utf-8').decode(buf);
+  }
+}
+
 /* ------------------------------ Çözümleme --------------------------- */
+/**
+ * Dosya XML degilse ne oldugunu soyler; XML'e benziyorsa null doner.
+ *
+ * Sahada en sik yapilan hata dosyanin YANLIS KOPYASINI indirmek: entegratör
+ * ekraninda "indir" bazen zip, bazen goruntuleme kopyasi (HTML/PDF) verir.
+ * "Gecersiz XML" demek kullaniciyi cikmaza sokuyordu; ne indirdigini
+ * soylersek dogrusunu bulabiliyor.
+ */
+function dosyaTuru(metin) {
+  const bas = metin.slice(0, 400).trimStart();
+  if (bas.startsWith('PK')) {
+    return 'Bu dosya bir ZIP arşivi. İçindeki XML dosyasını çıkarıp (sağ tık → '
+      + 'Tümünü ayıkla) öyle yükleyin.';
+  }
+  if (bas.startsWith('%PDF')) {
+    return 'Bu dosya faturanın PDF kopyası. Satırların okunabilmesi için '
+      + 'entegratörden faturanın XML dosyasını indirin.';
+  }
+  if (/^<!doctype\s+html/i.test(bas) || /^<html[\s>]/i.test(bas)) {
+    return 'Bu dosya faturanın görüntüleme (HTML) kopyası. Satırların okunabilmesi '
+      + 'için entegratörden faturanın XML dosyasını indirin.';
+  }
+  if (!bas.startsWith('<')) {
+    // Or. dosya aktarim programlarinin urettigi "dosya adi listesi" metni
+    const ilk = metin.trim().split(/\r?\n/)[0]?.slice(0, 120) || '';
+    return 'Bu dosya XML değil; içeriği düz metin görünüyor'
+      + (ilk ? ` ("${ilk}")` : '')
+      + '. e-Fatura XML dosyasının kendisini seçin.';
+  }
+  return null;
+}
+
+/**
+ * Belgenin icinden faturayi cikarir.
+ *
+ * Fatura her zaman kokte durmaz: bazi entegratorler zarfin icine koyar,
+ * bazilari CDATA blogu olarak gomer, e-Fatura zarflarinda ise ek olarak
+ * base64 kodlanmis halde tasinir (EmbeddedDocumentBinaryObject).
+ */
+function faturayiBul(doc, hamMetin) {
+  const kokte = doc.documentElement;
+  if (kokte?.localName === 'Invoice') return kokte;
+
+  const icinde = [...doc.getElementsByTagName('*')].find((n) => n.localName === 'Invoice');
+  if (icinde) return icinde;
+
+  // CDATA / metin icine gomulmus UBL
+  const govde = doc.documentElement?.textContent || '';
+  for (const kaynak of [govde, hamMetin]) {
+    const bas = kaynak.search(/<(\w+:)?Invoice[\s>]/);
+    if (bas < 0) continue;
+    const ic = new DOMParser().parseFromString(kaynak.slice(bas), 'application/xml');
+    if (ic.querySelector('parsererror')) continue;
+    if (ic.documentElement?.localName === 'Invoice') return ic.documentElement;
+  }
+
+  // Zarfa base64 olarak eklenmis fatura
+  for (const n of doc.getElementsByTagName('*')) {
+    const t = (n.textContent || '').trim();
+    if (t.length < 200 || !/^[A-Za-z0-9+/\s]+={0,2}$/.test(t)) continue;
+    let cozulmus = '';
+    try { cozulmus = atob(t.replace(/\s+/g, '')); } catch { continue; }
+    if (!/<(\w+:)?Invoice[\s>]/.test(cozulmus.slice(0, 2000))) continue;
+    const ic = new DOMParser().parseFromString(cozulmus, 'application/xml');
+    if (!ic.querySelector('parsererror') && ic.documentElement?.localName === 'Invoice') {
+      return ic.documentElement;
+    }
+  }
+  return null;
+}
+
 /**
  * XML metnini okunabilir bir fatura nesnesine çevirir.
  * Hata durumunda açıklayıcı bir Error fırlatır.
  */
 export function parseEFatura(xmlText) {
-  const clean = String(xmlText).replace(/^﻿/, '');
-  const doc = new DOMParser().parseFromString(clean, 'application/xml');
+  const clean = String(xmlText).replace(/^\ufeff/, '');
 
+  // XML'e hic benzemeyen dosyayi once ayikla: kullaniciya "gecersiz XML"
+  // demek yerine ELINDEKININ NE OLDUGUNU soyleriz. Entegratorler faturayi
+  // sik sik zip icinde ya da goruntuleme kopyasi (HTML/PDF) olarak verir.
+  const tur = dosyaTuru(clean);
+  if (tur) throw new Error(tur);
+
+  const doc = new DOMParser().parseFromString(clean, 'application/xml');
   if (doc.querySelector('parsererror')) {
     throw new Error('Dosya geçerli bir XML değil. e-Fatura/e-Arşiv XML dosyasını seçtiğinizden emin olun.');
   }
 
-  // Bazı entegratörler faturayı bir zarfın içine koyar; kökte bulamazsak ara.
-  let inv = doc.documentElement;
-  if (inv.localName !== 'Invoice') {
-    inv = [...doc.getElementsByTagName('*')].find((n) => n.localName === 'Invoice') || null;
-  }
+  // LOGO/Tiger gibi ticari programlar faturayi UBL yerine KENDI transfer
+  // bicimlerinde verir (<PURCHASE_INVOICES><INVOICE DBOP="INS">). Icinde
+  // ayni bilgiler vardir; okumamak icin bir sebep yok.
+  if (logoFaturaMi(doc)) return tamamla(logodanOku(doc));
+
+  const inv = faturayiBul(doc, clean);
   if (!inv) {
+    // Kok etiketi SOYLE: "fatura degil" demek yetmiyor, kullanici elindeki
+    // dosyanin ne oldugunu bilmeden dogrusunu indiremiyor.
+    const kok = doc.documentElement?.localName || '?';
+    const bilinen = {
+      DespatchAdvice: 'Bu bir e-İrsaliye (sevk irsaliyesi). Mal girişi için faturanın kendisi gerekiyor.',
+      ApplicationResponse: 'Bu bir uygulama yanıtı (kabul/ret bildirimi); fatura değil.',
+      ReceiptAdvice: 'Bu bir irsaliye yanıtı; fatura değil.',
+      CreditNote: 'Bu bir iade faturası (CreditNote). İade için "Tedarikçiye İade" ekranını kullanın.',
+      EArsivRapor: 'Bu bir e-Arşiv raporu; tek bir fatura değil.',
+    }[kok];
     throw new Error(
-      'Bu XML bir fatura (Invoice) belgesi değil. İrsaliye (DespatchAdvice) veya '
-      + 'uygulama yanıtı (ApplicationResponse) dosyası yüklenmiş olabilir.'
+      `Bu XML bir fatura (Invoice) belgesi değil — dosyanın kök etiketi "${kok}". `
+      + (bilinen ? `${bilinen} ` : '')
+      + 'Entegratör ekranından faturanın UBL/XML dosyasını indirip yükleyin.'
     );
   }
 
@@ -114,7 +227,14 @@ export function parseEFatura(xmlText) {
     },
     warnings: [],
   };
+  return tamamla(invoice);
+}
 
+/**
+ * Okunan faturayi tamamlar: toplam kontrolleri, belge iskontosunun
+ * satirlara dagitilmasi ve uyarilar. UBL de LOGO da buradan gecer.
+ */
+function tamamla(invoice) {
   if (!invoice.lines.length) throw new Error('Faturada hiç ürün satırı (InvoiceLine) bulunamadı.');
 
   if (invoice.currency !== 'TRY') {
@@ -178,6 +298,149 @@ export function parseEFatura(xmlText) {
     );
   }
   return invoice;
+}
+
+/* --------------------- LOGO / Tiger transfer XML -------------------- */
+/**
+ * LOGO ailesi programlar (Tiger, Go, j-Guar) faturayi UBL yerine kendi
+ * transfer bicimlerinde disari verir:
+ *
+ *   <PURCHASE_INVOICES><INVOICE DBOP="INS"> ... <TRANSACTIONS>
+ *
+ * Icinde bizim istedigimiz her sey var: satici unvani ve VKN/TCKN, belge
+ * numarasi, ETTN (GUID), satirlar, miktar, fiyat, KDV. Kullanici bu
+ * dosyayi tedarikcisinden boyle aliyor; "UBL degil" deyip geri cevirmek
+ * faturayi elle girmek demek. Okumamak icin bir sebep yok.
+ *
+ * Dikkat: LOGO dosyalari genelde iso-8859-9 (Turkce Latin-5) kodludur;
+ * metin cozumlemesi XML bildirimine bakar (bkz. pages/purchases.js).
+ */
+const LOGO_KOKLERI = new Set(['PURCHASE_INVOICES', 'SALES_INVOICES', 'INVOICES']);
+
+function logoFaturaMi(doc) {
+  const kok = doc.documentElement;
+  if (!kok) return false;
+  if (LOGO_KOKLERI.has(kok.localName)) return Boolean(kok.getElementsByTagName('TRANSACTIONS').length);
+  return kok.localName === 'INVOICE' && Boolean(kok.getElementsByTagName('TRANSACTIONS').length);
+}
+
+/** "13.09.2026" -> "2026-09-13". Zaten ISO ise oldugu gibi birakir. */
+function logoTarih(t) {
+  const s = String(t || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const m = s.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})$/);
+  if (!m) return '';
+  return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+}
+
+/**
+ * LOGO satir tipleri. Malzeme disindaki satirlar urun degildir:
+ *   0 Malzeme · 1 Promosyon · 2 Indirim · 3 Masraf · 4 Hizmet
+ * Indirim ve masraf belge duzeyinde toplanir (UBL'deki AllowanceTotal /
+ * ChargeTotal karsiligi). Taninmayan bir tip gelirse satir olarak
+ * GOSTERILIR: sessizce dusurmek, belge toplaminin faturayi tutmamasina ve
+ * sebebinin anlasilmamasina yol acar.
+ */
+function logodanOku(doc) {
+  const kok = doc.documentElement;
+  const inv = kok.localName === 'INVOICE' ? kok : kok.getElementsByTagName('INVOICE')[0];
+  if (!inv) throw new Error('LOGO transfer dosyasında <INVOICE> bölümü bulunamadı.');
+
+  const alan = (ad) => {
+    // Ayni ad birden fazla kez gecebiliyor (or. ADD_DISCOUNTS): ilk DOLU olani
+    for (const n of inv.children) {
+      if (n.localName === ad && n.textContent.trim()) return n.textContent.trim();
+    }
+    return '';
+  };
+  const sayi = (ad) => {
+    const t = alan(ad);
+    if (!t) return null;
+    const v = Number(t.replace(/\s/g, ''));
+    return Number.isFinite(v) ? v : null;
+  };
+
+  const lines = [];
+  let iskonto = 0;
+  let masraf = 0;
+  for (const t of inv.getElementsByTagName('TRANSACTION')) {
+    const tip = text(t, 'TYPE');
+    const tutar = number(t, 'TOTAL_NET') ?? number(t, 'TOTAL') ?? 0;
+    if (tip === '2') { iskonto += Math.abs(tutar); continue; }
+    if (tip === '3') { masraf += Math.abs(tutar); continue; }
+
+    const miktar = number(t, 'QUANTITY') ?? 0;
+    const fiyat = number(t, 'PRICE') ?? 0;
+    const brut = number(t, 'TOTAL') ?? round2(miktar * fiyat);
+    const net = number(t, 'TOTAL_NET') ?? brut;
+    const kdvOran = number(t, 'VAT_RATE') ?? 0;
+    const ad = text(t, 'MASTER_DEF') || text(t, 'MASTER_CODE');
+    // MASTER_CODE cogu dosyada adin kendisidir; kod olarak ancak ADDAN
+    // FARKLIYSA anlamlidir.
+    const stokKodu = text(t, 'MASTER_CODE_SELLERS') || text(t, 'ITEM_SUPPLIERCODE')
+      || text(t, 'PROCEDUCER_CODE') || (text(t, 'MASTER_CODE') !== ad ? text(t, 'MASTER_CODE') : '');
+    const barkod = /^\d{8}$|^\d{12,14}$/.test(stokKodu) ? stokKodu : null;
+
+    lines.push({
+      lineNo: text(t, 'InvoiceLineID'),
+      name: ad,
+      quantity: round4(miktar),
+      unitCode: text(t, 'UNIT_CODE') || text(t, 'GLOBAL_CODE'),
+      unitPrice: round4(fiyat),
+      // LOGO'da TOTAL iskonto ONCESI, TOTAL_NET iskonto SONRASI tutardir
+      discountPct: brut > 0 && net < brut ? round4((1 - net / brut) * 100) : 0,
+      vatRate: kdvOran,
+      netTotal: round2(net),
+      vatTotal: round2(number(t, 'VAT_AMOUNT') ?? (net * kdvOran) / 100),
+      grossTotal: round2(net + (number(t, 'VAT_AMOUNT') ?? (net * kdvOran) / 100)),
+      codes: [stokKodu, barkod].filter(Boolean),
+      barcode: barkod,
+      supplierCode: stokKodu || null,
+      note: text(t, 'DESCRIPTION'),
+      mismatch: null,
+    });
+  }
+
+  // Beyan edilen mal bedeli: KDV dokumundeki matrahlarin toplami en
+  // guvenilir kaynaktir. Yoksa odenecek tutardan KDV dusulur.
+  let matrah = null;
+  const dokum = [...inv.getElementsByTagName('TaxableAmount')]
+    .map((n) => Number(n.textContent.trim()))
+    .filter((v) => Number.isFinite(v));
+  if (dokum.length) matrah = round2(dokum.reduce((a, b) => a + b, 0));
+
+  const kdv = sayi('TOTAL_VAT');
+  // TOTAL_NET LOGO'da KDV DAHIL genel toplamdir (TC_NET ile aynidir)
+  const odenecek = sayi('TC_NET') ?? sayi('TOTAL_NET');
+  if (matrah === null && odenecek !== null && kdv !== null) matrah = round2(odenecek - kdv);
+
+  const paraBirimi = (alan('TRCURR_GLOBAL_CODE') || 'TRY').toUpperCase();
+
+  return {
+    uuid: alan('GUID'),
+    documentNo: alan('NUMBER') || alan('DOC_NUMBER'),
+    issueDate: logoTarih(alan('DATE') || alan('DOC_DATE')),
+    dueDate: logoTarih(alan('DUE_DATE') || alan('PAYMENT_DATE')),
+    // LOGO "TRL" yazar; uygulamanin her yerinde TRY kullaniliyor
+    currency: paraBirimi === 'TRL' ? 'TRY' : paraBirimi,
+    profile: alan('ProfileID'),
+    invoiceType: alan('EINVOICE_TYPE'),
+    supplier: {
+      taxNo: alan('SENDER_TCKVKN') || alan('SND_TAXNR'),
+      name: alan('SENDER_DEF'),
+      taxOffice: alan('SND_TAXOFFICE'),
+    },
+    lines,
+    declared: {
+      lineTotal: matrah,
+      taxTotal: kdv,
+      payable: odenecek,
+      allowanceTotal: round2((sayi('ADD_DISCOUNTS') ?? 0) + iskonto),
+      chargeTotal: round2(masraf),
+    },
+    kaynak: 'LOGO',
+    warnings: [],
+  };
 }
 
 /** Tedarikçi kimliği: VKN/TCKN, unvan, vergi dairesi. */
