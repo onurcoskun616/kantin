@@ -314,7 +314,43 @@ export async function renderSystem(root) {
       note: '"Sunucu" sütunu sunucunun kendi işleme süresidir. Toplam süre büyük ama '
         + 'sunucu küçükse gecikme ağda ya da vekil sunucudadır — uygulamada değil.',
     }));
+
+    await hataKarti(container);
   }
+}
+
+/**
+ * SON SUNUCU HATALARI.
+ *
+ * Kullanıcıya gösterilen "Sunucu hatası oluştu" mesajı bilerek ayrıntısızdır:
+ * iç bilgi sızdırmaz. Ama o zaman hatanın NE olduğu yalnızca konteyner
+ * günlüğünde kalıyor ve sunucuya SSH ile girmeyen kimse göremiyordu.
+ * "Fatura yüklerken hata verdi" denildiğinde elde başka bilgi olmuyordu;
+ * artık burada duruyor.
+ */
+async function hataKarti(container) {
+  let veri = null;
+  try {
+    veri = await api.get('/api/health/hatalar');
+  } catch {
+    return;   // eski sürüm sunucu ya da yetkisiz: kart hiç çıkmasın
+  }
+  const items = veri.items || [];
+  container.append(card('Son Sunucu Hataları', [
+    items.length
+      ? table([
+        { label: 'Zaman', value: (r) => new Date(r.at).toLocaleString('tr-TR'), wrap: true },
+        { label: 'İşlem', value: (r) => `${r.method} ${r.path}`, wrap: true },
+        { label: 'Hata', value: (r) => r.message, wrap: true },
+        { label: 'Kullanıcı', value: (r) => r.user || '—' },
+        { label: 'Nerede', value: (r) => r.stack || '—', wrap: true },
+      ], items)
+      : empty('Sunucu yeniden başladığından beri hata yok.'),
+  ], {
+    note: 'Bu liste bellekte tutulur, sunucu yeniden başlayınca silinir. Bir kullanıcı '
+      + '"sunucu hatası" gördüyse ne olduğunu buradan okuyabilir ve olduğu gibi '
+      + 'kopyalayıp bildirebilirsiniz.',
+  }));
 }
 
 /** Ölçümleri tek cümleyle yorumlar: kullanıcı rakamları yorumlamak zorunda kalmasın. */

@@ -369,12 +369,22 @@ purchaseRoutes.post('/', async (ctx) => {
     // ESLESTIRMEYI OGREN: faturadaki ad/kod ile secilen urunu baglar.
     // Ayni tedarikcinin sonraki faturalarinda bu kalem kendiliginden
     // eslesir; kullanici ayni isi ikinci kez yapmaz.
+    //
+    // Ogrenme IKINCIL bir istir: basarisiz olsa bile BELGE KAYDEDILMELI.
+    // Sahada tam tersi oldu: tedarikcinin ayni kodu iki ayri kaleme
+    // yazmasi yuzunden ogrenme patladi ve kullanici faturayi hic
+    // giremedi. Bir eslestirme ogrenilemezse kullanici onu bir dahaki
+    // sefere elle secer; belgenin kaybolmasi ise telafi edilemez.
     for (const l of prepared) {
       if (!l.sourceName && !l.sourceCode) continue;
-      learnAlias({
-        productId: l.productId, supplierId, sourceCode: l.sourceCode,
-        sourceName: l.sourceName, factor: l.aliasFactor, userId: ctx.user.id,
-      });
+      try {
+        learnAlias({
+          productId: l.productId, supplierId, sourceCode: l.sourceCode,
+          sourceName: l.sourceName, factor: l.aliasFactor, userId: ctx.user.id,
+        });
+      } catch (err) {
+        console.error('[ESLESTIRME] ogrenilemedi:', l.sourceName, l.sourceCode, err.message);
+      }
     }
 
     for (const u of unmatched) {

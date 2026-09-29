@@ -97,6 +97,22 @@ productRoutes.get('/', async (ctx) => {
  * indeks). Kullanici eslestirmeyi degistirmek isterse yeni urun yazilir,
  * eski kayit uzerine gecer.
  *
+ * SATICI KODU GUVENILMEZ OLABILIR. Sahadan gelen ornek: bir toptanci
+ * ayni faturada "ÇİKOLATALI SÜT" ve "ÇİLEKLİ SÜT" kalemlerinin ikisine
+ * de SellersItemIdentification olarak "15" yazmisti; baska bir kalemde
+ * de onceki faturada baska bir urune yazdigi "4" kodu vardi. Kodla
+ * bulunan satirin ADI uzerine yazilmaya calisilinca benzersiz indeks
+ * patliyor ve KULLANICI BELGEYI HIC KAYDEDEMIYORDU (sunucu hatasi).
+ *
+ * Bu yuzden kural sudur:
+ *   - Once ADA bakilir: kullanicinin gordugu ve eslestirdigi sey odur.
+ *   - Kod baska bir satirda BASKA bir urune bagliysa o kod ISPATLI
+ *     BICIMDE belirsizdir: hicbir satirda tutulmaz (oradan da silinir),
+ *     boylece sonraki faturalarda yanlis urunu getirmez. Ad eslesmesi
+ *     calismaya devam eder.
+ *   - Ayni urunun yalnizca kodla ogrenilmis satiri varsa, kod ad
+ *     satirina tasinir ve tekrar eden satir silinir.
+ *
  * @returns yazilan satir, ya da eslestirilecek bir sey yoksa null
  */
 export function learnAlias({ productId, supplierId = null, sourceCode = null, sourceName = null, factor = 1, userId = null }) {
@@ -106,36 +122,57 @@ export function learnAlias({ productId, supplierId = null, sourceCode = null, so
   // Ne kod ne ad varsa ogrenecek bir sey yok
   if (!kod && !adNorm) return null;
 
-  const mevcut = get(
-    supplierId
-      ? `SELECT * FROM product_aliases
-          WHERE supplier_id = ? AND ((source_code IS NOT NULL AND source_code = ?)
-                                  OR (source_name_norm IS NOT NULL AND source_name_norm = ?))
-          LIMIT 1`
-      : `SELECT * FROM product_aliases
-          WHERE supplier_id IS NULL AND ((source_code IS NOT NULL AND source_code = ?)
-                                      OR (source_name_norm IS NOT NULL AND source_name_norm = ?))
-          LIMIT 1`,
-    supplierId ? [supplierId, kod, adNorm] : [kod, adNorm]
-  );
+  // Kod ve ad AYRI AYRI aranir: ikisi ayri satirlara denk gelebilir ve
+  // birini digerinin uzerine yazmak benzersiz indeksi patlatir.
+  const kapsam = supplierId ? 'supplier_id = ?' : 'supplier_id IS NULL';
+  const kapsamParam = supplierId ? [supplierId] : [];
+  const kodSatiri = kod
+    ? get(`SELECT * FROM product_aliases WHERE ${kapsam} AND source_code = ? LIMIT 1`, [...kapsamParam, kod])
+    : null;
+  const adSatiri = adNorm
+    ? get(`SELECT * FROM product_aliases WHERE ${kapsam} AND source_name_norm = ? LIMIT 1`, [...kapsamParam, adNorm])
+    : null;
 
-  if (mevcut) {
+  // Hedef satir: once ad, yoksa adi bos olan (ya da ayni adi tasiyan) kod
+  // satiri. Kod satirinin BASKA bir adi varsa ona dokunmayiz.
+  let hedef = null;
+  if (adSatiri) hedef = adSatiri;
+  else if (kodSatiri && (!kodSatiri.source_name_norm || kodSatiri.source_name_norm === adNorm)) hedef = kodSatiri;
+
+  let kodYazilabilir = Boolean(kod);
+  if (kod && kodSatiri && (!hedef || kodSatiri.id !== hedef.id)) {
+    if (kodSatiri.product_id === productId && !kodSatiri.source_name_norm) {
+      // Ayni urunun yalnizca kodla ogrenilmis satiri: ad satirinda
+      // birlestir, tekrar eden satiri sil.
+      run('DELETE FROM product_aliases WHERE id = ?', [kodSatiri.id]);
+    } else {
+      // Ayni kod baska bir urune/ada bagli: kod belirsizdir. Oradan da
+      // sokulur ki sonraki faturalarda yanlis urunu getirmesin.
+      run('UPDATE product_aliases SET source_code = NULL WHERE id = ?', [kodSatiri.id]);
+      kodYazilabilir = false;
+    }
+  }
+
+  if (hedef) {
+    // COALESCE: yazilamayan kod satirin ESKI kodunu silmemeli. Once
+    // ogrenilmis saglam bir kod, bu faturadaki belirsiz kod yuzunden
+    // kaybolmasin.
     run(
       `UPDATE product_aliases
           SET product_id = ?, source_code = COALESCE(?, source_code),
               source_name = COALESCE(?, source_name), source_name_norm = COALESCE(?, source_name_norm),
               factor = ?, use_count = use_count + 1, last_used_at = datetime('now')
         WHERE id = ?`,
-      [productId, kod, ad, adNorm, factor, mevcut.id]
+      [productId, kodYazilabilir ? kod : null, ad, adNorm, factor, hedef.id]
     );
-    return get('SELECT * FROM product_aliases WHERE id = ?', [mevcut.id]);
+    return get('SELECT * FROM product_aliases WHERE id = ?', [hedef.id]);
   }
 
   const id = insert(
     `INSERT INTO product_aliases (product_id, supplier_id, source_code, source_name, source_name_norm,
                                   factor, use_count, last_used_at, created_by)
      VALUES (?, ?, ?, ?, ?, ?, 1, datetime('now'), ?)`,
-    [productId, supplierId, kod, ad, adNorm, factor, userId]
+    [productId, supplierId, kodYazilabilir ? kod : null, ad, adNorm, factor, userId]
   );
   return get('SELECT * FROM product_aliases WHERE id = ?', [id]);
 }

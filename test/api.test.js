@@ -2111,6 +2111,91 @@ describe('Urun eslestirme ogrenme', () => {
     assert.ok(a.items.some((x) => x.source_name === 'DOGAL KAYNAK SUYU'), 'genel kayit A"da gorunmeli');
     assert.ok(b.items.some((x) => x.source_name === 'DOGAL KAYNAK SUYU'), 'genel kayit B"de de gorunmeli');
   });
+
+  /*
+   * TEDARIKCININ URUN KODU GUVENILMEZ OLABILIR.
+   *
+   * Sahadan gelen fatura: toptanci ayni faturada "ÇİKOLATALI SÜT" ve
+   * "ÇİLEKLİ SÜT" kalemlerinin IKISINE DE satici kodu olarak "15"
+   * yazmisti. Kodla bulunan satirin adi digerinin uzerine yazilmaya
+   * calisilinca benzersiz indeks patliyor ve SUNUCU HATASI donuyordu:
+   * kullanici faturayi hic kaydedemiyordu.
+   */
+  describe('Ayni satici kodu iki ayri urunde', () => {
+    let tedC; let sutA; let sutB;
+
+    before(async () => {
+      tedC = (await ok('POST', '/api/suppliers', { name: 'Kod Karisik Toptanci', taxNo: '2515151515' })).id;
+      sutA = (await ok('POST', '/api/products',
+        { name: 'Çikolatalı Süt (kod testi)', salePrice: 20, vatRate: 1, unit: 'ADET' })).id;
+      sutB = (await ok('POST', '/api/products',
+        { name: 'Çilekli Süt (kod testi)', salePrice: 20, vatRate: 1, unit: 'ADET' })).id;
+    });
+
+    test('ayni belgede tekrar eden kod BELGEYI DUSURMEZ', async () => {
+      const r = await alim(tedC, 'KOD-001', [
+        { productId: sutA, quantity: 5, unitPrice: 100, vatRate: 1, sourceName: 'ÇİKOLATALI SÜT', sourceCode: '15' },
+        { productId: sutB, quantity: 5, unitPrice: 100, vatRate: 1, sourceName: 'ÇİLEKLİ SÜT', sourceCode: '15' },
+      ]);
+      assert.ok(r.id, 'belge kaydedilmeli');
+    });
+
+    test('belirsiz kod HICBIR kayitta tutulmaz, adlar dogru kalir', async () => {
+      const liste = await ok('GET', `/api/products/aliases?supplierId=${tedC}`);
+      const kodlu = liste.items.filter((a) => a.source_code === '15');
+      assert.equal(kodlu.length, 0, 'iki urune birden yazilan kod ogrenilmemeli');
+      const a = liste.items.find((x) => x.source_name_norm === 'cikolatali sut');
+      const b = liste.items.find((x) => x.source_name_norm === 'cilekli sut');
+      assert.equal(a?.product_id, sutA, 'ad eslestirmesi dogru urunde kalmali');
+      assert.equal(b?.product_id, sutB, 'ad eslestirmesi dogru urunde kalmali');
+    });
+
+    test('ONCE adlar ogrenildikten SONRA gelen tekrar eden kod da dusurmez', async () => {
+      // Kullanicinin yasadigi sira buydu: ilk fatura kodsuz geldi ve
+      // adlar ogrenildi; ikinci faturada toptanci ikisine de ayni kodu
+      // yazmisti.
+      const ted = (await ok('POST', '/api/suppliers', { name: 'Kod Karisik İki', taxNo: '2616161616' })).id;
+      await alim(ted, 'KOD-010', [
+        { productId: sutA, quantity: 1, unitPrice: 100, vatRate: 1, sourceName: 'ÇİKOLATALI SÜT' },
+        { productId: sutB, quantity: 1, unitPrice: 100, vatRate: 1, sourceName: 'ÇİLEKLİ SÜT' },
+      ]);
+      const r = await alim(ted, 'KOD-011', [
+        { productId: sutA, quantity: 1, unitPrice: 100, vatRate: 1, sourceName: 'ÇİKOLATALI SÜT', sourceCode: '15' },
+        { productId: sutB, quantity: 1, unitPrice: 100, vatRate: 1, sourceName: 'ÇİLEKLİ SÜT', sourceCode: '15' },
+      ]);
+      assert.ok(r.id, 'belge kaydedilmeli');
+      const liste = await ok('GET', `/api/products/aliases?supplierId=${ted}`);
+      assert.equal(liste.items.filter((a) => a.source_code === '15').length, 0);
+      assert.equal(liste.items.find((x) => x.source_name_norm === 'cikolatali sut')?.product_id, sutA);
+      assert.equal(liste.items.find((x) => x.source_name_norm === 'cilekli sut')?.product_id, sutB);
+    });
+
+    test('BASKA bir urune gecmis kod, eski kaydin saglam kodunu silmez', async () => {
+      const ted = (await ok('POST', '/api/suppliers', { name: 'Kod Karisik Üç', taxNo: '2717171717' })).id;
+      // A once saglam kendi koduyla ogrenilir
+      await alim(ted, 'KOD-020', [
+        { productId: sutA, quantity: 1, unitPrice: 100, vatRate: 1, sourceName: 'ÇİKOLATALI SÜT', sourceCode: 'CIK-500' },
+      ]);
+      // B baska bir urune ait kodu tasiyarak gelir
+      await alim(ted, 'KOD-021', [
+        { productId: sutB, quantity: 1, unitPrice: 100, vatRate: 1, sourceName: 'ÇİLEKLİ SÜT', sourceCode: 'CIK-500' },
+      ]);
+      const liste = await ok('GET', `/api/products/aliases?supplierId=${ted}`);
+      // Kod ispatli bicimde belirsiz: kimsede kalmaz
+      assert.equal(liste.items.filter((a) => a.source_code === 'CIK-500').length, 0);
+      assert.equal(liste.items.find((x) => x.source_name_norm === 'cikolatali sut')?.product_id, sutA);
+      assert.equal(liste.items.find((x) => x.source_name_norm === 'cilekli sut')?.product_id, sutB);
+    });
+
+    test('tek urune ait kod ogrenilmeye devam eder', async () => {
+      const ted = (await ok('POST', '/api/suppliers', { name: 'Kod Duzgun Toptanci', taxNo: '2818181818' })).id;
+      await alim(ted, 'KOD-030', [
+        { productId: sutA, quantity: 1, unitPrice: 100, vatRate: 1, sourceName: 'ÇİKOLATALI SÜT', sourceCode: 'CIK-900' },
+      ]);
+      const liste = await ok('GET', `/api/products/aliases?supplierId=${ted}`);
+      assert.equal(liste.items.find((a) => a.source_code === 'CIK-900')?.product_id, sutA);
+    });
+  });
 });
 
 /**

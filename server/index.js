@@ -50,6 +50,30 @@ const router = new Router();
  */
 const TESHIS_ROLLERI = ['ADMIN', 'GENEL_MUDURLUK'];
 
+/**
+ * Son sunucu hatalari (bellekte, halkasal tampon).
+ *
+ * Amac teshis: "hata verdi" diyen kullaniciyla ayni ekrandan hatanin ne
+ * oldugunu gorebilmek. Yalnizca son 50 kayit tutulur, diske yazilmaz.
+ */
+const HATA_SINIRI = 50;
+const SON_HATALAR = [];
+let hataSayaci = 0;
+
+function hataKaydet(req, yol, err, user) {
+  hataSayaci += 1;
+  SON_HATALAR.push({
+    at: new Date().toISOString(),
+    method: req.method,
+    path: yol,
+    message: String(err?.message || err).slice(0, 400),
+    // Yiginin ilk satirlari yeterli: hatanin hangi dosyada dogdugu.
+    stack: String(err?.stack || '').split('\n').slice(1, 4).map((x) => x.trim()).join(' | ').slice(0, 500),
+    user: user?.email || null,
+  });
+  if (SON_HATALAR.length > HATA_SINIRI) SON_HATALAR.shift();
+}
+
 router.get('/api/health', async (ctx) => {
   const temel = { ok: true, time: new Date().toISOString() };
   // Olcumler sunucu ic bilgisidir (veritabani yolu, bellek, surum):
@@ -101,6 +125,23 @@ router.get('/api/health/guncelleme/durum', async (ctx) => {
   if (!ctx.user || !TESHIS_ROLLERI.includes(ctx.user.role)) throw forbidden();
   return guncellemeDurumu();
 });
+
+/**
+ * SON SUNUCU HATALARI.
+ *
+ * Kullaniciya gosterilen "Sunucu hatasi olustu" mesaji bilerek ayrintisizdir
+ * (ic bilgi sizdirmaz). Ama o zaman hatanin NE oldugu yalnizca konteyner
+ * gunlugunde kalir ve sunucuya SSH ile girmeyen kimse goremez. Sahada
+ * bunun bedeli agir oldu: kullanici "fatura yuklenirken hata verdi" dedi,
+ * elde bundan baska bilgi yoktu.
+ *
+ * Bu uc, son hatalari bellekte tutulan halkasal tampondan okur. Diske
+ * yazilmaz; sunucu yeniden baslayinca silinir. Yalnizca teshis rolleri.
+ */
+router.get('/api/health/hatalar', async (ctx) => {
+  if (!ctx.user || !TESHIS_ROLLERI.includes(ctx.user.role)) throw forbidden();
+  return { items: [...SON_HATALAR].reverse(), toplam: hataSayaci };
+});
 router.use('/api/auth', authRoutes);
 router.use('/api/campuses', campusRoutes);
 router.use('/api/products', productRoutes);
@@ -138,6 +179,17 @@ const PUBLIC_ROUTES = new Set(['POST /api/auth/login', 'GET /api/health']);
 const SLOW_MS = Number(process.env.SLOW_REQUEST_MS ?? 400);
 const BASLANGIC = Date.now();
 
+// Istek dongusu disinda kalan hatalar: surec olmeden ONCE sebebi yazilsin.
+// Konteyner `restart: unless-stopped` ile geri gelir ama gunlukte hicbir
+// iz kalmazsa "sunucu bazen gidiyor" diye aciklanamaz bir sikayete donusur.
+process.on('uncaughtException', (err) => {
+  console.error('[HATA] yakalanmamis istisna:', err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('[HATA] yakalanmamis reddetme:', err);
+});
+
 const server = http.createServer(async (req, res) => {
   const t0 = process.hrtime.bigint();
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -161,12 +213,16 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 404, { error: 'Sayfa bulunamadi.' });
   }
 
+  // Oturum `try` DISINDA tanimlanir: hata yakalandiginda "bu hatayi kim
+  // aldi" bilgisi de kaydedilebilsin. Icerde tanimlanirsa catch blogundan
+  // gorunmez ve oraya yazilan kod sunucuyu COKERTIR.
+  let user = null;
   try {
     const { handler, params, rawBody } = router.match(req.method, pathname);
     const routeKey = `${req.method} ${pathname}`;
 
     const token = extractToken(req);
-    const user = resolveSession(token);
+    user = resolveSession(token);
     if (!PUBLIC_ROUTES.has(routeKey) && !user) {
       return sendJson(res, 401, { error: 'Oturum suresi doldu. Lutfen tekrar giris yapin.' });
     }
@@ -197,6 +253,9 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, err.status, { error: err.message, details: err.details ?? undefined });
     }
     console.error('[HATA]', req.method, pathname, err);
+    // Teshis kaydi ASLA sunucuyu dusurmemeli: catch blogundan firlayan
+    // bir hata yakalanmaz ve surec oldugu yerde olur.
+    try { hataKaydet(req, pathname, err, user); } catch { /* yoksay */ }
     return sendJson(res, 500, { error: 'Sunucu hatasi olustu. Lutfen sistem yoneticisine bildirin.' });
   }
 });
