@@ -32,6 +32,7 @@ const { chromium } = require('playwright');
 const BASE = process.argv[2] || 'http://127.0.0.1:3000';
 
 const LOGO = new URL('../../docs/sablonlar/ornek-logo-fatura.xml', import.meta.url).pathname;
+const LOGO_ISK = new URL('../../docs/sablonlar/ornek-logo-iskontolu.xml', import.meta.url).pathname;
 
 const b = await chromium.launch();
 const page = await (await b.newContext({ viewport: { width: 1600, height: 1050 } })).newPage();
@@ -88,7 +89,34 @@ ok('Belge tarihi 13.09.2026 -> 2026-09-13', tarih === '2026-09-13', tarih);
 const belgeNo = await page.inputValue('.modal input[placeholder*="rsaliye"]');
 ok('Belge no doldu', belgeNo === 'LGO2026000000001', belgeNo);
 
-console.log('\n4) Desteklenmeyen dosyada NE OLDUGU soyleniyor');
+console.log('\n5) Satir iskontolari AYRI satirda gelirse kalemine yazilir');
+// ERBAK-Uludag gibi toptancilarda her kalemin ardindan bir-iki INDIRIM
+// satiri (TYPE=2) gelir. Bunlar belge geneli iskonto sanilirsa satirlar
+// iskontosuz kalir: 34.982 TL'lik liste bedeli oldugu gibi stoga girer,
+// oysa fatura 9.174 TL'dir. Stok maliyeti DORT KATINA cikardi.
+const iskOzet = await yukle(LOGO_ISK);
+ok('Iki kalem okundu', /Fatura okundu: ERB2026000000001 · 2 kalem/.test(iskOzet), iskOzet.slice(0, 250));
+ok('Toplam faturanin yazdigini tutuyor',
+  /₺8\.881,78 \+ KDV ₺293,14 = ₺9\.174,92/.test(iskOzet), iskOzet.slice(0, 250));
+ok('Liste bedeli (34.982) stoga girmiyor', !/34\.982/.test(iskOzet), iskOzet.slice(0, 250));
+ok('Toplam uyusmazligi uyarisi YOK', !/uyuşmuyor/.test(iskOzet), iskOzet.slice(0, 300));
+
+const iskSatirlar = await page.$$eval('.modal .line-table tbody tr', (ns) => ns.map((n) => {
+  const v = [...n.querySelectorAll('input')].map((x) => x.value);
+  return { miktar: v[1], fiyat: v[2], iskonto: Number(v[3]), kdv: v[4], tutar: n.querySelector('td.num').textContent };
+}));
+ok('1. satirin iskontosu islendi', Math.abs(iskSatirlar[0].iskonto - 76.4151) < 0.01,
+  JSON.stringify(iskSatirlar[0]));
+ok('1. satir birim fiyati faturadaki liste fiyati', iskSatirlar[0].fiyat === '934.44',
+  JSON.stringify(iskSatirlar[0]));
+ok('2. satirin iskontosu islendi', Math.abs(iskSatirlar[1].iskonto - 67.3318) < 0.01,
+  JSON.stringify(iskSatirlar[1]));
+
+console.log('\n6) NPL birimi koli/paket olarak taniniyor');
+const birimMetni = await page.textContent('.modal .line-table tbody tr:first-child');
+ok('NPL -> PAKET', /30 PAKET × ₺934,44/.test(birimMetni.replace(/\s+/g, ' ')), birimMetni.slice(0, 160));
+
+console.log('\n7) Desteklenmeyen dosyada NE OLDUGU soyleniyor');
 const irsaliye = path.join(dir, 'irsaliye.xml');
 fs.writeFileSync(irsaliye, `<?xml version="1.0" encoding="UTF-8"?>
 <DespatchAdvice xmlns="urn:oasis:names:specification:ubl:schema:xsd:DespatchAdvice-2"

@@ -360,26 +360,44 @@ function logodanOku(doc) {
     return Number.isFinite(v) ? v : null;
   };
 
+  // LOGO'da INDIRIM/MASRAF satirlari AYRI birer TRANSACTION'dir ve ait
+  // olduklari kalemin HEMEN ARDINDAN gelirler. Sahadaki fatura: her
+  // kalemin pesinden iki indirim satiri (%54,03 ve %48,70) geliyordu.
+  // Bunlar belge geneli iskonto sanilirsa satirlar iskontosuz kaliyor ve
+  // belge toplami 190.277 TL cikiyordu — faturanin kendisi 74.878 TL.
+  // Stok maliyeti iki bucuk katina cikardi.
+  //
+  // Bu yuzden indirim/masraf ONCEKI SATIRA yazilir. Hicbir kalemden once
+  // gelen bir indirim varsa (belge geneli indirim) belge duzeyinde kalir.
   const lines = [];
   let iskonto = 0;
   let masraf = 0;
+  let satirIskontosuVar = false;
+
   for (const t of inv.getElementsByTagName('TRANSACTION')) {
     const tip = text(t, 'TYPE');
-    const tutar = number(t, 'TOTAL_NET') ?? number(t, 'TOTAL') ?? 0;
-    if (tip === '2') { iskonto += Math.abs(tutar); continue; }
-    if (tip === '3') { masraf += Math.abs(tutar); continue; }
+    const tutar = Math.abs(number(t, 'TOTAL') ?? 0);
+    const sonSatir = lines[lines.length - 1];
+
+    if (tip === '2' || tip === '3') {
+      if (!sonSatir) { if (tip === '2') iskonto += tutar; else masraf += tutar; continue; }
+      if (tip === '2') { sonSatir.__iskonto += tutar; satirIskontosuVar = true; } else sonSatir.__masraf += tutar;
+      continue;
+    }
 
     const miktar = number(t, 'QUANTITY') ?? 0;
     const fiyat = number(t, 'PRICE') ?? 0;
     const brut = number(t, 'TOTAL') ?? round2(miktar * fiyat);
-    const net = number(t, 'TOTAL_NET') ?? brut;
-    const kdvOran = number(t, 'VAT_RATE') ?? 0;
     const ad = text(t, 'MASTER_DEF') || text(t, 'MASTER_CODE');
-    // MASTER_CODE cogu dosyada adin kendisidir; kod olarak ancak ADDAN
-    // FARKLIYSA anlamlidir.
-    const stokKodu = text(t, 'MASTER_CODE_SELLERS') || text(t, 'ITEM_SUPPLIERCODE')
-      || text(t, 'PROCEDUCER_CODE') || (text(t, 'MASTER_CODE') !== ad ? text(t, 'MASTER_CODE') : '');
-    const barkod = /^\d{8}$|^\d{12,14}$/.test(stokKodu) ? stokKodu : null;
+    // Kodlarin tamami eslestirmede kullanilir. Satici kendi kodunu
+    // MASTER_CODE_SELLERS'a, barkodu ise cogu zaman MASTER_CODE_BUYERS /
+    // PROCEDUCER_CODE alanina yazar.
+    const kodlar = ['MASTER_CODE_SELLERS', 'ITEM_SUPPLIERCODE', 'PROCEDUCER_CODE',
+      'MASTER_CODE_BUYERS', 'ITEM_CUSTOMERCODE']
+      .map((k) => text(t, k)).filter(Boolean);
+    const kendiKodu = text(t, 'MASTER_CODE');
+    if (kendiKodu && kendiKodu !== ad) kodlar.push(kendiKodu);
+    const barkod = kodlar.find((c) => /^\d{8}$|^\d{12,14}$/.test(c)) || null;
 
     lines.push({
       lineNo: text(t, 'InvoiceLineID'),
@@ -387,18 +405,44 @@ function logodanOku(doc) {
       quantity: round4(miktar),
       unitCode: text(t, 'UNIT_CODE') || text(t, 'GLOBAL_CODE'),
       unitPrice: round4(fiyat),
-      // LOGO'da TOTAL iskonto ONCESI, TOTAL_NET iskonto SONRASI tutardir
-      discountPct: brut > 0 && net < brut ? round4((1 - net / brut) * 100) : 0,
-      vatRate: kdvOran,
-      netTotal: round2(net),
-      vatTotal: round2(number(t, 'VAT_AMOUNT') ?? (net * kdvOran) / 100),
-      grossTotal: round2(net + (number(t, 'VAT_AMOUNT') ?? (net * kdvOran) / 100)),
-      codes: [stokKodu, barkod].filter(Boolean),
+      discountPct: 0,
+      vatRate: number(t, 'VAT_RATE') ?? 0,
+      netTotal: round2(brut),
+      vatTotal: 0,
+      grossTotal: 0,
+      codes: [...new Set(kodlar)],
       barcode: barkod,
-      supplierCode: stokKodu || null,
+      supplierCode: kodlar[0] || null,
       note: text(t, 'DESCRIPTION'),
       mismatch: null,
+      // Gecici alanlar: asagida satir kapatilirken kullanilir
+      __brut: round2(brut),
+      __iskonto: 0,
+      __masraf: 0,
+      __matrah: number(t, 'VAT_BASE'),
+      __kdvTutar: number(t, 'VAT_AMOUNT'),
     });
+  }
+
+  for (const l of lines) {
+    const hesaplanan = round2(l.__brut - l.__iskonto + l.__masraf);
+    // VAT_BASE faturanin KENDI beyan ettigi matrahtir; indirimler dusulmus
+    // halidir. Hesabimizla tutuyorsa onu kullaniriz: belge toplami o zaman
+    // faturayi KURUSU KURUSUNA tutar.
+    const net = l.__matrah !== null && Math.abs(l.__matrah - hesaplanan) <= Math.max(0.05, hesaplanan * 0.002)
+      ? round2(l.__matrah)
+      : hesaplanan;
+    l.netTotal = net;
+    l.discountPct = l.__brut > 0 && net < l.__brut ? round4((1 - net / l.__brut) * 100) : 0;
+    // KDV'de de faturanin kendi rakamini tercih ederiz; ancak bizim
+    // hesabimizla tutuyorsa. Tutmuyorsa satirda KDV disi bir vergi
+    // (OTV vb.) olabilir, o zaman kendi hesabimiz daha dogrudur.
+    const kdvHesap = round2((net * l.vatRate) / 100);
+    l.vatTotal = l.__kdvTutar !== null && Math.abs(l.__kdvTutar - kdvHesap) <= Math.max(0.02, kdvHesap * 0.002)
+      ? round2(l.__kdvTutar)
+      : kdvHesap;
+    l.grossTotal = round2(net + l.vatTotal);
+    delete l.__brut; delete l.__iskonto; delete l.__masraf; delete l.__matrah; delete l.__kdvTutar;
   }
 
   // Beyan edilen mal bedeli: KDV dokumundeki matrahlarin toplami en
@@ -435,7 +479,9 @@ function logodanOku(doc) {
       lineTotal: matrah,
       taxTotal: kdv,
       payable: odenecek,
-      allowanceTotal: round2((sayi('ADD_DISCOUNTS') ?? 0) + iskonto),
+      // ADD_DISCOUNTS cogu dosyada SATIR iskontolarinin toplamidir; satirlara
+      // zaten islendiyse belge duzeyinde ikinci kez dusulmemeli.
+      allowanceTotal: satirIskontosuVar ? round2(iskonto) : round2((sayi('ADD_DISCOUNTS') ?? 0) + iskonto),
       chargeTotal: round2(masraf),
     },
     kaynak: 'LOGO',
@@ -723,6 +769,10 @@ const BIRIM_KODLARI = {
   KGM: 'KG', GRM: 'KG', KG: 'KG',
   LTR: 'LT', MLT: 'LT', L: 'LT',
   PK: 'PAKET', XPK: 'PAKET', PA: 'PAKET',
+  // NPL/NMP: "kac paket/koli" anlamindadir. ERBAK-Uludag gibi toptancilar
+  // LOGO dosyalarinda koli miktarini bu kodla yazar; ADET sayilirsa stoga
+  // 30 adet girer, oysa 30 koli gelmistir.
+  NPL: 'PAKET', NMP: 'PAKET', PK2: 'PAKET',
   BX: 'KUTU', XBX: 'KUTU', CT: 'KUTU', CS: 'KUTU',
   PR: 'PORSIYON',
 };
