@@ -6,7 +6,7 @@ import { logAudit } from '../lib/audit.js';
 import { str, num, int, bool, date, today, oneOf } from '../lib/validate.js';
 import { productProfit } from '../lib/money.js';
 import { lastPurchaseSql, salePriceSql } from '../lib/stock.js';
-import { normalizeTr } from '../lib/metin.js';
+import { normalizeTr, trFold, trFoldSql } from '../lib/metin.js';
 
 export const productRoutes = new Router();
 
@@ -43,7 +43,13 @@ productRoutes.get('/', async (ctx) => {
   const { search, categoryId, onlyActive, campusId } = ctx.query;
   const where = ['1 = 1'];
   const params = [];
-  if (search) { where.push('(p.name LIKE ? OR p.barcode LIKE ?)'); params.push(`%${search}%`, `%${search}%`); }
+  // Turkce harf ve buyuk/kucuk harf farki aramayi bozmasin: iki taraf da
+  // ayni kurala indirgenir (bkz. lib/metin.js trFold).
+  if (search) {
+    where.push(`(${trFoldSql('p.name')} LIKE ? OR ${trFoldSql("COALESCE(p.barcode, '')")} LIKE ?)`);
+    const q = `%${trFold(search)}%`;
+    params.push(q, q);
+  }
   if (categoryId) { where.push('p.category_id = ?'); params.push(Number(categoryId)); }
   if (onlyActive !== '0') where.push('p.is_active = 1');
 
@@ -188,8 +194,8 @@ productRoutes.get('/aliases', async (ctx) => {
   if (supplierId) { where.push('(a.supplier_id = ? OR a.supplier_id IS NULL)'); params.push(supplierId); }
   if (ctx.query.productId) { where.push('a.product_id = ?'); params.push(Number(ctx.query.productId)); }
   if (ctx.query.search) {
-    where.push('(a.source_name LIKE ? OR a.source_code LIKE ? OR p.name LIKE ?)');
-    const q = `%${ctx.query.search}%`;
+    where.push(`(${trFoldSql("COALESCE(a.source_name, '')")} LIKE ? OR ${trFoldSql("COALESCE(a.source_code, '')")} LIKE ? OR ${trFoldSql('p.name')} LIKE ?)`);
+    const q = `%${trFold(ctx.query.search)}%`;
     params.push(q, q, q);
   }
 

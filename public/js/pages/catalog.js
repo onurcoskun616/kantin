@@ -5,10 +5,53 @@ import { el, card, stat, table, fmt, badge, modal, toast, formModal, deltaCell, 
 import { createProductPicker } from '../urun-secici.js';
 
 /* ============================== Ürünler ============================= */
+/**
+ * ARAMA KUTUSU HER CIZIMDE YENIDEN KURULMAZ.
+ *
+ * Onceki surumde filtre cubugu da `draw()` icinde olusturuluyordu: her
+ * arama sonucunda kutu DOM'dan silinip yerine yenisi geliyor, ODAK
+ * KAYBOLUYORDU. Kullanici birkac harf yazdiktan sonra kutu oluyor ve
+ * yazdigi hicbir sey islenmiyordu -- "arama kutusu calismiyor" sikayeti
+ * tam olarak buydu. Cubuk bir kez kurulur, `draw()` yalnizca SONUC
+ * bolumunu tazeler.
+ */
 export async function renderProducts(root) {
   const filters = { search: '', categoryId: '' };
   const container = el('div.grid');
   root.replaceChildren(container);
+
+  let kategoriler = [];
+  const searchInput = el('input.search-input', { type: 'search', placeholder: 'Ürün / barkod ara...' });
+  searchInput.addEventListener('input', debounce(() => { filters.search = searchInput.value; draw(); }, 350));
+  const catSelect = el('select', {}, [el('option', { value: '' }, ['Tüm kategoriler'])]);
+  catSelect.addEventListener('change', () => { filters.categoryId = catSelect.value; draw(); });
+
+  const sonucBolumu = el('div.grid');
+  container.append(
+    el('div.filter-bar', {}, [
+      searchInput, catSelect,
+      el('div', { style: 'flex:1' }),
+      canWrite('products') ? el('button.btn.btn-primary', {
+        text: '+ Yeni Ürün', onclick: () => openProductForm(kategoriler, null, draw),
+      }) : null,
+      canWrite('products') ? el('button.btn', {
+        text: '📊 Excel\'den Aktar',
+        onclick: async () => {
+          const { openImportWizard } = await import('./import.js');
+          openImportWizard(draw);
+        },
+      }) : null,
+      canWrite('products') ? el('button.btn', {
+        text: '🏷️ Kategoriler', onclick: () => openCategories(kategoriler, draw),
+      }) : null,
+      el('button.btn', {
+        text: '⬇ Excel (CSV)',
+        onclick: () => api.download('/api/products', { campusId: state.campusId, ...filters }),
+      }),
+    ]),
+    sonucBolumu,
+  );
+
   await draw();
 
   async function draw() {
@@ -17,42 +60,39 @@ export async function renderProducts(root) {
       api.get('/api/products/categories'),
       api.get('/api/reports/price-control', { campusId: state.campusId }),
     ]);
-    container.replaceChildren();
+    kategoriler = cats.items;
 
-    const searchInput = el('input.search-input', { type: 'search', placeholder: 'Ürün / barkod ara...', value: filters.search });
-    searchInput.addEventListener('input', debounce(() => { filters.search = searchInput.value; draw(); }, 350));
-    const catSelect = el('select', {}, [
+    // Kategori secenekleri tazelenir ama SECIM korunur (kategori eklenmis
+    // olabilir). Kutunun kendisi degismedigi icin odak da bozulmaz.
+    const secili = filters.categoryId;
+    catSelect.replaceChildren(
       el('option', { value: '' }, ['Tüm kategoriler']),
-      ...cats.items.map((c) => el('option', { value: c.id, selected: String(c.id) === filters.categoryId }, [c.name])),
-    ]);
-    catSelect.addEventListener('change', () => { filters.categoryId = catSelect.value; draw(); });
+      ...cats.items.map((c) => el('option', { value: c.id }, [c.name])),
+    );
+    catSelect.value = secili;
 
-    container.append(el('div.filter-bar', {}, [
-      searchInput, catSelect,
-      el('div', { style: 'flex:1' }),
-      canWrite("products") ? el('button.btn.btn-primary', { text: '+ Yeni Ürün', onclick: () => openProductForm(cats.items, null, draw) }) : null,
-      canWrite("products") ? el('button.btn', {
-        text: '📊 Excel\'den Aktar',
-        onclick: async () => {
-          const { openImportWizard } = await import('./import.js');
-          openImportWizard(draw);
-        },
-      }) : null,
-      canWrite("products") ? el('button.btn', { text: '🏷️ Kategoriler', onclick: () => openCategories(cats.items, draw) }) : null,
-      el('button.btn', { text: '⬇ Excel (CSV)', onclick: () => api.download('/api/products', { campusId: state.campusId, ...filters }) }),
-    ]));
+    sonucBolumu.replaceChildren();
 
     const avgMargin = data.items.length
       ? data.items.reduce((s, p) => s + (p.profit.marginPct || 0), 0) / data.items.length : 0;
-    container.append(el('div.grid.grid-4', {}, [
+    sonucBolumu.append(el('div.grid.grid-4', {}, [
       stat('Ürün Sayısı', fmt.int(data.items.length)),
       stat('Ortalama Kâr Marjı', fmt.pct(Math.round(avgMargin * 100) / 100)),
       stat('Fiyat Uyarısı', String(priceControl.items.length), { tone: priceControl.items.length ? 'warn' : 'ok', sub: 'Zararına satış / düşük marj / tavan aşımı' }),
       stat('Kategori', String(cats.items.length)),
     ]));
 
-    if (priceControl.items.length) {
-      container.append(card('⚠️ Fiyat Denetimi Uyarıları', [
+    // UYARI LISTESI DE SUZULUR. Suzulmezse kullanici bir urun arayip
+    // ekranin tamamini baska urunlerin uyarilariyla dolu goruyor ve
+    // aramanin calismadigini saniyordu.
+    const suzuluyor = Boolean(filters.search || filters.categoryId);
+    const gorunen = new Set(data.items.map((p) => p.id));
+    const uyarilar = suzuluyor
+      ? priceControl.items.filter((r) => gorunen.has(r.id))
+      : priceControl.items;
+
+    if (uyarilar.length) {
+      sonucBolumu.append(card('⚠️ Fiyat Denetimi Uyarıları', [
         table([
           { label: 'Ürün', value: (r) => r.name, wrap: true },
           { label: 'Alış', num: true, value: (r) => fmt.money(r.effective_purchase_price) },
@@ -60,11 +100,19 @@ export async function renderProducts(root) {
           { label: 'Birim Kâr', num: true, render: (r) => deltaCell(r.profit.unitProfit) },
           { label: 'Marj', num: true, value: (r) => fmt.pct(r.profit.marginPct) },
           { label: 'Sorun', render: (r) => el('div', { style: 'display:flex;gap:4px;flex-wrap:wrap' }, r.issues.map((i) => badge(i, 'warn'))), wrap: true },
-        ], priceControl.items, { emptyText: 'Uyarı yok.' }),
-      ], { tight: true, note: `Kâr marjı %${priceControl.minMargin} altında kalan, zararına satılan veya tavan fiyatı aşan ürünler listelenir.` }));
+        ], uyarilar, { emptyText: 'Uyarı yok.' }),
+      ], {
+        tight: true,
+        note: `Kâr marjı %${priceControl.minMargin} altında kalan, zararına satılan veya tavan fiyatı aşan ürünler listelenir.`
+          + (suzuluyor ? ` Aramaya uyan ${uyarilar.length} uyarı gösteriliyor (toplam ${priceControl.items.length}).` : ''),
+      }));
+    } else if (suzuluyor && priceControl.items.length) {
+      sonucBolumu.append(el('p.card-note', {
+        text: `Aramaya uyan üründe fiyat uyarısı yok (sistemde toplam ${priceControl.items.length} uyarı var).`,
+      }));
     }
 
-    container.append(card('Ürün Listesi ve Kârlılık', [
+    sonucBolumu.append(card('Ürün Listesi ve Kârlılık', [
       table([
         { label: 'Barkod', value: (r) => r.barcode || '—' },
         { label: 'Ürün', value: (r) => r.name, wrap: true },
@@ -86,8 +134,8 @@ export async function renderProducts(root) {
         },
         { label: 'Durum', render: (r) => (r.is_active ? badge('Aktif', 'ok') : badge('Pasif')) },
         {
-          label: '', render: (r) => (canWrite("products") ? el('div.btn-row', {}, [
-            el('button.btn.btn-sm', { text: 'Düzenle', onclick: () => openProductForm(cats.items, r, draw) }),
+          label: '', render: (r) => (canWrite('products') ? el('div.btn-row', {}, [
+            el('button.btn.btn-sm', { text: 'Düzenle', onclick: () => openProductForm(kategoriler, r, draw) }),
             el('button.btn.btn-sm', { text: 'Kampüs Fiyatı', onclick: () => openCampusPrice(r, draw) }),
             el('button.btn.btn-sm', { text: '🗓️ Fiyat Takvimi', onclick: () => openPriceCalendar(r, draw) }),
             r.product_type === 'URETILEN' ? el('button.btn.btn-sm', {
@@ -101,7 +149,9 @@ export async function renderProducts(root) {
         },
       ], data.items, {
         rowClass: (r) => (r.profit.unitProfit < 0 ? 'is-critical' : r.profit.marginPct < 15 ? 'is-warn' : ''),
-        emptyText: 'Ürün bulunamadı.',
+        emptyText: filters.search
+          ? `"${filters.search}" için ürün bulunamadı.`
+          : 'Ürün bulunamadı.',
       }),
     ], { tight: true, note: 'Alış ve satış fiyatlarının ikisi de KDV DAHİLDİR; alış KDV\'si indirilmediği için gerçek maliyettir. Birim kâr = satış − alış. Kâr marjı = birim kâr / satış fiyatı. Maliyet üzeri kâr = birim kâr / alış fiyatı.' }));
   }

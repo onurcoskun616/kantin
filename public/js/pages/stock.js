@@ -2,39 +2,30 @@ import { api } from '../api.js';
 import { state, canWrite } from '../app.js';
 import { el, card, stat, table, fmt, badge, modal, toast, formModal, empty, deltaCell, shortName } from '../ui.js';
 
+/**
+ * Filtre cubugu `draw()` DISINDA kurulur.
+ *
+ * Icinde kurulsaydi her arama sonucunda kutu DOM'dan silinip yerine
+ * yenisi gelirdi ve odak kaybolurdu: kullanici birkac harf yazdiktan
+ * sonra kutu oluyor, yazdigi islenmiyordu (bkz. catalog.js).
+ */
 export async function render(root) {
   const filters = { search: '', categoryId: '', onlyCritical: false };
   const container = el('div.grid');
   root.replaceChildren(container);
-  await draw();
 
-  async function draw() {
-    const [data, cats] = await Promise.all([
-      api.get('/api/stock', { campusId: state.campusId, ...filters, onlyCritical: filters.onlyCritical ? '1' : '' }),
-      api.get('/api/products/categories'),
-    ]);
-    container.replaceChildren();
+  const searchInput = el('input.search-input', { type: 'search', placeholder: 'Ürün / barkod ara...' });
+  searchInput.addEventListener('input', debounce(() => { filters.search = searchInput.value; draw(); }, 350));
+  const catSelect = el('select', {}, [el('option', { value: '' }, ['Tüm kategoriler'])]);
+  catSelect.addEventListener('change', () => { filters.categoryId = catSelect.value; draw(); });
+  const criticalToggle = el('input', { type: 'checkbox' });
+  criticalToggle.addEventListener('change', () => { filters.onlyCritical = criticalToggle.checked; draw(); });
 
-    const s = data.summary;
-    container.append(el('div.grid.grid-4', {}, [
-      stat('Stoktaki Ürün Çeşidi', fmt.int(s.productCount)),
-      stat('Stok Maliyet Değeri', fmt.money(s.costValue), { sub: 'Alış fiyatı × miktar' }),
-      stat('Stok Satış Değeri', fmt.money(s.saleValue), { sub: `Potansiyel kâr ${fmt.money(s.saleValue - s.costValue)}` }),
-      stat('Kritik Seviye', fmt.int(s.criticalCount), { tone: s.criticalCount > 0 ? 'warn' : 'ok', sub: s.negativeCount ? `${s.negativeCount} üründe eksi stok!` : 'Sipariş gerekebilir' }),
-    ]));
-
-    const searchInput = el('input.search-input', { type: 'search', placeholder: 'Ürün / barkod ara...', value: filters.search });
-    searchInput.addEventListener('input', debounce(() => { filters.search = searchInput.value; draw(); }, 350));
-    const catSelect = el('select', {}, [
-      el('option', { value: '' }, ['Tüm kategoriler']),
-      ...cats.items.map((c) => el('option', { value: c.id, selected: String(c.id) === filters.categoryId }, [c.name])),
-    ]);
-    catSelect.addEventListener('change', () => { filters.categoryId = catSelect.value; draw(); });
-    const criticalToggle = el('input', { type: 'checkbox' });
-    criticalToggle.checked = filters.onlyCritical;
-    criticalToggle.addEventListener('change', () => { filters.onlyCritical = criticalToggle.checked; draw(); });
-
-    container.append(card(null, [
+  const ozetBolumu = el('div.grid');
+  const listeBolumu = el('div.grid');
+  container.append(
+    ozetBolumu,
+    card(null, [
       el('div.filter-bar', {}, [
         searchInput,
         catSelect,
@@ -43,9 +34,34 @@ export async function render(root) {
         canWrite() ? el('button.btn', { text: '📥 Açılış Stoğu Gir', onclick: () => openOpening(draw) }) : null,
         el('button.btn', { text: '⬇ Excel (CSV)', onclick: () => api.download('/api/stock', { campusId: state.campusId, ...filters }) }),
       ]),
+    ]),
+    listeBolumu,
+  );
+
+  await draw();
+
+  async function draw() {
+    const [data, cats] = await Promise.all([
+      api.get('/api/stock', { campusId: state.campusId, ...filters, onlyCritical: filters.onlyCritical ? '1' : '' }),
+      api.get('/api/products/categories'),
+    ]);
+
+    const secili = filters.categoryId;
+    catSelect.replaceChildren(
+      el('option', { value: '' }, ['Tüm kategoriler']),
+      ...cats.items.map((c) => el('option', { value: c.id }, [c.name])),
+    );
+    catSelect.value = secili;
+
+    const s = data.summary;
+    ozetBolumu.replaceChildren(el('div.grid.grid-4', {}, [
+      stat('Stoktaki Ürün Çeşidi', fmt.int(s.productCount)),
+      stat('Stok Maliyet Değeri', fmt.money(s.costValue), { sub: 'Alış fiyatı × miktar' }),
+      stat('Stok Satış Değeri', fmt.money(s.saleValue), { sub: `Potansiyel kâr ${fmt.money(s.saleValue - s.costValue)}` }),
+      stat('Kritik Seviye', fmt.int(s.criticalCount), { tone: s.criticalCount > 0 ? 'warn' : 'ok', sub: s.negativeCount ? `${s.negativeCount} üründe eksi stok!` : 'Sipariş gerekebilir' }),
     ]));
 
-    container.append(card(`Stok Durumu — ${shortCampus()}`, [
+    listeBolumu.replaceChildren(card(`Stok Durumu — ${shortCampus()}`, [
       table([
         { label: 'Barkod', value: (r) => r.barcode || '—' },
         { label: 'Ürün', value: (r) => r.name, wrap: true },
@@ -60,7 +76,9 @@ export async function render(root) {
         { label: '', render: (r) => el('button.btn.btn-sm', { text: 'Hareketler', onclick: () => showLedger(r) }) },
       ], data.items, {
         rowClass: (r) => (r.stock_qty < 0 ? 'is-critical' : r.is_critical ? 'is-warn' : ''),
-        emptyText: 'Bu filtrelere uyan ürün yok.',
+        emptyText: filters.search
+          ? `"${filters.search}" için ürün bulunamadı.`
+          : 'Bu filtrelere uyan ürün yok.',
       }),
     ], { tight: true }));
   }

@@ -6,6 +6,7 @@
  * her rakamin arkasinda izlenebilir bir belge bulunur.
  */
 import { all, get, insert } from '../db.js';
+import { trFold, trFoldSql } from './metin.js';
 
 export function addMovement({
   campusId, productId, type, quantity, unitCost = 0, date,
@@ -115,7 +116,12 @@ export function stockSnapshot(campusId, {
   const tail = [];
   if (onlyActive) where.push('p.is_active = 1');
   if (!includeProduced) where.push("p.product_type IN ('SATIN_ALINAN','HAMMADDE')");
-  if (search) { where.push('(p.name LIKE ? OR p.barcode LIKE ?)'); tail.push(`%${search}%`, `%${search}%`); }
+  // Turkce harf/buyuk-kucuk farki aramayi bozmasin (bkz. lib/metin.js)
+  if (search) {
+    where.push(`(${trFoldSql('p.name')} LIKE ? OR ${trFoldSql("COALESCE(p.barcode, '')")} LIKE ?)`);
+    const q = `%${trFold(search)}%`;
+    tail.push(q, q);
+  }
   if (categoryId) { where.push('p.category_id = ?'); tail.push(Number(categoryId)); }
 
   return all(

@@ -1972,6 +1972,70 @@ describe('Bozuk sunucu yaniti', () => {
   });
 });
 
+/*
+ * ARAMA TURKCE HARFLERDE DE BULMALI
+ *
+ * SQLite'in LIKE'i yalnizca ASCII harflerde buyuk/kucuk harf ayrimini
+ * yok sayar. "çikolatalı" yazan kullanici "Çikolatalı Süt" urununu
+ * BULAMIYORDU; yalnizca harfi harfine ayni yazim calisiyordu. Kullanici
+ * icin bu "arama kutusu calismiyor" demektir.
+ */
+describe('Turkce arama', () => {
+  let urunId; let suId; let tedarikciId; let kampusId;
+
+  before(async () => {
+    kampusId = (await ok('POST', '/api/campuses', { name: 'Arama Kampüsü', code: 'ARM' })).id;
+    urunId = (await ok('POST', '/api/products',
+      { name: 'Çikolatalı Süt (arama)', salePrice: 20, vatRate: 1, unit: 'ADET' })).id;
+    suId = (await ok('POST', '/api/products',
+      { name: 'GÜZELPINAR 0.5 CC PET SU', salePrice: 10, vatRate: 1, unit: 'ADET' })).id;
+    tedarikciId = (await ok('POST', '/api/suppliers',
+      { name: 'ÖZGÜÇLER GIDA (arama)', taxNo: '1919191919' })).id;
+  });
+
+  const ara = async (q) => (await ok('GET', `/api/products?search=${encodeURIComponent(q)}`)).items;
+
+  test('kucuk harfle yazilan Turkce terim BULUR', async () => {
+    for (const q of ['çikolatalı', 'cikolatali', 'ÇİKOLATALI', 'Çikolatali', 'ÇIKOLATALI']) {
+      const r = await ara(q);
+      assert.ok(r.some((p) => p.id === urunId), `"${q}" bulmali`);
+    }
+  });
+
+  test('buyuk yazilmis urun kucuk harfle de bulunur', async () => {
+    for (const q of ['güzelpinar', 'guzelpinar', 'GÜZELPINAR', 'Güzelpınar']) {
+      const r = await ara(q);
+      assert.ok(r.some((p) => p.id === suId), `"${q}" bulmali`);
+    }
+  });
+
+  test('noktalama korunur: "0.5 cc" aranabilir', async () => {
+    const r = await ara('0.5 cc');
+    assert.ok(r.some((p) => p.id === suId));
+  });
+
+  test('ilgisiz terim bos doner', async () => {
+    const r = await ara('zzzyokboyleurun');
+    assert.equal(r.length, 0);
+  });
+
+  test('stok ekrani aramasi da ayni kurali uygular', async () => {
+    // Stok listesi urunu stok hareketi olmasa da gosterir; onemli olan
+    // aramanin Turkce harfte de eslemesidir.
+    const r = await ok('GET', `/api/stock?campusId=${kampusId}&search=`
+      + encodeURIComponent('çikolatalı'));
+    assert.ok(r.items.some((p) => p.product_id === urunId || p.id === urunId),
+      JSON.stringify(r.items.slice(0, 3)));
+  });
+
+  test('tedarikci aramasi da Turkce harf tanir', async () => {
+    const r = await ok('GET', '/api/suppliers?search=' + encodeURIComponent('özgüçler'));
+    assert.ok(r.items.some((x) => x.id === tedarikciId), JSON.stringify(r.items.slice(0, 3)));
+    const r2 = await ok('GET', '/api/suppliers?search=' + encodeURIComponent('ozgucler'));
+    assert.ok(r2.items.some((x) => x.id === tedarikciId), 'ASCII yazim da bulmali');
+  });
+});
+
 /* ======= Tedarikci urun eslestirmeleri (ogrenilen adlar) ========== */
 describe('Urun eslestirme ogrenme', () => {
   let campusId; let tedA; let tedB; let ayranId; let suId;

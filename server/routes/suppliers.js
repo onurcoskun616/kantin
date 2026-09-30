@@ -6,6 +6,7 @@ import {
 } from '../lib/auth.js';
 import { campusBalances, sumBalances, ledger } from '../lib/cari.js';
 import { logAudit } from '../lib/audit.js';
+import { trFold, trFoldSql } from '../lib/metin.js';
 import { str, num, bool, date, today } from '../lib/validate.js';
 
 export const supplierRoutes = new Router();
@@ -21,7 +22,10 @@ export const supplierRoutes = new Router();
 supplierRoutes.get('/', async (ctx) => {
   const where = ['1 = 1'];
   const params = [];
-  if (ctx.query.search) { where.push('s.name LIKE ?'); params.push(`%${ctx.query.search}%`); }
+  if (ctx.query.search) {
+    where.push(`${trFoldSql('s.name')} LIKE ?`);
+    params.push(`%${trFold(ctx.query.search)}%`);
+  }
   if (ctx.query.onlyActive !== '0') where.push('s.is_active = 1');
 
   const kapsam = resolveScope(ctx);
