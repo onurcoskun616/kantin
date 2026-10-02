@@ -224,6 +224,10 @@ export function parseEFatura(xmlText) {
       // maliyet olduğundan yüksek kaydedilir.
       allowanceTotal: number(at(inv, 'LegalMonetaryTotal'), 'AllowanceTotalAmount') ?? 0,
       chargeTotal: number(at(inv, 'LegalMonetaryTotal'), 'ChargeTotalAmount') ?? 0,
+      // KDV MATRAHI: iskontolarin dusulmus hali. Belge iskontosunun
+      // satirlara ISLENMIS olup olmadigini anlamanin en guvenilir yolu
+      // budur (bkz. tamamla).
+      taxExclusive: number(at(inv, 'LegalMonetaryTotal'), 'TaxExclusiveAmount'),
     },
     warnings: [],
   };
@@ -248,16 +252,40 @@ function tamamla(invoice) {
   const computedVat = round2(invoice.lines.reduce((s, l) => s + l.vatTotal, 0));
   invoice.computed = { netTotal: computedNet, vatTotal: computedVat, grossTotal: round2(computedNet + computedVat) };
 
-  if (invoice.declared.lineTotal !== null && Math.abs(invoice.declared.lineTotal - computedNet) > 0.05) {
+  // Faturanin yazdigi mal bedeli (LineExtensionAmount) satirlarin
+  // ISKONTOSUZ toplami da olabilir: bazi entegratorler iskontoyu ayri
+  // AllowanceCharge olarak verip satira liste bedelini yaziyor. Ikisini
+  // de dogru sayariz, yoksa kusursuz bir faturada bos yere uyari cikar.
+  const listeToplami = round2(invoice.lines.reduce((s, l) => s + (l.listTotal ?? l.netTotal), 0));
+  if (invoice.declared.lineTotal !== null
+      && Math.abs(invoice.declared.lineTotal - computedNet) > 0.05
+      && Math.abs(invoice.declared.lineTotal - listeToplami) > 0.05) {
     invoice.warnings.push(
       `Satır toplamı (${computedNet.toFixed(2)}) faturanın yazdığı mal bedeliyle `
       + `(${invoice.declared.lineTotal.toFixed(2)}) uyuşmuyor. Satırları kontrol edin.`
     );
   }
-  // Belge geneli iskonto varsa satırlara DAĞITILIR: gerçekten ödenen tutar
-  // budur ve stok maliyeti buna göre oluşmalıdır. Dağıtım satırların mal
-  // bedeline orantılıdır; kuruş farkı son satırda kapatılır.
-  if (invoice.declared.allowanceTotal > 0 && computedNet > 0) {
+
+  // BELGE GENELI ISKONTO SATIRLARA ISLENMIS MI?
+  //
+  // UBL'de LegalMonetaryTotal/AllowanceTotalAmount bazen belge duzeyinde
+  // AYRICA dusulecek bir iskontodur, bazen de satirlardaki iskontolarin
+  // TOPLAMIDIR. Ikisi ayirt edilmezse ayni iskonto iki kez dusulur.
+  //
+  // Sahadan ornek (SZE2026000044998): her satirda %5,66 ve %10 iskonto
+  // vardi, toplamlari 1.062,00 TL; fatura bunu AllowanceTotalAmount'a da
+  // yazmisti. Ikinci kez dagitilinca satirlardaki iskonto %15,09 yerine
+  // %30,19 goruntu, belge toplami 5.973,88 yerine 4.911,88 cikti ve
+  // "KDV farkli" diye ayrica uyari verdi. Stok maliyeti %18 eksik
+  // kaydedilecekti.
+  //
+  // HAKEM: faturanin kendi yazdigi KDV matrahi (TaxExclusiveAmount).
+  // Satirlarin neti zaten matrahi tutuyorsa dusulecek bir sey kalmamis
+  // demektir.
+  const matrah = invoice.declared.taxExclusive;
+  const zatenIslenmis = matrah !== null && Math.abs(computedNet - matrah) <= 0.05;
+
+  if (invoice.declared.allowanceTotal > 0 && computedNet > 0 && !zatenIslenmis) {
     const kalanOran = (computedNet - invoice.declared.allowanceTotal) / computedNet;
     if (kalanOran > 0 && kalanOran < 1) {
       for (const l of invoice.lines) {
@@ -288,6 +316,15 @@ function tamamla(invoice) {
   const netSonrasi = round2(invoice.lines.reduce((s, l) => s + l.netTotal, 0));
   const kdvSonrasi = round2(invoice.lines.reduce((s, l) => s + l.vatTotal, 0));
   invoice.computed = { netTotal: netSonrasi, vatTotal: kdvSonrasi, grossTotal: round2(netSonrasi + kdvSonrasi) };
+
+  // Son soz faturanin KDV matrahinindir: tum iskontolar islendikten sonra
+  // hala tutmuyorsa GERCEK bir sapma vardir ve kullanici gormelidir.
+  if (matrah !== null && Math.abs(netSonrasi - matrah) > 0.05) {
+    invoice.warnings.push(
+      `Hesaplanan mal bedeli (${netSonrasi.toFixed(2)}) faturanın KDV matrahından `
+      + `(${matrah.toFixed(2)}) farklı. Satır tutarlarını kontrol edin.`
+    );
+  }
 
   // Belge iskontosu KDV'yi de düşürür: karşılaştırma DAĞITIM SONRASI
   // değerle yapılmalı, yoksa iskontolu her faturada boş yere uyarı çıkar.
@@ -549,6 +586,10 @@ function readLine(node) {
     quantity: round4(quantity),
     unitCode,
     unitPrice: round4(unitPrice),
+    // Iskonto ONCESI tutar. Bazi tedarikciler satirin
+    // LineExtensionAmount alanina iskontolu, bazilari iskontosuz tutari
+    // yaziyor; hangisi oldugunu anlamak icin ikisini de elde tutariz.
+    listTotal: gross,
     discountPct,
     vatRate,
     netTotal,
@@ -569,7 +610,15 @@ function readLine(node) {
   };
 
   // Satırın kendi yazdığı mal bedeliyle bizim hesabımız tutuyor mu?
-  if (lineExtension !== null && Math.abs(lineExtension - netTotal) > 0.02) {
+  //
+  // İKİ YAZIM DA GEÇERLİ sayılır: UBL'de satırın LineExtensionAmount'ı
+  // iskonto SONRASI olmalıdır, ama Türkiye'deki entegratörlerin bir kısmı
+  // oraya iskonto ÖNCESİ tutarı yazıp iskontoyu ayrı AllowanceCharge
+  // olarak veriyor. İkisini de doğru kabul etmezsek, kusursuz bir fatura
+  // "satır tutarı uyuşmuyor" diye yedi satır uyarı üretiyordu.
+  if (lineExtension !== null
+      && Math.abs(lineExtension - netTotal) > 0.02
+      && Math.abs(lineExtension - gross) > 0.02) {
     line.mismatch = `Faturada ${lineExtension.toFixed(2)} yazıyor, hesaplanan ${netTotal.toFixed(2)}`;
   }
   return line;

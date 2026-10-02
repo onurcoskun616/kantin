@@ -92,9 +92,23 @@ ok('Cakisan firmanin adi soylendi', hata.includes(`UI Test Firma ${RUN}`), hata.
 await page.click('.modal-head .icon-btn');
 await page.waitForTimeout(400);
 
+/**
+ * Alim listesini acar ve tarih araligini genisletir.
+ *
+ * Liste varsayilan olarak ICINDE BULUNULAN AYI gosterir; demo verisindeki
+ * belgeler onceki aylarda. Ayin ilk gunlerinde liste bos kaliyor ve test
+ * "Detay" dugmesini bulamiyordu.
+ */
+async function alimListesiniAc() {
+  await page.evaluate(() => { location.hash = '#/purchases'; });
+  await page.waitForTimeout(2200);
+  await page.fill('.content input[type=date] >> nth=0', '2000-01-01');
+  await page.fill('.content input[type=date] >> nth=1', '2099-12-31');
+  await page.waitForTimeout(1600);
+}
+
 console.log('\n2) Belge silme penceresi');
-await page.evaluate(() => { location.hash = '#/purchases'; });
-await page.waitForTimeout(2200);
+await alimListesiniAc();
 await page.click('tbody tr:first-child button:has-text("Detay")');
 await page.waitForSelector('.modal-backdrop');
 await page.waitForTimeout(900);
@@ -187,8 +201,7 @@ await page.evaluate(() => { location.hash = '#/counts'; });
 await page.waitForTimeout(2000);
 ok('Sayim baslatamiyor', !(await page.$('button:has-text("Yeni Sayım")')));
 
-await page.evaluate(() => { location.hash = '#/purchases'; });
-await page.waitForTimeout(2000);
+await alimListesiniAc();
 await page.click('tbody tr:first-child button:has-text("Detay")');
 await page.waitForSelector('.modal-backdrop');
 await page.waitForTimeout(800);

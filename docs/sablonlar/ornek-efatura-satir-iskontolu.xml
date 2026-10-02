@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SATIR ISKONTOLU e-Fatura ornegi (sahadaki SZE2026000044998'in kopyasi).
+
+  Bu faturada iskontolar SATIRLARDA durur (her satirda %5,66 ve %10) ve
+  LegalMonetaryTotal/AllowanceTotalAmount bunlarin TOPLAMINI tekrar eder.
+  Belge iskontosu sanilip ikinci kez dusulurse satir iskontolari %15,09
+  yerine %30,19 gorunur ve belge toplami %18 eksik cikar.
+
+  Hakem TaxExclusiveAmount'tir: 3173,88 - 479,07 = 2694,81.
+-->
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+         xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+         xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+  <cbc:UUID>8f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f</cbc:UUID>
+  <cbc:ID>GIB2026000000950</cbc:ID>
+  <cbc:IssueDate>2026-09-28</cbc:IssueDate>
+  <cbc:DocumentCurrencyCode>TRY</cbc:DocumentCurrencyCode>
+  <cac:AccountingSupplierParty>
+    <cac:Party>
+      <cac:PartyIdentification><cbc:ID schemeID="VKN">7690086564</cbc:ID></cac:PartyIdentification>
+      <cac:PartyName><cbc:Name>Satır İskontolu Gıda Ltd. Şti.</cbc:Name></cac:PartyName>
+    </cac:Party>
+  </cac:AccountingSupplierParty>
+  <cac:TaxTotal>
+    <cbc:TaxAmount currencyID="TRY">26.95</cbc:TaxAmount>
+    <cac:TaxSubtotal>
+      <cbc:TaxableAmount currencyID="TRY">2694.81</cbc:TaxableAmount>
+      <cbc:TaxAmount currencyID="TRY">26.95</cbc:TaxAmount>
+      <cbc:Percent>1</cbc:Percent>
+      <cac:TaxCategory><cac:TaxScheme><cbc:Name>KDV</cbc:Name><cbc:TaxTypeCode>0015</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory>
+    </cac:TaxSubtotal>
+  </cac:TaxTotal>
+  <cac:LegalMonetaryTotal>
+    <cbc:LineExtensionAmount currencyID="TRY">3173.88</cbc:LineExtensionAmount>
+    <cbc:TaxExclusiveAmount currencyID="TRY">2694.81</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount currencyID="TRY">2721.76</cbc:TaxInclusiveAmount>
+    <cbc:AllowanceTotalAmount currencyID="TRY">479.07</cbc:AllowanceTotalAmount>
+    <cbc:PayableAmount currencyID="TRY">2721.76</cbc:PayableAmount>
+  </cac:LegalMonetaryTotal>
+  <cac:InvoiceLine>
+    <cbc:ID>1</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="PA">12.00000000</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="TRY">755.6400000000000000</cbc:LineExtensionAmount>
+    <cac:AllowanceCharge>
+      <cbc:ChargeIndicator>false</cbc:ChargeIndicator>
+      <cbc:MultiplierFactorNumeric>0.05660000</cbc:MultiplierFactorNumeric>
+      <cbc:Amount currencyID="TRY">42.76922400</cbc:Amount>
+      <cbc:BaseAmount currencyID="TRY">755.6400000000000000</cbc:BaseAmount>
+    </cac:AllowanceCharge>
+    <cac:AllowanceCharge>
+      <cbc:ChargeIndicator>false</cbc:ChargeIndicator>
+      <cbc:MultiplierFactorNumeric>0.10000000</cbc:MultiplierFactorNumeric>
+      <cbc:Amount currencyID="TRY">71.28707760</cbc:Amount>
+      <cbc:BaseAmount currencyID="TRY">755.6400000000000000</cbc:BaseAmount>
+    </cac:AllowanceCharge>
+    <cac:TaxTotal>
+      <cbc:TaxAmount currencyID="TRY">6.42</cbc:TaxAmount>
+      <cac:TaxSubtotal>
+        <cbc:TaxableAmount currencyID="TRY">641.583698400000000</cbc:TaxableAmount>
+        <cbc:TaxAmount currencyID="TRY">6.415836984000000</cbc:TaxAmount>
+        <cbc:Percent>1</cbc:Percent>
+        <cac:TaxCategory><cac:TaxScheme><cbc:Name>KDV</cbc:Name><cbc:TaxTypeCode>0015</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory>
+      </cac:TaxSubtotal>
+    </cac:TaxTotal>
+    <cac:Item>
+      <cbc:Name>BISCOLATA MOOD BITTER 24PK 125G</cbc:Name>
+      <cac:SellersItemIdentification><cbc:ID>MOOD-BITTER-24</cbc:ID></cac:SellersItemIdentification>
+    </cac:Item>
+    <cac:Price><cbc:PriceAmount currencyID="TRY">62.97000000</cbc:PriceAmount></cac:Price>
+  </cac:InvoiceLine>
+  <cac:InvoiceLine>
+    <cbc:ID>2</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="PK">4.00000000</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="TRY">2418.2400000000000000</cbc:LineExtensionAmount>
+    <cac:AllowanceCharge>
+      <cbc:ChargeIndicator>false</cbc:ChargeIndicator>
+      <cbc:MultiplierFactorNumeric>0.05660000</cbc:MultiplierFactorNumeric>
+      <cbc:Amount currencyID="TRY">136.87238400</cbc:Amount>
+      <cbc:BaseAmount currencyID="TRY">2418.2400000000000000</cbc:BaseAmount>
+    </cac:AllowanceCharge>
+    <cac:AllowanceCharge>
+      <cbc:ChargeIndicator>false</cbc:ChargeIndicator>
+      <cbc:MultiplierFactorNumeric>0.10000000</cbc:MultiplierFactorNumeric>
+      <cbc:Amount currencyID="TRY">228.13676160</cbc:Amount>
+      <cbc:BaseAmount currencyID="TRY">2418.2400000000000000</cbc:BaseAmount>
+    </cac:AllowanceCharge>
+    <cac:TaxTotal>
+      <cbc:TaxAmount currencyID="TRY">20.53</cbc:TaxAmount>
+      <cac:TaxSubtotal>
+        <cbc:TaxableAmount currencyID="TRY">2053.230854400000000</cbc:TaxableAmount>
+        <cbc:TaxAmount currencyID="TRY">20.532308544000000</cbc:TaxAmount>
+        <cbc:Percent>1</cbc:Percent>
+        <cac:TaxCategory><cac:TaxScheme><cbc:Name>KDV</cbc:Name><cbc:TaxTypeCode>0015</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory>
+      </cac:TaxSubtotal>
+    </cac:TaxTotal>
+    <cac:Item>
+      <cbc:Name>BISCOLATA STARZ BITTER 24AD 82G</cbc:Name>
+      <cac:SellersItemIdentification><cbc:ID>STARZ-BITTER-24</cbc:ID></cac:SellersItemIdentification>
+    </cac:Item>
+    <cac:Price><cbc:PriceAmount currencyID="TRY">604.56000000</cbc:PriceAmount></cac:Price>
+  </cac:InvoiceLine>
+</Invoice>

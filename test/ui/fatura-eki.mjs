@@ -151,6 +151,12 @@ await page.waitForTimeout(500);
 
 console.log('\n5) Belge detayinda fatura dosyalari');
 await page.evaluate(()=>{location.hash='#/purchases';}); await page.waitForTimeout(1800);
+// Liste varsayilan olarak ICINDE BULUNULAN AYI gosterir; ornek fatura
+// 2026-09-15 tarihli. Ayin ilk gunlerinde belge listede cikmiyor ve test
+// "Detay" dugmesini bulamiyordu. Araligi acikca genisletiriz.
+await page.fill('.content input[type=date] >> nth=0', '2026-09-01');
+await page.fill('.content input[type=date] >> nth=1', '2099-12-31');
+await page.waitForTimeout(1500);
 await page.click(`tr:has-text("${DOC_NO}") button:has-text("Detay")`);
 await page.waitForSelector('.modal-backdrop');
 await page.waitForTimeout(800);

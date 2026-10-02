@@ -185,6 +185,11 @@ try {
   await page.reload({ waitUntil: 'networkidle' });
   // Gorevli tek kampuse bagli oldugu icin kampus secici gizlidir
   await page.waitForTimeout(2000);
+  // Donem AYIN BASINDA kendiliginden dogru gelmez: fise konu gunler
+  // (daysAgo(5)) onceki aya dusmus olabilir. Ayin ilk gunlerinde test
+  // bu yuzden bos liste gorup basarisiz oluyordu; donemi acikca seceriz.
+  await page.fill('input[type=month]', daysAgo(5).slice(0, 7));
+  await page.waitForTimeout(1500);
   const revenueText = await page.textContent('.content').catch(() => '');
   check('Ciro listesinde kilit isareti var', revenueText.includes('imzalı'), revenueText.slice(0, 120));
 
