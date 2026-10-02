@@ -1339,6 +1339,129 @@ describe('Tedarikci vergi numarasi', () => {
 });
 
 /* ============== Alim belgesi: iptal ve kalici silme =============== */
+/*
+ * BELGE KUNYESI DUZELTME (fatura no / tarih)
+ *
+ * Mal girisi hizli yapilir; fatura numarasi yanlis yazilabilir ya da tarih
+ * olarak faturanin tarihi yerine "bugun" kalabilir. Belgenin ICERIGI
+ * dogrudur, yalnizca kunyesi yanlistir. Silip yeniden girmek fatura
+ * eklerini ve stok hareketlerini kaybettirirdi.
+ */
+describe('Belge kunyesi duzeltme', () => {
+  let campusId; let supplierId; let productId; let belgeId;
+
+  before(async () => {
+    campusId = (await ok('POST', '/api/campuses', { name: 'Künye Kampüsü', code: 'KNY' })).id;
+    supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'Künye Tedarikçi', taxNo: '2020202020' })).id;
+    productId = (await ok('POST', '/api/products',
+      { name: 'Künye Ürünü', purchasePrice: 10, salePrice: 20, vatRate: 10 })).id;
+    belgeId = (await ok('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'YANLIS-001', documentDate: daysAgo(10),
+      lines: [{ productId, quantity: 5, unitPrice: 100, vatRate: 10 }],
+    })).id;
+  });
+
+  const belge = () => ok('GET', `/api/purchases/${belgeId}`);
+  const hareketTarihi = async () => {
+    const r = await ok('GET', `/api/stock/movements?campusId=${campusId}&productId=${productId}`);
+    return r.items.find((m) => m.ref_type === 'purchase' && m.ref_id === belgeId)?.movement_date;
+  };
+
+  test('numara ve tarih duzeltilir, ICERIK aynen kalir', async () => {
+    const once = await belge();
+    await ok('PUT', `/api/purchases/${belgeId}/belge`, {
+      documentNo: 'DOGRU-042', documentDate: daysAgo(18), dueDate: daysAgo(-12),
+    });
+    const sonra = await belge();
+    assert.equal(sonra.document_no, 'DOGRU-042');
+    assert.equal(sonra.document_date, daysAgo(18));
+    assert.equal(sonra.due_date, daysAgo(-12));
+    // Degismemesi gerekenler
+    assert.equal(sonra.lines.length, once.lines.length);
+    assert.equal(sonra.gross_total, once.gross_total);
+    assert.equal(sonra.supplier_id, once.supplier_id);
+  });
+
+  test('stok hareketi de yeni tarihe tasinir', async () => {
+    // Ayrisirsa gecmise donuk stok raporu belgeyi baska gunde gosterir
+    assert.equal(await hareketTarihi(), daysAgo(18));
+  });
+
+  test('degisiklik denetim izine ESKI ve YENI degeriyle yazilir', async () => {
+    const izl = await ok('GET', '/api/audit?entity=purchases&limit=50');
+    const kayit = izl.items.find((x) => x.entity_id === belgeId && x.action === 'UPDATE');
+    assert.ok(kayit, 'kunye degisikligi denetim izinde olmali');
+    const d = typeof kayit.detail === 'string' ? JSON.parse(kayit.detail) : kayit.detail;
+    assert.equal(d.islem, 'belge-kunyesi-duzeltildi');
+    assert.equal(d.onceki.documentNo, 'YANLIS-001');
+    assert.equal(d.yeni.documentNo, 'DOGRU-042');
+  });
+
+  test('ayni degerler gonderilirse kayit acilmaz', async () => {
+    const s = await belge();
+    const r = await ok('PUT', `/api/purchases/${belgeId}/belge`, {
+      documentNo: s.document_no, documentDate: s.document_date, dueDate: s.due_date,
+    });
+    assert.equal(r.degisiklikYok, true);
+  });
+
+  test('belge tarihi zorunludur', async () => {
+    const r = await api('PUT', `/api/purchases/${belgeId}/belge`, { documentNo: 'X' });
+    assert.equal(r.status, 400);
+  });
+
+  test('KESINLESMIS sayim donemine tasinamaz ama NUMARA yine duzelir', async () => {
+    // Donem sayimi: iki imza kurali geregi baska bir yetkili kesinlestirir
+    const sayim = await ok('POST', '/api/counts', { campusId, countDate: daysAgo(2), countType: 'DONEM' });
+    await ok('PUT', `/api/counts/${sayim.id}/lines`, { lines: [{ productId, countedQty: 5 }] });
+    await ok('POST', `/api/counts/${sayim.id}/submit`, { witnessName: 'Künye Tanık' });
+    const login = await api('POST', '/api/auth/login',
+      { email: 'ikinci.mudur@topkapiokullari.com', password: 'Mudur123456' }, false);
+    const fin = await fetch(`${BASE}/api/counts/${sayim.id}/finalize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${login.data.token}` },
+      body: '{}',
+    });
+    assert.equal(fin.status, 200, 'sayim kesinlesmeli');
+
+    const s = await belge();
+    // Tarih: kapanmis donemin stogunu degistirecegi icin REDDEDILIR
+    const tarih = await api('PUT', `/api/purchases/${belgeId}/belge`, {
+      documentNo: s.document_no, documentDate: daysAgo(25),
+    });
+    assert.equal(tarih.status, 409);
+    assert.equal((await belge()).document_date, s.document_date, 'tarih degismemeli');
+
+    // Numara: stogu etkilemez, her zaman duzeltilebilmeli
+    await ok('PUT', `/api/purchases/${belgeId}/belge`, {
+      documentNo: 'KAPALI-DONEMDE-DUZELTILDI', documentDate: s.document_date,
+    });
+    assert.equal((await belge()).document_no, 'KAPALI-DONEMDE-DUZELTILDI');
+  });
+
+  test('yalnizca ADMIN ve GENEL_MUDURLUK duzeltebilir', async () => {
+    const dene = async (role, campus) => {
+      const eposta = `kunye.${role.toLowerCase()}@topkapiokullari.com`;
+      await ok('POST', '/api/users', {
+        fullName: `Künye ${role}`, email: eposta, password: 'Kunye123456',
+        role, campusId: campus,
+      });
+      const login = await api('POST', '/api/auth/login', { email: eposta, password: 'Kunye123456' }, false);
+      const s = await belge();
+      const res = await fetch(`${BASE}/api/purchases/${belgeId}/belge`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${login.data.token}` },
+        body: JSON.stringify({ documentNo: `${role}-DENEME`, documentDate: s.document_date }),
+      });
+      return res.status;
+    };
+    assert.equal(await dene('MUHASEBE', null), 403, 'muhasebe duzeltememeli');
+    assert.equal(await dene('KAMPUS_YONETICISI', campusId), 403, 'kampus yoneticisi duzeltememeli');
+    assert.equal(await dene('GENEL_MUDURLUK', null), 200, 'genel mudurluk duzeltebilmeli');
+  });
+});
+
 describe('Alim belgesi iptal ve silme', () => {
   let campusId; let supplierId; let productId;
   const ETTN = 'cccccccc-dddd-4eee-8fff-000011112222';

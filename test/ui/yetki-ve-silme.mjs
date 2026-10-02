@@ -115,6 +115,7 @@ await page.waitForTimeout(900);
 const actions = await page.textContent('.modal-foot');
 ok('Iptal dugmesi var', /İptal Et/.test(actions), actions);
 ok('Kalici sil dugmesi var', /Kalıcı Olarak Sil/.test(actions), actions);
+ok('Kunye duzeltme dugmesi var', /Belge No \/ Tarih Düzelt/.test(actions), actions);
 
 await page.click('.modal-foot button:has-text("Kalıcı Olarak Sil")');
 await page.waitForTimeout(700);
@@ -144,6 +145,39 @@ const silindiMi = await page.evaluate(async (no) => {
   return (await r.json()).items.some((x) => x.document_no === no);
 }, belgeNo);
 ok('Belge listeden de gitti', silindiMi === false);
+
+console.log('\n2b) Belge kunyesi (fatura no / tarih) duzeltme');
+// Onceki adimdan acik kalan pencere varsa kapat: tiklamalari engelliyor
+for (let i = 0; i < 4 && (await page.$$('.modal-backdrop')).length; i++) {
+  await page.click('.modal-backdrop:last-of-type .modal-head .icon-btn').catch(() => {});
+  await page.waitForTimeout(400);
+}
+// Maddi hata duzeltmesi: belgenin ICERIGI dogru, kunyesi yanlis yazilmis.
+// Silip yeniden girmek fatura eklerini ve stok hareketlerini kaybettirirdi.
+await alimListesiniAc();
+await page.click('tbody tr:first-child button:has-text("Detay")');
+await page.waitForSelector('.modal-backdrop');
+await page.waitForTimeout(900);
+const kunyeOnce = await page.textContent('.modal-body .kv');
+await page.click('.modal-foot button:has-text("Belge No / Tarih Düzelt")');
+await page.waitForTimeout(700);
+const kunyeForm = await page.textContent('.modal-backdrop:last-of-type .modal-body');
+ok('Formda fatura no alani var', /Fatura \/ belge no/.test(kunyeForm), kunyeForm.slice(0, 200));
+ok('Tarihin stok hareketini tasiyacagi yaziyor',
+  /stok hareketleri de o güne taşınır/.test(kunyeForm), kunyeForm.slice(0, 400));
+ok('Nelerin DEGISMEYECEGI yaziyor', /aynı kalır/.test(kunyeForm), kunyeForm.slice(0, 500));
+
+const YENI_NO = `DUZELTME-${RUN}`;
+await page.fill('.modal-backdrop:last-of-type input[name=documentNo]', YENI_NO);
+await page.click('.modal-backdrop:last-of-type .modal-foot .btn-primary');
+await page.waitForTimeout(2000);
+const guncel = await page.evaluate(async (no) => {
+  const t = localStorage.getItem('kantin_token');
+  const r = await fetch('/api/purchases?from=2000-01-01&to=2099-01-01', { headers: { Authorization: `Bearer ${t}` } });
+  return (await r.json()).items.some((x) => x.document_no === no);
+}, YENI_NO);
+ok('Yeni belge no listeye yansidi', guncel, YENI_NO);
+ok('Belgenin kendisi duruyor (silinmedi)', !!kunyeOnce);
 
 console.log('\n3) Rol aciklamalari GERCEK yetkiyle uyusuyor');
 // Bir rolun yetkisi degisip ekrandaki aciklama eski kalirsa kullanici

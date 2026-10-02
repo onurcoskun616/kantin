@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { state, canWrite, canDeleteDocuments, campusName } from '../app.js';
+import { state, canWrite, canDeleteDocuments, canEditDocumentHeader, campusName } from '../app.js';
 import { el, card, stat, table, fmt, badge, modal, toast, confirmDialog, dateUtil, alertBox, empty, shortName, formModal } from '../ui.js';
 import { createProductPicker } from '../urun-secici.js';
 import { parseEFatura, matchProducts, matchSupplier, unitFromCode, xmlMetniOku } from '../efatura.js';
@@ -97,6 +97,13 @@ async function showDetail(id, onChange) {
       attachmentsSection(data),
     ],
     actions: [
+      // Maddi hata düzeltmesi: belgenin İÇERİĞİ doğru, yalnızca künyesi
+      // yanlış yazılmış. Silip yeniden girmek fatura eklerini ve stok
+      // hareketlerini kaybettirirdi.
+      canEditDocumentHeader() ? el('button.btn', {
+        text: '✏️ Belge No / Tarih Düzelt',
+        onclick: () => openHeaderForm(data, onChange),
+      }) : null,
       // İptal: belge kayıtta kalır, stok hareketi geri alınır. Düzeltme yolu.
       canWrite('purchases') && data.status !== 'IPTAL' ? el('button.btn', {
         text: 'Belgeyi İptal Et',
@@ -121,6 +128,51 @@ async function showDetail(id, onChange) {
         onclick: () => confirmDelete(data, onChange),
       }) : null,
     ].filter(Boolean),
+  });
+}
+
+/**
+ * Belge künyesi düzeltme formu (fatura no / tarih / vade).
+ *
+ * Yalnızca BAŞLIK değişir: satırlar, tutarlar ve fatura ekleri yerinde
+ * kalır. Tarih değişirse stok hareketleri de o güne taşınır — kullanıcı
+ * bunu bilerek onaylasın diye formda yazıyor.
+ */
+function openHeaderForm(data, onChange) {
+  formModal({
+    title: `Belge Künyesini Düzelt — #${data.id}`,
+    fields: [
+      {
+        name: 'documentNo', label: 'Fatura / belge no', value: data.document_no || '',
+        hint: 'Faturanın üzerindeki numara. Boş bırakılabilir.',
+      },
+      {
+        name: 'documentDate', label: 'Belge tarihi', type: 'date', value: data.document_date,
+        required: true,
+        hint: 'Değiştirirseniz bu belgenin stok hareketleri de o güne taşınır. '
+          + 'Kesinleşmiş bir sayım dönemine giren tarihler kabul edilmez.',
+      },
+      {
+        name: 'dueDate', label: 'Vade tarihi', type: 'date', value: data.due_date || '',
+        hint: 'Tedarikçiye ödeme günü. Boş bırakılabilir.',
+      },
+      {
+        name: 'bilgi', label: 'Değişmeyecekler', type: 'info',
+        value: `${data.lines.length} satır, ${fmt.money(data.gross_total)} tutar, `
+          + `${data.attachments?.length ?? 0} fatura dosyası ve tedarikçi aynı kalır.`,
+      },
+    ],
+    submitText: 'Künyeyi Güncelle',
+    onSubmit: async (v) => {
+      await api.put(`/api/purchases/${data.id}/belge`, {
+        documentNo: v.documentNo,
+        documentDate: v.documentDate,
+        dueDate: v.dueDate || null,
+      });
+      toast('Belge künyesi güncellendi. Değişiklik denetim izine yazıldı.');
+      document.querySelector('.modal-backdrop')?.remove();
+      onChange();
+    },
   });
 }
 

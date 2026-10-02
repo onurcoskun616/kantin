@@ -204,6 +204,75 @@ purchaseRoutes.post('/:id/cancel', async (ctx) => {
 });
 
 /**
+ * BELGE BASLIGINI DUZELTIR: fatura numarasi ve tarihi.
+ *
+ * Mal girisi hizli yapilan bir istir; fatura numarasi yanlis yazilabilir ya
+ * da tarih olarak faturanin tarihi yerine "bugun" birakilabilir. Bu bir
+ * MADDI HATADIR: belgenin icerigi (satirlar, tutarlar, stok) dogrudur,
+ * yalnizca kunyesi yanlistir. Belgeyi silip yeniden girmek hem stok
+ * hareketlerini hem fatura eklerini kaybettirir.
+ *
+ * Yalnizca ADMIN ve GENEL_MUDURLUK yapabilir; her degisiklik eski ve yeni
+ * degeriyle denetim gunluguna yazilir.
+ *
+ * TARIH ile NUMARA AYRI AGIRLIKTADIR:
+ *   - Numara yalnizca kunyedir; stogu etkilemez, her zaman duzeltilebilir.
+ *   - Tarih stok hareketinin tarihidir. Degisirse hareketler de tasinir;
+ *     bu yuzden NE ESKI NE YENI tarih kesinlesmis bir sayim donemine
+ *     girmemelidir. Aksi halde kapanmis bir donemin stogu sonradan
+ *     degisir ve sayim mutabakati anlamini yitirir.
+ */
+purchaseRoutes.put('/:id/belge', async (ctx) => {
+  requireRole(ctx.user, 'ADMIN', 'GENEL_MUDURLUK');
+  const id = Number(ctx.params.id);
+  const header = get('SELECT * FROM purchases WHERE id = ?', [id]);
+  if (!header) throw notFound('Alim belgesi bulunamadi.');
+  assertCampusAccess(ctx.user, header.campus_id);
+
+  const belgeNo = str(ctx.body.documentNo, 'Belge no', { max: 60 }) || null;
+  const belgeTarihi = date(ctx.body.documentDate, 'Belge tarihi', { required: true });
+  // Vade bos birakilabilir; gonderilmediyse mevcut deger korunur.
+  const vade = ctx.body.dueDate === undefined
+    ? header.due_date
+    : (date(ctx.body.dueDate, 'Vade tarihi') || null);
+
+  const tarihDegisti = belgeTarihi !== header.document_date;
+  if (!tarihDegisti && belgeNo === header.document_no && vade === header.due_date) {
+    return { ok: true, degisiklikYok: true };
+  }
+
+  if (tarihDegisti) {
+    // Belgenin BULUNDUGU donem kapalıysa cikarilamaz,
+    assertPurchaseMutable(header, 'tarihi degistirilemez');
+    // tasinacagi donem kapalıysa oraya konamaz.
+    assertPurchaseMutable({ ...header, document_date: belgeTarihi }, 'bu tarihe tasinamaz');
+  }
+
+  tx(() => {
+    run('UPDATE purchases SET document_no = ?, document_date = ?, due_date = ? WHERE id = ?',
+      [belgeNo, belgeTarihi, vade, id]);
+    if (tarihDegisti) {
+      // Stok hareketinin tarihi belgeyle AYNI kalmali: ayrisirsa gecmise
+      // donuk stok ve maliyet raporlari belgeyi baska gunde gosterir.
+      run("UPDATE stock_movements SET movement_date = ? WHERE ref_type = 'purchase' AND ref_id = ?",
+        [belgeTarihi, id]);
+    }
+  });
+
+  logAudit({
+    user: ctx.user, action: 'UPDATE', entity: 'purchases', entityId: id, campusId: header.campus_id,
+    detail: {
+      islem: 'belge-kunyesi-duzeltildi',
+      onceki: { documentNo: header.document_no, documentDate: header.document_date, dueDate: header.due_date },
+      yeni: { documentNo: belgeNo, documentDate: belgeTarihi, dueDate: vade },
+      efaturaUuid: header.efatura_uuid || undefined,
+    },
+    ip: ctx.ip,
+  });
+  return get('SELECT * FROM purchases WHERE id = ?', [id]);
+});
+
+/**
  * Belgeyi ve BAGLI HER SEYI kalici olarak siler: satirlar, stok hareketleri,
  * fatura dosyalari (diskten de), fiyat gecmisi kaydi.
  *

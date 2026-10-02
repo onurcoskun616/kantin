@@ -282,6 +282,16 @@ export function canDeleteDocuments() {
 }
 
 /**
+ * Alim belgesinin KUNYESINI (fatura no / tarih) duzeltebilen roller.
+ *
+ * Icerigi degil yalnizca basligi degistirir; maddi hata duzeltmesidir.
+ * Kural sunucuda da ayni (requireRole(ctx.user, 'ADMIN', 'GENEL_MUDURLUK')).
+ */
+export function canEditDocumentHeader() {
+  return state.user && ['ADMIN', 'GENEL_MUDURLUK'].includes(state.user.role);
+}
+
+/**
  * Teslim fisini SILEBILEN rol: yalnizca sistem yoneticisi.
  *
  * Fis imzalanmis bir kagidin sistemdeki karsiligidir; silinmesi o imzanin
