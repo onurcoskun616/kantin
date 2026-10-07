@@ -1,10 +1,10 @@
 import { Router } from '../lib/router.js';
 import { all, get, insert, run, tx } from '../db.js';
 import { notFound, conflict, badRequest, sendCsv, toCsv } from '../lib/http.js';
-import { requireWrite, assertCampusAccess, seesAllCampuses } from '../lib/auth.js';
+import { requireWrite, requireRole, assertCampusAccess, seesAllCampuses } from '../lib/auth.js';
 import { logAudit } from '../lib/audit.js';
 import { str, num, int, bool, date, today, oneOf } from '../lib/validate.js';
-import { productProfit } from '../lib/money.js';
+import { productProfit, round2 } from '../lib/money.js';
 import { lastPurchaseSql, salePriceSql } from '../lib/stock.js';
 import { normalizeTr, trFold, trFoldSql } from '../lib/metin.js';
 
@@ -271,6 +271,37 @@ productRoutes.delete('/aliases/:id', async (ctx) => {
   return { ok: true };
 });
 
+/**
+ * MUKERRER ADAYLARI: adi sadelestirildiginde ayni cikan kartlar.
+ *
+ * Kullanici 213 kart icinde mukerrerleri goz ile aramasin diye katalog
+ * ekraninda bir panelde listelenir.
+ */
+productRoutes.get('/mukerrerler', async () => {
+  const rows = all('SELECT id, name, unit, barcode, is_active FROM products');
+  const grup = new Map();
+  for (const r of rows) {
+    const anahtar = normalizeTr(r.name);
+    if (!anahtar) continue;
+    if (!grup.has(anahtar)) grup.set(anahtar, []);
+    grup.get(anahtar).push(r);
+  }
+  const items = [];
+  for (const [anahtar, kartlar] of grup) {
+    if (kartlar.length < 2) continue;
+    const stoklu = [];
+    for (const k of kartlar) {
+      const s = get(
+        "SELECT COALESCE(SUM(quantity), 0) AS q FROM stock_movements WHERE product_id = ?", [k.id]
+      )?.q ?? 0;
+      stoklu.push({ ...k, stok: round2(s) });
+    }
+    items.push({ anahtar, kartlar: stoklu.sort((a, b) => b.stok - a.stok) });
+  }
+  items.sort((a, b) => b.kartlar.length - a.kartlar.length);
+  return { items };
+});
+
 productRoutes.get('/:id', async (ctx) => {
   const id = Number(ctx.params.id);
   const row = get(
@@ -375,6 +406,162 @@ productRoutes.delete('/:id', async (ctx) => {
 });
 
 /* ------------------- Kampus bazli fiyat istisnasi ------------------- */
+/* ===================== MUKERRER KART BIRLESTIRME ==================== */
+/**
+ * AYNI URUN ICIN ACILMIS IKINCI KART BIRLESTIRILIR.
+ *
+ * Sahadan gelen durum: Istanbul OSB katalogunda 15 urun adi birden fazla
+ * kartta duruyordu; besinde IKI KARTTA BIRDEN stok vardi (ornegin
+ * "GUZELPINAR 0.5 CC PET SU" 6912 + 2016). Sebebi, faturadaki ad tam
+ * eslesmeyince yeni kart acilmasi. Sonuc: stok ikiye bolunuyor, sayim
+ * mutabakati tutmuyor, karlilik yanlis cikiyor.
+ *
+ * Kartlari elle silmek mumkun degil: ikisinin de gecmisi (fatura satirlari,
+ * stok hareketleri, sayimlar) var ve silme kisitli. Bu yuzden TASIYARAK
+ * birlestirir: kaynak kartin her kaydi hedef karta baglanir, bosalan kart
+ * silinir.
+ *
+ * Yetki: veri girisini yapan roller de duzeltebilsin diye ON MUHASEBE ve
+ * KAMPUS YONETICISI de dahildir (hatayi yapan duzeltsin). Islem geri
+ * alinamaz; bu yuzden once onizleme verilir ve her birlestirme denetim
+ * izine tam dokumuyle yazilir.
+ */
+const TASINAN_TABLOLAR = [
+  // [tablo, sutun, cakisma anahtari (varsa), toplanacak sutunlar]
+  ['stock_movements', 'product_id', null, null],
+  ['purchase_lines', 'product_id', null, null],
+  ['supplier_return_lines', 'product_id', null, null],
+  ['waste_records', 'product_id', null, null],
+  ['transfer_lines', 'product_id', null, null],
+  ['price_history', 'product_id', null, null],
+  ['purchase_unmatched_lines', 'resolved_product_id', null, null],
+  ['product_aliases', 'product_id', null, null],
+  ['campus_products', 'product_id', 'campus_id', null],
+  ['product_prices', 'product_id', 'effective_from', null],
+  ['count_lines', 'product_id', 'count_id', ['expected_qty', 'counted_qty', 'diff_qty', 'recipe_qty', 'sold_qty', 'sales_value', 'cost_value']],
+  ['production_sales', 'product_id', 'count_id', ['quantity', 'sales_value', 'cost_value']],
+  ['recipe_items', 'ingredient_id', 'recipe_id', ['quantity']],
+  ['recipes', 'product_id', null, null],
+];
+
+/** Birlestirmede tasinacak kayitlari sayar; hem onizleme hem denetim icin. */
+function birlestirmeDokumu(kaynakId) {
+  const d = {};
+  for (const [tablo, sutun] of TASINAN_TABLOLAR) {
+    const n = get(`SELECT COUNT(*) AS n FROM ${tablo} WHERE ${sutun} = ?`, [kaynakId])?.n ?? 0;
+    if (n) d[tablo] = n;
+  }
+  return d;
+}
+
+/** Iki kartin birlestirilmesine engel var mi? */
+function birlestirmeEngeli(hedef, kaynak) {
+  if (hedef.id === kaynak.id) return 'Bir kart kendisiyle birlestirilemez.';
+  // recipes.product_id TEKILDIR: iki recete tek urunde bulusamaz
+  const hr = get('SELECT id FROM recipes WHERE product_id = ?', [hedef.id]);
+  const kr = get('SELECT id FROM recipes WHERE product_id = ?', [kaynak.id]);
+  if (hr && kr) {
+    return 'Her iki urunun de recetesi var. Once birini (Urunler -> Recete) silin, sonra birlestirin.';
+  }
+  return null;
+}
+
+/** Birlestirme onizlemesi: ne tasinacak, neye dikkat edilmeli. */
+productRoutes.get('/:id/birlestirme-onizleme', async (ctx) => {
+  requireWrite(ctx.user, 'products');
+  const hedef = get('SELECT * FROM products WHERE id = ?', [Number(ctx.params.id)]);
+  const kaynak = get('SELECT * FROM products WHERE id = ?', [Number(ctx.query.kaynakId)]);
+  if (!hedef || !kaynak) throw notFound('Urun bulunamadi.');
+
+  const uyarilar = [];
+  if ((hedef.unit || '') !== (kaynak.unit || '')) {
+    uyarilar.push(
+      `Birimler FARKLI: "${hedef.name}" ${hedef.unit}, "${kaynak.name}" ${kaynak.unit}. `
+      + 'Birlestirmeden ONCE birimleri esitleyin, yoksa miktarlar anlamsiz toplanir.'
+    );
+  }
+  if (hedef.vat_rate !== kaynak.vat_rate) {
+    uyarilar.push(`KDV oranlari farkli (%${hedef.vat_rate} / %${kaynak.vat_rate}). Hedef kartin orani gecerli olacak.`);
+  }
+  if (kaynak.barcode && hedef.barcode && kaynak.barcode !== hedef.barcode) {
+    uyarilar.push(`Iki kartin da barkodu var; "${kaynak.barcode}" silinecek, "${hedef.barcode}" kalacak.`);
+  }
+  return {
+    hedef: { id: hedef.id, name: hedef.name, unit: hedef.unit, barcode: hedef.barcode },
+    kaynak: { id: kaynak.id, name: kaynak.name, unit: kaynak.unit, barcode: kaynak.barcode },
+    tasinacak: birlestirmeDokumu(kaynak.id),
+    engel: birlestirmeEngeli(hedef, kaynak),
+    uyarilar,
+  };
+});
+
+/**
+ * Kaynak karti hedef kartin icine tasir ve siler.
+ *
+ * Cakisma kurali: ayni anahtari (ayni kampus / ayni sayim / ayni recete)
+ * iki kart da tasiyorsa, MIKTAR ICEREN tablolarda degerler TOPLANIR
+ * (ayni urun iki kartta sayildiysa gercek miktar ikisinin toplamidir),
+ * fiyat/tanim tablolarinda HEDEFIN degeri korunur.
+ */
+productRoutes.post('/:id/birlestir', async (ctx) => {
+  requireRole(ctx.user, 'ADMIN', 'GENEL_MUDURLUK', 'MUHASEBE', 'KAMPUS_YONETICISI');
+  const hedefId = Number(ctx.params.id);
+  const kaynakId = int(ctx.body.kaynakId, 'Birlestirilecek urun', { required: true });
+  const hedef = get('SELECT * FROM products WHERE id = ?', [hedefId]);
+  const kaynak = get('SELECT * FROM products WHERE id = ?', [kaynakId]);
+  if (!hedef || !kaynak) throw notFound('Urun bulunamadi.');
+
+  const engel = birlestirmeEngeli(hedef, kaynak);
+  if (engel) throw conflict(engel);
+
+  const dokum = birlestirmeDokumu(kaynakId);
+
+  tx(() => {
+    for (const [tablo, sutun, anahtar, toplanan] of TASINAN_TABLOLAR) {
+      if (!anahtar) {
+        run(`UPDATE ${tablo} SET ${sutun} = ? WHERE ${sutun} = ?`, [hedefId, kaynakId]);
+        continue;
+      }
+      // Cakisanlari once hallet: ayni anahtarda hedefin de kaydi var mi?
+      const cakisan = all(
+        `SELECT k.* FROM ${tablo} k
+          WHERE k.${sutun} = ?
+            AND EXISTS (SELECT 1 FROM ${tablo} h WHERE h.${sutun} = ? AND h.${anahtar} = k.${anahtar})`,
+        [kaynakId, hedefId]
+      );
+      for (const satir of cakisan) {
+        if (toplanan) {
+          // Ayni urun iki kart altinda sayilmis: gercek miktar toplamdir
+          const set = toplanan.map((c) => `${c} = ${c} + ?`).join(', ');
+          run(`UPDATE ${tablo} SET ${set} WHERE ${sutun} = ? AND ${anahtar} = ?`,
+            [...toplanan.map((c) => satir[c] ?? 0), hedefId, satir[anahtar]]);
+        }
+        run(`DELETE FROM ${tablo} WHERE ${sutun} = ? AND ${anahtar} = ?`, [kaynakId, satir[anahtar]]);
+      }
+      run(`UPDATE ${tablo} SET ${sutun} = ? WHERE ${sutun} = ?`, [hedefId, kaynakId]);
+    }
+
+    // Barkod TEKILDIR: kaynaginki hedefte bos yer varsa tasinir, yoksa gider
+    if (kaynak.barcode && !hedef.barcode) {
+      run('UPDATE products SET barcode = NULL WHERE id = ?', [kaynakId]);
+      run('UPDATE products SET barcode = ? WHERE id = ?', [kaynak.barcode, hedefId]);
+    }
+    run('DELETE FROM products WHERE id = ?', [kaynakId]);
+  });
+
+  logAudit({
+    user: ctx.user, action: 'MERGE', entity: 'products', entityId: hedefId,
+    detail: {
+      islem: 'mukerrer-kart-birlestirildi',
+      kalan: { id: hedef.id, ad: hedef.name, birim: hedef.unit },
+      silinen: { id: kaynak.id, ad: kaynak.name, birim: kaynak.unit, barkod: kaynak.barcode || undefined },
+      tasinanKayitlar: dokum,
+    },
+    ip: ctx.ip,
+  });
+  return { ok: true, hedef: get('SELECT * FROM products WHERE id = ?', [hedefId]), tasinan: dokum };
+});
+
 productRoutes.put('/:id/campus-price/:campusId', async (ctx) => {
   requireWrite(ctx.user, 'products');
   const productId = Number(ctx.params.id);

@@ -1,6 +1,6 @@
 /** Ürün kataloğu, fiyat/kâr yönetimi ve tedarikçiler. */
 import { api } from '../api.js';
-import { state, canWrite, campusName } from '../app.js';
+import { state, canWrite, canMergeProducts, campusName } from '../app.js';
 import { el, card, stat, table, fmt, badge, modal, toast, formModal, deltaCell, alertBox, empty, shortName, dateUtil, confirmDialog } from '../ui.js';
 import { createProductPicker } from '../urun-secici.js';
 
@@ -112,6 +112,8 @@ export async function renderProducts(root) {
       }));
     }
 
+    await mukerrerPaneli(sonucBolumu, draw);
+
     sonucBolumu.append(card('Ürün Listesi ve Kârlılık', [
       table([
         { label: 'Barkod', value: (r) => r.barcode || '—' },
@@ -137,6 +139,9 @@ export async function renderProducts(root) {
           label: '', render: (r) => (canWrite('products') ? el('div.btn-row', {}, [
             el('button.btn.btn-sm', { text: 'Düzenle', onclick: () => openProductForm(kategoriler, r, draw) }),
             el('button.btn.btn-sm', { text: 'Kampüs Fiyatı', onclick: () => openCampusPrice(r, draw) }),
+            canMergeProducts()
+              ? el('button.btn.btn-sm', { text: '🔗 Birleştir', onclick: () => openMerge(r, draw) })
+              : null,
             el('button.btn.btn-sm', { text: '🗓️ Fiyat Takvimi', onclick: () => openPriceCalendar(r, draw) }),
             r.product_type === 'URETILEN' ? el('button.btn.btn-sm', {
               text: '📋 Reçete',
@@ -155,6 +160,160 @@ export async function renderProducts(root) {
       }),
     ], { tight: true, note: 'Alış ve satış fiyatlarının ikisi de KDV DAHİLDİR; alış KDV\'si indirilmediği için gerçek maliyettir. Birim kâr = satış − alış. Kâr marjı = birim kâr / satış fiyatı. Maliyet üzeri kâr = birim kâr / alış fiyatı.' }));
   }
+}
+
+/* =============== MÜKERRER ÜRÜN KARTLARI (birleştirme) ============== */
+/**
+ * Aynı ürün için açılmış ikinci kart, stoğu ikiye böler.
+ *
+ * Sahadan gelen durum: bir kampüsün kataloğunda 15 ürün adı birden fazla
+ * kartta duruyordu, beşinde iki kartta birden stok vardı ("GÜZELPINAR SU"
+ * 6912 + 2016). Faturadaki ad tam eşleşmeyince yeni kart açıldığı için
+ * oluşuyor. Kullanıcı 200+ kart içinde bunları gözle arayamaz; sistem
+ * kendisi bulup önüne koyar.
+ */
+async function mukerrerPaneli(kap, onChange) {
+  if (!canMergeProducts()) return;
+  let veri = null;
+  try {
+    veri = await api.get('/api/products/mukerrerler');
+  } catch {
+    return;   // eski sürüm sunucu: panel hiç çıkmasın
+  }
+  const items = veri.items || [];
+  if (!items.length) return;
+
+  const satirlar = items.map((g) => {
+    const kartlar = g.kartlar;
+    const stoklu = kartlar.filter((k) => k.stok > 0).length;
+    return el('div', { style: 'padding:8px 0;border-bottom:1px solid var(--border)' }, [
+      el('div.row', { style: 'justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center' }, [
+        el('div', {}, [
+          el('strong', { text: kartlar[0].name }),
+          el('small.muted', {
+            style: 'display:block',
+            text: kartlar.map((k) => `#${k.id} · ${k.unit} · stok ${fmt.num(k.stok)}`).join('   |   '),
+          }),
+        ]),
+        stoklu > 1
+          ? badge(`${stoklu} kartta birden stok var`, 'bad')
+          : badge(`${kartlar.length} kart`, 'warn'),
+      ]),
+      el('div.btn-row', { style: 'margin-top:6px' }, kartlar.slice(1).map((k) => el('button.btn.btn-sm', {
+        text: `#${k.id} kartını #${kartlar[0].id} ile birleştir`,
+        onclick: () => openMerge(kartlar[0], onChange, k.id),
+      }))),
+    ]);
+  });
+
+  kap.append(card('🔗 Mükerrer Ürün Kartları', satirlar, {
+    tight: true,
+    note: 'Aynı ürün için birden fazla kart açılmış. Birleştirmede kaynak kartın '
+      + 'tüm geçmişi (fatura satırları, stok hareketleri, sayımlar, eşleştirmeler) '
+      + 'kalan karta taşınır; stok tek yerde toplanır. En çok stoğu olan kart '
+      + 'önce listelenir — genelde onu bırakmak doğrudur.',
+  }));
+}
+
+/**
+ * Birleştirme penceresi: önce NE OLACAĞINI gösterir, sonra onay ister.
+ *
+ * İşlem geri alınamaz, bu yüzden taşınacak kayıtlar tek tek sayılır ve
+ * birim/KDV farkı gibi tuzaklar ayrıca uyarı olarak çıkar.
+ */
+async function openMerge(hedef, onChange, kaynakIdOnceden = null) {
+  const products = await api.get('/api/products', { campusId: state.campusId });
+  const digerleri = products.items.filter((p) => p.id !== hedef.id);
+
+  const secici = el('select', {}, [
+    el('option', { value: '' }, ['— birleştirilecek (silinecek) kartı seçin —']),
+    ...digerleri.map((p) => el('option', {
+      value: p.id, selected: String(p.id) === String(kaynakIdOnceden),
+    }, [`#${p.id} · ${p.name} · ${p.unit}`])),
+  ]);
+  const onizleme = el('div');
+  const hata = el('div.alert.alert-danger', { hidden: true });
+  const uygulaBtn = el('button.btn.btn-danger', { text: 'Birleştir', disabled: true });
+
+  const ciz = async () => {
+    hata.hidden = true;
+    uygulaBtn.disabled = true;
+    if (!secici.value) { onizleme.replaceChildren(); return; }
+    onizleme.replaceChildren(el('p.card-note', { text: 'Kontrol ediliyor…' }));
+    let ön;
+    try {
+      ön = await api.get(`/api/products/${hedef.id}/birlestirme-onizleme`, { kaynakId: secici.value });
+    } catch (err) {
+      onizleme.replaceChildren(alertBox('danger', 'Önizleme alınamadı', err.message));
+      return;
+    }
+    const sayim = Object.entries(ön.tasinacak || {});
+    const ETIKET = {
+      stock_movements: 'stok hareketi', purchase_lines: 'fatura satırı',
+      supplier_return_lines: 'iade satırı', waste_records: 'fire kaydı',
+      transfer_lines: 'transfer satırı', price_history: 'fiyat geçmişi kaydı',
+      purchase_unmatched_lines: 'eşleşmeyen fatura satırı', product_aliases: 'ürün eşleştirmesi',
+      campus_products: 'kampüs fiyatı', product_prices: 'tarihli satış fiyatı',
+      count_lines: 'sayım satırı', production_sales: 'üretim satışı',
+      recipe_items: 'reçete malzemesi', recipes: 'reçete',
+    };
+    onizleme.replaceChildren(
+      el('div.alert.alert-warning', {}, [
+        el('strong', { text: 'Bu işlem geri alınamaz' }),
+        el('div', {
+          text: `"${ön.kaynak.name}" (#${ön.kaynak.id}) kartı SİLİNECEK, tüm geçmişi `
+            + `"${ön.hedef.name}" (#${ön.hedef.id}) kartına taşınacak.`,
+        }),
+      ]),
+      el('p', { style: 'margin:10px 0 4px', text: 'Taşınacak kayıtlar:' }),
+      sayim.length
+        ? el('ul', { style: 'margin:0;padding-left:18px;display:grid;gap:3px;font-size:13px' },
+          sayim.map(([t, n]) => el('li', { text: `${n} ${ETIKET[t] || t}` })))
+        : el('p.card-note', { text: 'Kaynak kartın hiç hareketi yok; yalnızca kart silinecek.' }),
+      ...(ön.uyarilar || []).map((u) => alertBox('warning', 'Dikkat', u)),
+      ön.engel ? alertBox('danger', 'Birleştirilemez', ön.engel) : null,
+      el('p.card-note', {
+        text: 'Aynı sayımda iki kart da sayılmışsa miktarlar TOPLANIR. Aynı kampüs '
+          + 'fiyatı iki kartta da varsa kalan kartın fiyatı geçerli olur.',
+      }),
+    );
+    uygulaBtn.disabled = Boolean(ön.engel);
+  };
+  secici.addEventListener('change', ciz);
+
+  const m = modal({
+    title: `🔗 Mükerrer Kartı Birleştir — kalan: ${hedef.name}`,
+    wide: true,
+    body: [
+      hata,
+      el('p.card-note', {
+        text: `Kalan kart: #${hedef.id} ${hedef.name}. Aşağıda seçtiğiniz kart silinecek `
+          + 've geçmişi bu karta taşınacak.',
+      }),
+      el('label.field', {}, [el('span', { text: 'Silinecek (birleştirilecek) kart' }), secici]),
+      onizleme,
+    ],
+    actions: [el('button.btn', { text: 'Vazgeç', onclick: () => m.close() }), uygulaBtn],
+  });
+
+  uygulaBtn.addEventListener('click', async () => {
+    uygulaBtn.disabled = true;
+    uygulaBtn.textContent = 'Birleştiriliyor…';
+    try {
+      const r = await api.post(`/api/products/${hedef.id}/birlestir`, { kaynakId: Number(secici.value) });
+      const toplam = Object.values(r.tasinan || {}).reduce((a, b) => a + b, 0);
+      toast(`Kartlar birleştirildi. ${toplam} kayıt taşındı; işlem denetim izine yazıldı.`);
+      m.close();
+      onChange();
+    } catch (err) {
+      hata.textContent = err.message;
+      hata.hidden = false;
+      uygulaBtn.disabled = false;
+      uygulaBtn.textContent = 'Birleştir';
+    }
+  });
+
+  if (kaynakIdOnceden) await ciz();
 }
 
 const PRODUCT_TYPE_BADGE = {

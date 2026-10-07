@@ -1340,6 +1340,176 @@ describe('Tedarikci vergi numarasi', () => {
 
 /* ============== Alim belgesi: iptal ve kalici silme =============== */
 /*
+ * MUKERRER URUN KARTI BIRLESTIRME
+ *
+ * Sahadan gelen durum: bir kampusun katalogunda 15 urun adi birden fazla
+ * kartta duruyordu, besinde IKI KARTTA BIRDEN stok vardi ("GUZELPINAR SU"
+ * 6912 + 2016). Faturadaki ad tam eslesmeyince yeni kart aciliyor; stok
+ * ikiye bolunuyor, sayim mutabakati tutmuyor.
+ */
+describe('Mukerrer urun karti birlestirme', () => {
+  let campusId; let supplierId;
+
+  before(async () => {
+    campusId = (await ok('POST', '/api/campuses', { name: 'Birleştirme Kampüsü', code: 'BRL' })).id;
+    supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'Birleştirme Tedarikçi', taxNo: '2121212121' })).id;
+  });
+
+  const urun = (ad, ek = {}) => ok('POST', '/api/products',
+    { name: ad, salePrice: 20, vatRate: 10, unit: 'ADET', ...ek });
+  const alim = (productId, quantity, no) => ok('POST', '/api/purchases', {
+    campusId, supplierId, documentNo: no, documentDate: daysAgo(5),
+    lines: [{ productId, quantity, unitPrice: 5, vatRate: 10 }],
+  });
+  const stok = async (id) => {
+    const r = await ok('GET', `/api/stock?campusId=${campusId}`);
+    return r.items.find((x) => x.product_id === id)?.stock_qty ?? 0;
+  };
+
+  test('mukerrer kartlar listelenir', async () => {
+    const a = await urun('Mükerrer Su');
+    const b = await urun('MÜKERRER  SU');   // ad sadelestirilince AYNI
+    const r = await ok('GET', '/api/products/mukerrerler');
+    const grup = r.items.find((g) => g.kartlar.some((k) => k.id === a.id));
+    assert.ok(grup, 'ad farki sadelestirilince mukerrer sayilmali');
+    assert.ok(grup.kartlar.some((k) => k.id === b.id));
+  });
+
+  test('stok, fatura ve eslestirme HEDEF karta tasinir, kaynak silinir', async () => {
+    const a = await urun('Taşıma Testi A');
+    const b = await urun('Taşıma Testi B');
+    await alim(a.id, 100, 'BRL-001');
+    await alim(b.id, 40, 'BRL-002');
+    assert.equal(await stok(a.id), 100);
+    assert.equal(await stok(b.id), 40);
+
+    const r = await ok('POST', `/api/products/${a.id}/birlestir`, { kaynakId: b.id });
+    assert.ok(r.tasinan.stock_movements >= 1);
+    assert.equal(await stok(a.id), 140, 'stok tek kartta toplanmali');
+    const yok = await api('GET', `/api/products/${b.id}`);
+    assert.equal(yok.status, 404, 'kaynak kart silinmeli');
+  });
+
+  test('AYNI SAYIMDA iki kart da sayildiysa miktarlar TOPLANIR', async () => {
+    const a = await urun('Sayım Birleşme A');
+    const b = await urun('Sayım Birleşme B');
+    await alim(a.id, 50, 'BRL-010');
+    await alim(b.id, 30, 'BRL-011');
+    const sayim = await ok('POST', '/api/counts', { campusId, countDate: daysAgo(3), countType: 'DONEM' });
+    await ok('PUT', `/api/counts/${sayim.id}/lines`, {
+      lines: [{ productId: a.id, countedQty: 40 }, { productId: b.id, countedQty: 25 }],
+    });
+
+    await ok('POST', `/api/products/${a.id}/birlestir`, { kaynakId: b.id });
+
+    const detay = await ok('GET', `/api/counts/${sayim.id}`);
+    const satirlar = detay.lines.filter((l) => l.product_id === a.id);
+    assert.equal(satirlar.length, 1, 'tek satir kalmali');
+    assert.equal(satirlar[0].counted_qty, 65, 'ayni urun iki kartta sayildiysa toplanmali');
+    assert.ok(!detay.lines.some((l) => l.product_id === b.id), 'kaynak satiri kalmamali');
+  });
+
+  test('bos barkod hedefe TASINIR', async () => {
+    const a = await urun('Barkod Hedef');
+    const b = await urun('Barkod Kaynak', { barcode: '8690000000999' });
+    await ok('POST', `/api/products/${a.id}/birlestir`, { kaynakId: b.id });
+    assert.equal((await ok('GET', `/api/products/${a.id}`)).barcode, '8690000000999');
+  });
+
+  test('onizleme ne tasinacagini ve BIRIM FARKINI soyler', async () => {
+    const a = await urun('Önizleme A', { unit: 'ADET' });
+    const b = await urun('Önizleme B', { unit: 'KUTU' });
+    await alim(b.id, 10, 'BRL-020');
+    const r = await ok('GET', `/api/products/${a.id}/birlestirme-onizleme?kaynakId=${b.id}`);
+    assert.ok(r.tasinacak.stock_movements >= 1, JSON.stringify(r.tasinacak));
+    assert.ok(r.uyarilar.some((u) => /Birimler FARKLI/.test(u)), JSON.stringify(r.uyarilar));
+    assert.equal(r.engel, null);
+  });
+
+  test('kart kendisiyle birlestirilemez', async () => {
+    const a = await urun('Kendisiyle');
+    const r = await api('POST', `/api/products/${a.id}/birlestir`, { kaynakId: a.id });
+    assert.equal(r.status, 409);
+  });
+
+  test('IKI URUNUN DE recetesi varsa engellenir', async () => {
+    const ham = await urun('Birleşme Hammadde', { productType: 'HAMMADDE' });
+    const u1 = await urun('Reçeteli A', { productType: 'URETILEN' });
+    const u2 = await urun('Reçeteli B', { productType: 'URETILEN' });
+    for (const u of [u1, u2]) {
+      await ok('PUT', `/api/recipes/${u.id}`, {
+        yieldQuantity: 1, items: [{ ingredientId: ham.id, quantity: 1 }],
+      });
+    }
+    const r = await api('POST', `/api/products/${u1.id}/birlestir`, { kaynakId: u2.id });
+    assert.equal(r.status, 409);
+    assert.match(r.data.error, /recetesi var/i);
+  });
+
+  test('birlestirme denetim izine tam dokumuyle yazilir', async () => {
+    const a = await urun('Denetim A');
+    const b = await urun('Denetim B');
+    await alim(b.id, 7, 'BRL-030');
+    await ok('POST', `/api/products/${a.id}/birlestir`, { kaynakId: b.id });
+
+    const izl = await ok('GET', '/api/audit?entity=products&limit=20');
+    const kayit = izl.items.find((x) => x.action === 'MERGE' && x.entity_id === a.id);
+    assert.ok(kayit, 'birlestirme denetim izinde olmali');
+    const d = typeof kayit.detail === 'string' ? JSON.parse(kayit.detail) : kayit.detail;
+    assert.equal(d.silinen.id, b.id);
+    assert.equal(d.kalan.id, a.id);
+    assert.ok(d.tasinanKayitlar.stock_movements >= 1);
+  });
+
+  test('ON MUHASEBE ve KAMPUS YONETICISI birlestirebilir, digerleri HAYIR', async () => {
+    const dene = async (role, campus) => {
+      const eposta = `birles.${role.toLowerCase()}@topkapiokullari.com`;
+      await ok('POST', '/api/users', {
+        fullName: `Birleştirme ${role}`, email: eposta, password: 'Birles123456', role, campusId: campus,
+      });
+      const login = await api('POST', '/api/auth/login',
+        { email: eposta, password: 'Birles123456' }, false);
+      const a = await urun(`Rol ${role} A`);
+      const b = await urun(`Rol ${role} B`);
+      const res = await fetch(`${BASE}/api/products/${a.id}/birlestir`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${login.data.token}` },
+        body: JSON.stringify({ kaynakId: b.id }),
+      });
+      return res.status;
+    };
+    assert.equal(await dene('MUHASEBE', null), 200, 'on muhasebe birlestirebilmeli');
+    assert.equal(await dene('KAMPUS_YONETICISI', campusId), 200, 'kampus yoneticisi birlestirebilmeli');
+    assert.equal(await dene('KANTIN_GOREVLISI', campusId), 403, 'kantin gorevlisi birlestirememeli');
+    assert.equal(await dene('DENETCI', null), 403, 'denetci birlestirememeli');
+  });
+
+  test('TANIM duzeltme (birim, urun tipi, kategori) ikisine de ACIK', async () => {
+    // "Tanimsal farkliliklari gidermek": birim KUTU yazilmis bir karti ADET
+    // yapmak, satis fiyati olmayan sarf malzemesini HAMMADDE isaretlemek.
+    const u = await urun('Tanım Düzeltme', { unit: 'KUTU' });
+    for (const [role, campus] of [['MUHASEBE', null], ['KAMPUS_YONETICISI', campusId]]) {
+      const eposta = `tanim.${role.toLowerCase()}@topkapiokullari.com`;
+      await ok('POST', '/api/users', {
+        fullName: `Tanım ${role}`, email: eposta, password: 'Tanim123456', role, campusId: campus,
+      });
+      const login = await api('POST', '/api/auth/login', { email: eposta, password: 'Tanim123456' }, false);
+      const H = { 'Content-Type': 'application/json', Authorization: `Bearer ${login.data.token}` };
+      const birim = await fetch(`${BASE}/api/products/${u.id}`, {
+        method: 'PUT', headers: H,
+        body: JSON.stringify({ name: u.name, unit: 'ADET', salePrice: 20, vatRate: 10, productType: 'HAMMADDE' }),
+      });
+      assert.equal(birim.status, 200, `${role} birim/tip duzeltebilmeli`);
+      const kat = await fetch(`${BASE}/api/products/categories`, {
+        method: 'POST', headers: H, body: JSON.stringify({ name: `Kategori ${role}` }),
+      });
+      assert.equal(kat.status, 200, `${role} kategori tanimlayabilmeli`);
+    }
+  });
+});
+
+/*
  * BELGE KUNYESI DUZELTME (fatura no / tarih)
  *
  * Mal girisi hizli yapilir; fatura numarasi yanlis yazilabilir ya da tarih

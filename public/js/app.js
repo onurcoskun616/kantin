@@ -282,6 +282,19 @@ export function canDeleteDocuments() {
 }
 
 /**
+ * MUKERRER URUN KARTLARINI BIRLESTIREBILEN roller.
+ *
+ * Mukerrer karti yaratan, faturayi giren kisidir; duzeltmesi de ona ve
+ * kampus yoneticisine acikir. Islem geri alinamaz, bu yuzden kantin
+ * gorevlisi ve denetci disaridadir. Kural sunucuda da ayni
+ * (requireRole: ADMIN, GENEL_MUDURLUK, MUHASEBE, KAMPUS_YONETICISI).
+ */
+export function canMergeProducts() {
+  return state.user && ['ADMIN', 'GENEL_MUDURLUK', 'MUHASEBE', 'KAMPUS_YONETICISI']
+    .includes(state.user.role);
+}
+
+/**
  * Alim belgesinin KUNYESINI (fatura no / tarih) duzeltebilen roller.
  *
  * Icerigi degil yalnizca basligi degistirir; maddi hata duzeltmesidir.
