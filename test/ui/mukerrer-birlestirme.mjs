@@ -96,28 +96,59 @@ ok('Hangi kartin silinecegi yaziyor', pencere.includes(`#${silinecek.id}`), penc
 ok('Tasinacak kayitlar tek tek sayiliyor', /Taşınacak kayıtlar/.test(pencere), pencere.slice(0, 400));
 ok('Stok hareketi sayisi yaziyor', /stok hareketi/.test(pencere), pencere.slice(0, 500));
 ok('BIRIM FARKI uyarisi cikti', /Birimler FARKLI/.test(pencere), pencere.slice(0, 600));
-ok('Sayimda toplanacagi anlatiliyor', /miktarlar TOPLANIR/.test(pencere), pencere.slice(0, 700));
+ok('Cevrilerek toplanacagi anlatiliyor', /ÇEVRİLEREK toplanır/.test(pencere), pencere.slice(0, 900));
 
-console.log('\n3) Onaylaninca stok TEK kartta toplaniyor');
+console.log('\n3) Birimler farkli: CEVRIM ADEDI sorulmadan gecilmiyor');
+// Kart biri ADET biri KUTU: 100 + 40 = 140 YANLISTIR. Bir kutuda 12 adet
+// varsa dogrusu 100 + 40*12 = 580 ADET'tir. Yazilim bunu sormadan
+// birlestirmeyi kabul etmemeli.
+ok('Birlesince birim ADET onerildi',
+  (await page.inputValue('.modal-body select >> nth=1')) === 'ADET',
+  await page.inputValue('.modal-body select >> nth=1'));
+ok('Cevrim adedi girilmeden "Birleştir" KAPALI',
+  await page.isDisabled('.modal-foot .btn-danger'));
+ok('Cevrim adedi istendigi yaziliyor',
+  /Çevrim adedini girin/.test(await page.textContent('.modal-body')),
+  (await page.textContent('.modal-body')).slice(-300));
+
+const carpan = page.locator('.modal-body input[type=number]:not([disabled])');
+ok('Yalnizca ambalaj birimli kart icin carpan isteniyor', (await carpan.count()) === 1,
+  String(await carpan.count()));
+await carpan.fill('12');
+await page.waitForTimeout(400);
+const cevrimMetni = await page.textContent('.modal-body');
+ok('Sonuc ANINDA gosteriliyor (580 ADET)', /Birleşince stok: 580 ADET/.test(cevrimMetni),
+  cevrimMetni.slice(-300));
+ok('Cevrim adedi girilince "Birleştir" ACILDI',
+  !(await page.isDisabled('.modal-foot .btn-danger')));
+
+console.log('\n4) Onaylaninca stok TEK kartta ADET olarak toplaniyor');
 await page.click('.modal-foot .btn-danger');
 await page.waitForTimeout(2500);
 ok('Kaynak kart silindi', (await apiCall('GET', `/api/products/${silinecek.id}`)).status === 404);
-ok('Stok tek kartta toplandi (140)', (await stok(kalan.id)) === 140, String(await stok(kalan.id)));
+ok('Stok adede cevrilerek toplandi (580)', (await stok(kalan.id)) === 580, String(await stok(kalan.id)));
+ok('Kalan kartin birimi ADET',
+  (await apiCall('GET', `/api/products/${kalan.id}`)).data.unit === 'ADET',
+  (await apiCall('GET', `/api/products/${kalan.id}`)).data.unit);
 
-console.log('\n4) Panelden dustu');
+console.log('\n5) Panelden dustu');
 await page.reload({ waitUntil: 'networkidle' });
 await page.waitForTimeout(2500);
 metin = await page.textContent('#app');
 ok('Bu urun artik mukerrer listesinde yok', !metin.includes(`#${silinecek.id} kartını`), AD);
 
-console.log('\n5) Denetim izine yazildi');
+console.log('\n6) Denetim izine yazildi');
 const izl = (await apiCall('GET', '/api/audit?entity=products&limit=20')).data.items || [];
 const kayit = izl.find((x) => x.action === 'MERGE' && x.entity_id === kalan.id);
 ok('Birlestirme denetim izinde', Boolean(kayit), JSON.stringify(izl.slice(0, 2)).slice(0, 160));
+const detay = kayit && (typeof kayit.detail === 'string' ? JSON.parse(kayit.detail) : kayit.detail);
+ok('Kullanilan cevrim carpani denetim izinde', detay?.silinen?.carpan === 12,
+  JSON.stringify(detay?.silinen || {}).slice(0, 200));
+ok('Birlesik stok denetim izinde', detay?.stok?.sonra === 580, JSON.stringify(detay?.stok || {}));
 
 await b.close();
 if (problems.length) {
   console.log(`\n✗ ${problems.length} sorun: ${problems.join(' | ')}\n`);
   process.exit(1);
 }
-console.log('\n✓ Mukerrer kartlar bulunuyor ve guvenle birlestiriliyor.\n');
+console.log('\n✓ Mukerrer kartlar bulunuyor, ADET\'e cevrilerek guvenle birlestiriliyor.\n');

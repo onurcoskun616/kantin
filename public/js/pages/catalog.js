@@ -184,26 +184,42 @@ async function mukerrerPaneli(kap, onChange) {
   const benzerler = veri.benzerler || [];
   if (!items.length && !benzerler.length) return;
 
+  // Ayni kart birden fazla kampuste stok tutuyor olabilir; birlestirme
+  // kart bazlidir, yani TUM kampusleri birlikte duzeltir. Hangi
+  // kampuslerde durdugu burada yazilir ki kullanici kapsami gorsun.
+  const kampusEtiketi = (k) => (k.kampuslar || [])
+    .map((x) => `${x.kampus}: ${fmt.num(x.stok)}`).join(' · ');
+
+  const kartSatiri = (k) => el('div', {}, [
+    el('strong', { text: k.name }),
+    el('small.muted', { text: `   #${k.id} · ${k.unit} · stok ${fmt.num(k.stok)}` }),
+    (k.kampuslar || []).length
+      ? el('small.muted', { style: 'display:block', text: `   ↳ ${kampusEtiketi(k)}` })
+      : null,
+  ]);
+
   const grupSatiri = (g, aday) => {
     const kartlar = g.kartlar;
     const stoklu = kartlar.filter((k) => k.stok > 0).length;
+    // Ayni kampuste iki kartin da stogu varsa o kampuste urun stok
+    // listesinde IKI KEZ gorunuyor demektir; en acil durum budur.
+    const kampusSayisi = new Map();
+    for (const k of kartlar) {
+      for (const x of k.kampuslar || []) kampusSayisi.set(x.kampus, (kampusSayisi.get(x.kampus) || 0) + 1);
+    }
+    const ikiKezListelenen = [...kampusSayisi.entries()].filter(([, n]) => n > 1).map(([ad]) => ad);
     return el('div', { style: 'padding:8px 0;border-bottom:1px solid var(--border)' }, [
       el('div.row', { style: 'justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center' }, [
         el('div', { style: 'min-width:0' }, [
           // Adaylarda adlar FARKLI oldugu icin hepsi yazilir; birebir
-          // mukerrerlerde tek ad yeterli.
-          aday
-            ? el('div', {}, kartlar.map((k) => el('div', {}, [
-              el('strong', { text: k.name }),
-              el('small.muted', { text: `   #${k.id} · ${k.unit} · stok ${fmt.num(k.stok)}` }),
-            ])))
-            : el('div', {}, [
-              el('strong', { text: kartlar[0].name }),
-              el('small.muted', {
-                style: 'display:block',
-                text: kartlar.map((k) => `#${k.id} · ${k.unit} · stok ${fmt.num(k.stok)}`).join('   |   '),
-              }),
-            ]),
+          // mukerrerlerde de kampus dagilimini gormek icin hepsi yazilir.
+          el('div', {}, kartlar.map(kartSatiri)),
+          ikiKezListelenen.length
+            ? el('small', {
+              style: 'color:var(--danger)',
+              text: `Bu kampüs(ler)de ürün stok listesinde İKİ KEZ görünüyor: ${ikiKezListelenen.join(', ')}`,
+            })
+            : null,
         ]),
         stoklu > 1
           ? badge(`${stoklu} kartta birden stok var`, 'bad')
@@ -243,8 +259,96 @@ async function mukerrerPaneli(kap, onChange) {
  * İşlem geri alınamaz, bu yüzden taşınacak kayıtlar tek tek sayılır ve
  * birim/KDV farkı gibi tuzaklar ayrıca uyarı olarak çıkar.
  */
+/**
+ * BIRLESINCE BIRIM VE CEVRIM ADEDI.
+ *
+ * Stok ADET uzerinden sayildigi icin birlesen kartin birimi de ADET
+ * olmalidir. Kartlardan biri PAKET/KUTU ise miktarlar oldugu gibi
+ * toplanamaz: 72 PAKET + 36 ADET = 108 DEGILDIR. Bir pakette 24 adet
+ * varsa dogrusu 72*24 + 36 = 1764 ADET'tir.
+ *
+ * Bu blok o bilgiyi sorar, addaki rakami ("...*10", "10 LU", "50GX20KL")
+ * on dolgu olarak onerir ve sonucu ANINDA yazar: kullanici yanlis
+ * sayiyi gormeden onaylamasin.
+ */
+function cevrimBlogu(on, cevrim, onDegisim) {
+  const kap = el('div', {
+    style: 'border:1px solid var(--border);border-radius:10px;padding:10px 12px;'
+      + 'margin:10px 0;display:grid;gap:8px',
+  });
+  const birimler = on.birimler || ['ADET'];
+  const birimSec = el('select', { style: 'max-width:170px' }, birimler.map((u) => el('option', {
+    value: u, selected: u === (on.onerilenBirim || on.hedef.unit),
+  }, [u])));
+  const govde = el('div', { style: 'display:grid;gap:6px' });
+  const sonuc = el('div', { style: 'font-weight:600;font-size:13px' });
+
+  const ciz = () => {
+    const B = birimSec.value;
+    cevrim.hedefBirim = B;
+    const ciktilar = [];
+    const satirlar = [];
+    for (const [kart, alan] of [[on.hedef, 'hedefCarpan'], [on.kaynak, 'kaynakCarpan']]) {
+      const ayni = (kart.unit || '') === B;
+      const ipuclari = kart.adAdedi || [];
+      cevrim[alan] = ayni ? 1 : (ipuclari[0] || '');
+      const cikti = el('strong', { style: 'font-variant-numeric:tabular-nums' });
+      const girdi = el('input', {
+        type: 'number', min: '0', step: 'any', value: String(cevrim[alan] ?? ''),
+        disabled: ayni, style: 'width:88px;text-align:right',
+      });
+      girdi.addEventListener('input', () => { cevrim[alan] = Number(girdi.value); hesapla(); });
+      ciktilar.push([kart, alan, cikti]);
+      satirlar.push(el('div', {
+        style: 'display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:13px',
+      }, [
+        el('span', { style: 'min-width:180px', text: `#${kart.id} ${kart.name}` }),
+        el('span.badge', { text: `stok ${fmt.num(kart.stok)} ${kart.unit}` }),
+        el('span', { text: `1 ${kart.unit || '?'} =` }),
+        girdi,
+        el('span', { text: B }),
+        el('span', { text: '→' }),
+        cikti,
+        !ayni && ipuclari.length
+          ? el('span.card-note', { text: `(üründe geçen adet: ${ipuclari.join(', ')})` })
+          : null,
+      ]));
+    }
+    const hesapla = () => {
+      let toplam = 0;
+      let eksik = false;
+      for (const [kart, alan, cikti] of ciktilar) {
+        const c = Number(cevrim[alan]);
+        if (!(c > 0)) { eksik = true; cikti.textContent = '—'; continue; }
+        const q = Math.round(kart.stok * c * 1000) / 1000;
+        toplam += q;
+        cikti.textContent = `${fmt.num(q)} ${B}`;
+      }
+      cevrim.eksik = eksik;
+      sonuc.textContent = eksik
+        ? `Çevrim adedini girin: 1 ambalaj kaç ${B} içeriyor?`
+        : `Birleşince stok: ${fmt.num(Math.round(toplam * 1000) / 1000)} ${B}`;
+      sonuc.style.color = eksik ? 'var(--danger)' : '';
+      if (onDegisim) onDegisim();
+    };
+    govde.replaceChildren(...satirlar);
+    hesapla();
+  };
+  birimSec.addEventListener('change', ciz);
+  kap.append(
+    el('label.field', { style: 'margin:0' }, [
+      el('span', { text: 'Birleşince birim — stok bu birimle tutulacak' }), birimSec,
+    ]),
+    govde,
+    sonuc,
+  );
+  ciz();
+  return kap;
+}
+
 async function openMerge(hedef, onChange, kaynakIdOnceden = null) {
-  const products = await api.get('/api/products', { campusId: state.campusId });
+  // Pasife alinmis mukerrer kartlar da birlestirilebilmeli: onlyActive=0
+  const products = await api.get('/api/products', { campusId: state.campusId, onlyActive: '0' });
   const digerleri = products.items.filter((p) => p.id !== hedef.id);
 
   const secici = el('select', {}, [
@@ -256,6 +360,8 @@ async function openMerge(hedef, onChange, kaynakIdOnceden = null) {
   const onizleme = el('div');
   const hata = el('div.alert.alert-danger', { hidden: true });
   const uygulaBtn = el('button.btn.btn-danger', { text: 'Birleştir', disabled: true });
+  // Birim/cevrim secimi onizleme ile birlikte kurulur, POST'a boyle gider
+  const cevrim = { hedefBirim: hedef.unit || 'ADET', hedefCarpan: 1, kaynakCarpan: 1, eksik: false };
 
   const ciz = async () => {
     hata.hidden = true;
@@ -294,12 +400,18 @@ async function openMerge(hedef, onChange, kaynakIdOnceden = null) {
         : el('p.card-note', { text: 'Kaynak kartın hiç hareketi yok; yalnızca kart silinecek.' }),
       ...(ön.uyarilar || []).map((u) => alertBox('warning', 'Dikkat', u)),
       ön.engel ? alertBox('danger', 'Birleştirilemez', ön.engel) : null,
+      cevrimBlogu(ön, cevrim, () => {
+        uygulaBtn.disabled = Boolean(ön.engel) || Boolean(cevrim.eksik);
+      }),
       el('p.card-note', {
-        text: 'Aynı sayımda iki kart da sayılmışsa miktarlar TOPLANIR. Aynı kampüs '
-          + 'fiyatı iki kartta da varsa kalan kartın fiyatı geçerli olur.',
+        text: 'Miktarlar seçtiğiniz birime ÇEVRİLEREK toplanır; birim fiyatlar da aynı '
+          + 'oranda bölünür, böylece tutarlar değişmez. Aynı sayımda iki kart da '
+          + 'sayılmışsa miktarlar toplanır. Aynı kampüs fiyatı iki kartta da varsa '
+          + 'kalan kartın fiyatı geçerli olur. Birleşme TÜM kampüsleri birlikte '
+          + 'kapsar; ürün stokta bir daha iki kez listelenmez.',
       }),
     );
-    uygulaBtn.disabled = Boolean(ön.engel);
+    uygulaBtn.disabled = Boolean(ön.engel) || Boolean(cevrim.eksik);
   };
   secici.addEventListener('change', ciz);
 
@@ -322,9 +434,15 @@ async function openMerge(hedef, onChange, kaynakIdOnceden = null) {
     uygulaBtn.disabled = true;
     uygulaBtn.textContent = 'Birleştiriliyor…';
     try {
-      const r = await api.post(`/api/products/${hedef.id}/birlestir`, { kaynakId: Number(secici.value) });
+      const r = await api.post(`/api/products/${hedef.id}/birlestir`, {
+        kaynakId: Number(secici.value),
+        hedefBirim: cevrim.hedefBirim,
+        hedefCarpan: cevrim.hedefCarpan,
+        kaynakCarpan: cevrim.kaynakCarpan,
+      });
       const toplam = Object.values(r.tasinan || {}).reduce((a, b) => a + b, 0);
-      toast(`Kartlar birleştirildi. ${toplam} kayıt taşındı; işlem denetim izine yazıldı.`);
+      toast(`Kartlar birleştirildi: stok ${fmt.num(r.stok?.sonra ?? 0)} ${r.birim}. `
+        + `${toplam} kayıt taşındı; işlem denetim izine yazıldı.`);
       m.close();
       onChange();
     } catch (err) {

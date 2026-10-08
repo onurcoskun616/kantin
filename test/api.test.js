@@ -1366,6 +1366,7 @@ describe('Mukerrer urun karti birlestirme', () => {
     const r = await ok('GET', `/api/stock?campusId=${campusId}`);
     return r.items.find((x) => x.product_id === id)?.stock_qty ?? 0;
   };
+  const round = (n) => Math.round(Number(n) * 100) / 100;
 
   test('mukerrer kartlar listelenir', async () => {
     const a = await urun('Mükerrer Su');
@@ -1437,6 +1438,148 @@ describe('Mukerrer urun karti birlestirme', () => {
     assert.equal(satirlar.length, 1, 'tek satir kalmali');
     assert.equal(satirlar[0].counted_qty, 65, 'ayni urun iki kartta sayildiysa toplanmali');
     assert.ok(!detay.lines.some((l) => l.product_id === b.id), 'kaynak satiri kalmamali');
+  });
+
+  test('PAKET kart ADET karta birlesirken miktarlar CEVRILIR', async () => {
+    // Sahadan: ayni urun bir kampuste PAKET, digerinde ADET acilmis.
+    // 72 PAKET + 36 ADET = 108 DEGILDIR; bir pakette 24 adet varsa
+    // dogrusu 72*24 + 36 = 1764 ADET'tir.
+    const adetli = await urun('Gofrik Çevrim ADET', { unit: 'ADET' });
+    const paketli = await urun('Gofrik Çevrim PAKET', { unit: 'PAKET' });
+    await alim(adetli.id, 36, 'BRL-100');
+    await alim(paketli.id, 72, 'BRL-101');
+
+    const r = await ok('POST', `/api/products/${adetli.id}/birlestir`, {
+      kaynakId: paketli.id, hedefBirim: 'ADET', hedefCarpan: 1, kaynakCarpan: 24,
+    });
+    assert.equal(r.birim, 'ADET');
+    assert.equal(await stok(adetli.id), 1764, 'paket miktari adede cevrilerek toplanmali');
+    assert.equal((await ok('GET', `/api/products/${adetli.id}`)).unit, 'ADET');
+  });
+
+  test('cevrimde BIRIM FIYAT bolunur, fatura TUTARI degismez', async () => {
+    const adetli = await urun('Fiyat Çevrim ADET', { unit: 'ADET' });
+    const paketli = await urun('Fiyat Çevrim PAKET', { unit: 'PAKET' });
+    const fatura = await alim(paketli.id, 10, 'BRL-102');   // 10 x 5,00 TL
+    const oncekiTutar = (await ok('GET', `/api/purchases/${fatura.id}`)).net_total;
+
+    await ok('POST', `/api/products/${adetli.id}/birlestir`, {
+      kaynakId: paketli.id, hedefBirim: 'ADET', hedefCarpan: 1, kaynakCarpan: 10,
+    });
+
+    const sonra = await ok('GET', `/api/purchases/${fatura.id}`);
+    const satir = sonra.lines.find((l) => l.product_id === adetli.id);
+    assert.equal(satir.quantity, 100, 'miktar 10 katina cikmali');
+    assert.equal(round(satir.unit_price), 0.5, 'birim fiyat 10 kat kuculmeli');
+    assert.equal(round(sonra.net_total), round(oncekiTutar), 'fatura tutari DEGISMEMELI');
+  });
+
+  test('HEDEF kart ambalaj birimindeyse O DA cevrilir', async () => {
+    // Kalan kart PAKET, silinen kart ADET: bu kez hedef cevrilir.
+    const paketli = await urun('Ters Çevrim PAKET', { unit: 'PAKET' });
+    const adetli = await urun('Ters Çevrim ADET', { unit: 'ADET' });
+    await alim(paketli.id, 5, 'BRL-103');     // 5 paket = 60 adet
+    await alim(adetli.id, 7, 'BRL-104');
+
+    await ok('POST', `/api/products/${paketli.id}/birlestir`, {
+      kaynakId: adetli.id, hedefBirim: 'ADET', hedefCarpan: 12, kaynakCarpan: 1,
+    });
+    assert.equal(await stok(paketli.id), 67, '5*12 + 7 = 67');
+    assert.equal((await ok('GET', `/api/products/${paketli.id}`)).unit, 'ADET');
+  });
+
+  test('cevrimde SATIS FIYATI ve KRITIK STOK da birime uyarlanir', async () => {
+    // Kart PAKET iken 120 TL'ye satilan ve kritik seviyesi 3 PAKET olan
+    // urun ADET'e gecince 10 TL ve 36 ADET olmalidir.
+    const paketli = await urun('Fiyat Uyarlama PAKET',
+      { unit: 'PAKET', salePrice: 120, criticalStock: 3, maxPrice: 150 });
+    const adetli = await urun('Fiyat Uyarlama ADET', { unit: 'ADET', salePrice: 10 });
+
+    await ok('POST', `/api/products/${paketli.id}/birlestir`, {
+      kaynakId: adetli.id, hedefBirim: 'ADET', hedefCarpan: 12, kaynakCarpan: 1,
+    });
+
+    const kalan = await ok('GET', `/api/products/${paketli.id}`);
+    assert.equal(kalan.unit, 'ADET');
+    assert.equal(round(kalan.sale_price), 10, '120 / 12 = 10');
+    assert.equal(round(kalan.critical_stock), 36, '3 PAKET = 36 ADET');
+    assert.equal(round(kalan.max_price), 12.5, 'tavan fiyat da birim basina duser');
+  });
+
+  test('cevrim adedi GIRILMEDEN farkli birimler birlestirilemez', async () => {
+    // Yanlis toplamak, hic toplamamaktan kotudur: carpan sorulmadan gecilmez.
+    const a = await urun('Zorunlu Çevrim A', { unit: 'ADET' });
+    const b = await urun('Zorunlu Çevrim B', { unit: 'KUTU' });
+    const r = await api('POST', `/api/products/${a.id}/birlestir`, { kaynakId: b.id });
+    assert.equal(r.status, 400);
+    assert.match(r.data.error, /kac ADET/i);
+    assert.equal((await api('GET', `/api/products/${b.id}`)).status, 200, 'kaynak silinmemis olmali');
+  });
+
+  test('SAYIM satirlari da cevrilerek toplanir', async () => {
+    const adetli = await urun('Sayım Çevrim ADET', { unit: 'ADET' });
+    const paketli = await urun('Sayım Çevrim PAKET', { unit: 'PAKET' });
+    await alim(adetli.id, 10, 'BRL-105');
+    await alim(paketli.id, 3, 'BRL-106');
+    // NOKTA sayimi: onceki testin acik birakitigi donem sayimiyla cakismaz
+    const sayim = await ok('POST', '/api/counts', {
+      campusId, countDate: daysAgo(2), countType: 'NOKTA', productIds: [adetli.id, paketli.id],
+    });
+    await ok('PUT', `/api/counts/${sayim.id}/lines`, {
+      lines: [{ productId: adetli.id, countedQty: 8 }, { productId: paketli.id, countedQty: 2 }],
+    });
+
+    await ok('POST', `/api/products/${adetli.id}/birlestir`, {
+      kaynakId: paketli.id, hedefBirim: 'ADET', hedefCarpan: 1, kaynakCarpan: 6,
+    });
+
+    const detay = await ok('GET', `/api/counts/${sayim.id}`);
+    const satirlar = detay.lines.filter((l) => l.product_id === adetli.id);
+    assert.equal(satirlar.length, 1, 'tek satir kalmali');
+    assert.equal(satirlar[0].counted_qty, 20, '8 + 2*6 = 20');
+  });
+
+  test('onizleme birim secenekleri, stok ve AD IPUCUNU verir', async () => {
+    const a = await urun('Ipucu Hedef', { unit: 'ADET' });
+    const b = await urun('Ipucu Kaynak 10 LU', { unit: 'PAKET' });
+    await alim(b.id, 4, 'BRL-107');
+    const r = await ok('GET', `/api/products/${a.id}/birlestirme-onizleme?kaynakId=${b.id}`);
+    assert.equal(r.cevrimGerekli, true);
+    assert.equal(r.onerilenBirim, 'ADET', 'stok ADET ile tutuldugu icin ADET onerilmeli');
+    assert.ok(r.birimler.includes('PAKET'));
+    assert.equal(r.kaynak.stok, 4);
+    assert.deepEqual(r.kaynak.adAdedi, [10], 'addaki "10 LU" cevrim ipucu olmali');
+  });
+
+  test('cevrim DENETIM IZINE birimleriyle yazilir', async () => {
+    const a = await urun('Denetim Çevrim ADET', { unit: 'ADET' });
+    const b = await urun('Denetim Çevrim KUTU', { unit: 'KUTU' });
+    await alim(b.id, 2, 'BRL-108');
+    await ok('POST', `/api/products/${a.id}/birlestir`, {
+      kaynakId: b.id, hedefBirim: 'ADET', kaynakCarpan: 20,
+    });
+    const izl = await ok('GET', '/api/audit?entity=products&limit=20');
+    const kayit = izl.items.find((x) => x.action === 'MERGE' && x.entity_id === a.id);
+    const d = typeof kayit.detail === 'string' ? JSON.parse(kayit.detail) : kayit.detail;
+    assert.equal(d.silinen.carpan, 20);
+    assert.equal(d.kalan.birim, 'ADET');
+    assert.equal(d.stok.sonra, 40);
+  });
+
+  test('mukerrer listesi KAMPUS DAGILIMINI verir', async () => {
+    // "Baska kampuslerde de varsa orada da birlestirilmeli": kullanici
+    // kapsami gorsun diye her kart hangi kampuste ne kadar stok
+    // tutuyorsa yazilir.
+    const a = await urun('Dağılım Testi');
+    const b = await urun('DAĞILIM  TESTİ');
+    await alim(a.id, 9, 'BRL-109');
+    await alim(b.id, 4, 'BRL-110');
+    const r = await ok('GET', '/api/products/mukerrerler');
+    const grup = r.items.find((g) => g.kartlar.some((k) => k.id === a.id));
+    assert.ok(grup, 'mukerrer sayilmali');
+    const kart = grup.kartlar.find((k) => k.id === a.id);
+    assert.ok(Array.isArray(kart.kampuslar) && kart.kampuslar.length >= 1, JSON.stringify(kart));
+    assert.ok(kart.kampuslar.some((x) => x.stok === 9), JSON.stringify(kart.kampuslar));
   });
 
   test('bos barkod hedefe TASINIR', async () => {

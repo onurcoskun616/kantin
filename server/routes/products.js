@@ -311,10 +311,28 @@ function urunCekirdegi(ad) {
 
 productRoutes.get('/mukerrerler', async () => {
   const rows = all('SELECT id, name, unit, barcode, is_active FROM products');
-  const stokOf = (id) => round2(
-    get('SELECT COALESCE(SUM(quantity), 0) AS q FROM stock_movements WHERE product_id = ?', [id])?.q ?? 0
-  );
-  const kartlar = rows.map((r) => ({ ...r, stok: stokOf(r.id), norm: normalizeTr(r.name) }));
+
+  // Ayni urun BIRDEN FAZLA KAMPUSTE de iki kart altinda duruyor olabilir.
+  // Kartlar global oldugu icin birlestirme hepsini birlikte duzeltir; hangi
+  // kampuslerde stok tuttugu panelde gorulsun diye kampus dagilimi da gelir.
+  const kampusDagilimi = new Map();
+  for (const r of all(
+    `SELECT m.product_id, k.name AS kampus, ROUND(SUM(m.quantity), 3) AS qty
+       FROM stock_movements m JOIN campuses k ON k.id = m.campus_id
+      GROUP BY m.product_id, m.campus_id
+     HAVING ROUND(SUM(m.quantity), 3) <> 0
+      ORDER BY k.name`
+  )) {
+    if (!kampusDagilimi.has(r.product_id)) kampusDagilimi.set(r.product_id, []);
+    kampusDagilimi.get(r.product_id).push({ kampus: r.kampus, stok: r.qty });
+  }
+
+  const kartlar = rows.map((r) => ({
+    ...r,
+    stok: urunStogu(r.id),
+    kampuslar: kampusDagilimi.get(r.id) || [],
+    norm: normalizeTr(r.name),
+  }));
 
   const topla = (anahtarFn) => {
     const grup = new Map();
@@ -479,22 +497,126 @@ productRoutes.delete('/:id', async (ctx) => {
  * izine tam dokumuyle yazilir.
  */
 const TASINAN_TABLOLAR = [
-  // [tablo, sutun, cakisma anahtari (varsa), toplanacak sutunlar]
-  ['stock_movements', 'product_id', null, null],
-  ['purchase_lines', 'product_id', null, null],
-  ['supplier_return_lines', 'product_id', null, null],
-  ['waste_records', 'product_id', null, null],
-  ['transfer_lines', 'product_id', null, null],
-  ['price_history', 'product_id', null, null],
-  ['purchase_unmatched_lines', 'resolved_product_id', null, null],
-  ['product_aliases', 'product_id', null, null],
-  ['campus_products', 'product_id', 'campus_id', null],
-  ['product_prices', 'product_id', 'effective_from', null],
-  ['count_lines', 'product_id', 'count_id', ['expected_qty', 'counted_qty', 'diff_qty', 'recipe_qty', 'sold_qty', 'sales_value', 'cost_value']],
-  ['production_sales', 'product_id', 'count_id', ['quantity', 'sales_value', 'cost_value']],
-  ['recipe_items', 'ingredient_id', 'recipe_id', ['quantity']],
-  ['recipes', 'product_id', null, null],
+  // [tablo, sutun, cakisma anahtari, cakismada TOPLANACAK sutunlar,
+  //  birim cevriminde CARPILACAK (miktar), BOLUNECEK (birim fiyat)]
+  //
+  // Tutar sutunlari (net_total, sales_value...) BILEREK disaridadir:
+  // miktar N ile carpilip birim fiyat N'e bolununce tutar degismez.
+  ['stock_movements', 'product_id', null, null, ['quantity'], ['unit_cost']],
+  ['purchase_lines', 'product_id', null, null, ['quantity'], ['unit_price']],
+  ['supplier_return_lines', 'product_id', null, null, ['quantity'], ['unit_price']],
+  ['waste_records', 'product_id', null, null, ['quantity'], ['unit_cost']],
+  ['transfer_lines', 'product_id', null, null, ['quantity'], ['unit_cost']],
+  ['price_history', 'product_id', null, null, [], ['old_purchase', 'new_purchase', 'old_sale', 'new_sale']],
+  ['purchase_unmatched_lines', 'resolved_product_id', null, null, [], []],
+  // Cevrim carpani "1 fatura birimi = kac STOK birimi" demektir; stok
+  // birimi N kat kuculurse carpan da N katina cikar.
+  ['product_aliases', 'product_id', null, null, ['factor'], []],
+  ['campus_products', 'product_id', 'campus_id', null,
+    ['critical_stock'], ['purchase_price', 'sale_price']],
+  ['product_prices', 'product_id', 'effective_from', null, [], ['sale_price']],
+  ['count_lines', 'product_id', 'count_id',
+    ['expected_qty', 'counted_qty', 'diff_qty', 'recipe_qty', 'sold_qty', 'sales_value', 'cost_value'],
+    ['expected_qty', 'counted_qty', 'diff_qty', 'recipe_qty', 'sold_qty'], ['purchase_price', 'sale_price']],
+  ['production_sales', 'product_id', 'count_id', ['quantity', 'sales_value', 'cost_value'],
+    ['quantity'], ['purchase_price', 'sale_price']],
+  ['recipe_items', 'ingredient_id', 'recipe_id', ['quantity'], ['quantity'], []],
+  // yield_quantity = bir recete kac BIRIM urun uretir; birim kuculurse artar
+  ['recipes', 'product_id', null, null, ['yield_quantity'], []],
 ];
+
+/**
+ * BIR URUNUN TUM KAYITLARINI BASKA BIRIME CEVIRIR.
+ *
+ * Kart "PAKET" tutuyorken stoga 72 yazilmissa ve bir kolide 24 adet
+ * varsa, ADET'e gecince bu 1728 olmalidir. Miktarlar carpanla CARPILIR,
+ * birim fiyatlar BOLUNUR; tutarlar oldugu gibi kalir (ikisi birbirini
+ * goturur). Kritik stok seviyesi de miktardir, o da carpilir.
+ *
+ * Boyle bir cevrim olmadan "PAKET" kartla "ADET" kart birlestirilirse
+ * 72 + 36 = 108 gibi anlamsiz bir stok cikar.
+ */
+function birimCevir(urunId, carpan) {
+  if (!(carpan > 0) || carpan === 1) return;
+  for (const [tablo, sutun, , , carpilan, bolunen] of TASINAN_TABLOLAR) {
+    // Miktar 3, birim fiyat 6 haneye yuvarlanir: 2 hane olsa 24'e bolunen
+    // bir birim fiyatta kurus kaybi tutari bozardi.
+    const set = [
+      ...carpilan.map((c) => `${c} = ROUND(${c} * ?, 3)`),
+      ...bolunen.map((c) => `${c} = ROUND(${c} / ?, 6)`),
+    ];
+    if (!set.length) continue;
+    run(`UPDATE ${tablo} SET ${set.join(', ')} WHERE ${sutun} = ?`,
+      [...carpilan.map(() => carpan), ...bolunen.map(() => carpan), urunId]);
+  }
+  // max_price resmi tarifedeki TAVAN BIRIM fiyattir; 0 ise 0 kalir
+  run('UPDATE products SET purchase_price = ROUND(purchase_price / ?, 6), '
+    + 'sale_price = ROUND(sale_price / ?, 6), max_price = ROUND(max_price / ?, 6), '
+    + 'critical_stock = ROUND(critical_stock * ?, 3) '
+    + 'WHERE id = ?', [carpan, carpan, carpan, carpan, urunId]);
+}
+
+/** Bir urunun TUM kampuslardaki stok bakiyesi (birlestirme onizlemesi icin). */
+function urunStogu(urunId) {
+  return round2(
+    get('SELECT COALESCE(SUM(quantity), 0) AS q FROM stock_movements WHERE product_id = ?', [urunId])?.q ?? 0
+  );
+}
+
+const BIRIMLER = ['ADET', 'KG', 'LT', 'PAKET', 'KUTU', 'PORSIYON'];
+
+/** Icinde tek tek adet bulunan, yani ADET'e cevrilmesi gereken birimler. */
+const AMBALAJ_BIRIMLERI = new Set(['PAKET', 'KUTU']);
+
+/**
+ * URUN ADINDAN AMBALAJ ADEDI IPUCU CIKARIR.
+ *
+ * Kullaniciya "1 PAKET = kac ADET?" diye sorarken bos bir kutu
+ * gostermek yerine addaki rakami onerir. Sahadan:
+ *
+ *   "DUCAT SICAK ÇİKOLATA*10"        -> 10
+ *   "Ducat Sıcak Çikolata 10 Lu"     -> 10
+ *   "CRAX ACI BAHARATLI 50GX20KL"    -> 20   (50 g degil, 20 koli adedi)
+ *   "SÜT 180 ML"                     -> (yok)
+ *
+ * IPUCUDUR, karar degil: arayuzde onay istenir.
+ */
+function adAdetIpucu(ad) {
+  const t = normalizeTr(String(ad || '').replace(/\*/g, ' x '));
+  const bulunan = new Set();
+  for (const m of t.matchAll(/x\s*(\d{1,3})/g)) bulunan.add(Number(m[1]));
+  for (const m of t.matchAll(/(\d{1,3})\s*l[uiy]\b/g)) bulunan.add(Number(m[1]));
+  for (const m of t.matchAll(/(\d{1,3})\s*adet/g)) bulunan.add(Number(m[1]));
+  return [...bulunan].filter((n) => n >= 2 && n <= 500).sort((a, b) => a - b);
+}
+
+/**
+ * Birlestirmede kullanilacak birim ve cevrim carpanlarini okur/dogrular.
+ *
+ * Stok sayimi ADET uzerinden yapildigi icin birlesen kartin birimi de
+ * ADET olmalidir. Kartlardan biri PAKET/KUTU tutuyorsa miktarlar oldugu
+ * gibi toplanamaz: "1 PAKET = kac ADET" bilgisi SART. Bu bilgi
+ * gelmediyse islem HIC yapilmaz -- yanlis toplamak, hic toplamamaktan
+ * kotudur.
+ */
+function cevrimOku(body, hedef, kaynak) {
+  const hedefBirim = oneOf(body.hedefBirim, 'Birlesince birim', BIRIMLER,
+    { def: hedef.unit || 'ADET' });
+  const hedefCarpan = num(body.hedefCarpan, `1 ${hedef.unit} = kac ${hedefBirim}`,
+    { min: 0.000001, def: 1 });
+  const kaynakCarpan = num(body.kaynakCarpan, `1 ${kaynak.unit} = kac ${hedefBirim}`,
+    { min: 0.000001, def: 1 });
+
+  for (const [kart, carpan] of [[hedef, hedefCarpan], [kaynak, kaynakCarpan]]) {
+    if ((kart.unit || '') !== hedefBirim && carpan === 1) {
+      throw badRequest(
+        `"${kart.name}" kartinin birimi ${kart.unit}, birlesince ${hedefBirim} olacak. `
+        + `Miktarlarin dogru toplanmasi icin 1 ${kart.unit} = kac ${hedefBirim} oldugunu girin.`
+      );
+    }
+  }
+  return { hedefBirim, hedefCarpan, kaynakCarpan };
+}
 
 /** Birlestirmede tasinacak kayitlari sayar; hem onizleme hem denetim icin. */
 function birlestirmeDokumu(kaynakId) {
@@ -525,11 +647,13 @@ productRoutes.get('/:id/birlestirme-onizleme', async (ctx) => {
   const kaynak = get('SELECT * FROM products WHERE id = ?', [Number(ctx.query.kaynakId)]);
   if (!hedef || !kaynak) throw notFound('Urun bulunamadi.');
 
+  const birimlerFarkli = (hedef.unit || '') !== (kaynak.unit || '');
   const uyarilar = [];
-  if ((hedef.unit || '') !== (kaynak.unit || '')) {
+  if (birimlerFarkli) {
     uyarilar.push(
       `Birimler FARKLI: "${hedef.name}" ${hedef.unit}, "${kaynak.name}" ${kaynak.unit}. `
-      + 'Birlestirmeden ONCE birimleri esitleyin, yoksa miktarlar anlamsiz toplanir.'
+      + 'Stok ADET uzerinden tutuldugu icin asagida birlesik birimi secin ve '
+      + 'cevrim adedini (1 PAKET = kac ADET) girin; miktarlar cevrilerek toplanir.'
     );
   }
   if (hedef.vat_rate !== kaynak.vat_rate) {
@@ -538,9 +662,19 @@ productRoutes.get('/:id/birlestirme-onizleme', async (ctx) => {
   if (kaynak.barcode && hedef.barcode && kaynak.barcode !== hedef.barcode) {
     uyarilar.push(`Iki kartin da barkodu var; "${kaynak.barcode}" silinecek, "${hedef.barcode}" kalacak.`);
   }
+  const kart = (u) => ({
+    id: u.id, name: u.name, unit: u.unit, barcode: u.barcode, stok: urunStogu(u.id),
+    adAdedi: adAdetIpucu(u.name),
+  });
   return {
-    hedef: { id: hedef.id, name: hedef.name, unit: hedef.unit, barcode: hedef.barcode },
-    kaynak: { id: kaynak.id, name: kaynak.name, unit: kaynak.unit, barcode: kaynak.barcode },
+    hedef: kart(hedef),
+    kaynak: kart(kaynak),
+    birimler: BIRIMLER,
+    // Sayim ADET ile yapiliyor: biri ADET ise onda birlesmek dogrudur,
+    // ikisi de ambalaj birimiyse yine ADET onerilir.
+    onerilenBirim: hedef.unit === 'ADET' || kaynak.unit === 'ADET' ? 'ADET'
+      : (AMBALAJ_BIRIMLERI.has(hedef.unit) && AMBALAJ_BIRIMLERI.has(kaynak.unit) ? 'ADET' : hedef.unit),
+    cevrimGerekli: birimlerFarkli,
     tasinacak: birlestirmeDokumu(kaynak.id),
     engel: birlestirmeEngeli(hedef, kaynak),
     uyarilar,
@@ -566,9 +700,15 @@ productRoutes.post('/:id/birlestir', async (ctx) => {
   const engel = birlestirmeEngeli(hedef, kaynak);
   if (engel) throw conflict(engel);
 
+  const { hedefBirim, hedefCarpan, kaynakCarpan } = cevrimOku(ctx.body, hedef, kaynak);
   const dokum = birlestirmeDokumu(kaynakId);
+  const stokOnce = { hedef: urunStogu(hedefId), kaynak: urunStogu(kaynakId) };
 
   tx(() => {
+    // Cevrim TASIMADAN ONCE yapilir: kayitlar henuz kendi kartindadir.
+    birimCevir(hedefId, hedefCarpan);
+    birimCevir(kaynakId, kaynakCarpan);
+
     for (const [tablo, sutun, anahtar, toplanan] of TASINAN_TABLOLAR) {
       if (!anahtar) {
         run(`UPDATE ${tablo} SET ${sutun} = ? WHERE ${sutun} = ?`, [hedefId, kaynakId]);
@@ -598,20 +738,32 @@ productRoutes.post('/:id/birlestir', async (ctx) => {
       run('UPDATE products SET barcode = NULL WHERE id = ?', [kaynakId]);
       run('UPDATE products SET barcode = ? WHERE id = ?', [kaynak.barcode, hedefId]);
     }
+    run('UPDATE products SET unit = ? WHERE id = ?', [hedefBirim, hedefId]);
     run('DELETE FROM products WHERE id = ?', [kaynakId]);
   });
 
+  const stokSonra = urunStogu(hedefId);
   logAudit({
     user: ctx.user, action: 'MERGE', entity: 'products', entityId: hedefId,
     detail: {
       islem: 'mukerrer-kart-birlestirildi',
-      kalan: { id: hedef.id, ad: hedef.name, birim: hedef.unit },
-      silinen: { id: kaynak.id, ad: kaynak.name, birim: kaynak.unit, barkod: kaynak.barcode || undefined },
+      kalan: { id: hedef.id, ad: hedef.name, birim: hedefBirim, eskiBirim: hedef.unit, carpan: hedefCarpan },
+      silinen: {
+        id: kaynak.id, ad: kaynak.name, birim: kaynak.unit, carpan: kaynakCarpan,
+        barkod: kaynak.barcode || undefined,
+      },
+      stok: { hedefOnce: stokOnce.hedef, kaynakOnce: stokOnce.kaynak, sonra: stokSonra },
       tasinanKayitlar: dokum,
     },
     ip: ctx.ip,
   });
-  return { ok: true, hedef: get('SELECT * FROM products WHERE id = ?', [hedefId]), tasinan: dokum };
+  return {
+    ok: true,
+    hedef: get('SELECT * FROM products WHERE id = ?', [hedefId]),
+    tasinan: dokum,
+    stok: { ...stokOnce, sonra: stokSonra },
+    birim: hedefBirim,
+  };
 });
 
 productRoutes.put('/:id/campus-price/:campusId', async (ctx) => {
