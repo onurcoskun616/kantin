@@ -181,38 +181,60 @@ async function mukerrerPaneli(kap, onChange) {
     return;   // eski sürüm sunucu: panel hiç çıkmasın
   }
   const items = veri.items || [];
-  if (!items.length) return;
+  const benzerler = veri.benzerler || [];
+  if (!items.length && !benzerler.length) return;
 
-  const satirlar = items.map((g) => {
+  const grupSatiri = (g, aday) => {
     const kartlar = g.kartlar;
     const stoklu = kartlar.filter((k) => k.stok > 0).length;
     return el('div', { style: 'padding:8px 0;border-bottom:1px solid var(--border)' }, [
       el('div.row', { style: 'justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center' }, [
-        el('div', {}, [
-          el('strong', { text: kartlar[0].name }),
-          el('small.muted', {
-            style: 'display:block',
-            text: kartlar.map((k) => `#${k.id} · ${k.unit} · stok ${fmt.num(k.stok)}`).join('   |   '),
-          }),
+        el('div', { style: 'min-width:0' }, [
+          // Adaylarda adlar FARKLI oldugu icin hepsi yazilir; birebir
+          // mukerrerlerde tek ad yeterli.
+          aday
+            ? el('div', {}, kartlar.map((k) => el('div', {}, [
+              el('strong', { text: k.name }),
+              el('small.muted', { text: `   #${k.id} · ${k.unit} · stok ${fmt.num(k.stok)}` }),
+            ])))
+            : el('div', {}, [
+              el('strong', { text: kartlar[0].name }),
+              el('small.muted', {
+                style: 'display:block',
+                text: kartlar.map((k) => `#${k.id} · ${k.unit} · stok ${fmt.num(k.stok)}`).join('   |   '),
+              }),
+            ]),
         ]),
         stoklu > 1
           ? badge(`${stoklu} kartta birden stok var`, 'bad')
-          : badge(`${kartlar.length} kart`, 'warn'),
+          : badge(`${kartlar.length} kart`, aday ? 'info' : 'warn'),
       ]),
       el('div.btn-row', { style: 'margin-top:6px' }, kartlar.slice(1).map((k) => el('button.btn.btn-sm', {
         text: `#${k.id} kartını #${kartlar[0].id} ile birleştir`,
         onclick: () => openMerge(kartlar[0], onChange, k.id),
       }))),
     ]);
-  });
+  };
 
-  kap.append(card('🔗 Mükerrer Ürün Kartları', satirlar, {
-    tight: true,
-    note: 'Aynı ürün için birden fazla kart açılmış. Birleştirmede kaynak kartın '
-      + 'tüm geçmişi (fatura satırları, stok hareketleri, sayımlar, eşleştirmeler) '
-      + 'kalan karta taşınır; stok tek yerde toplanır. En çok stoğu olan kart '
-      + 'önce listelenir — genelde onu bırakmak doğrudur.',
-  }));
+  if (items.length) {
+    kap.append(card('🔗 Mükerrer Ürün Kartları', items.map((g) => grupSatiri(g, false)), {
+      tight: true,
+      note: 'Adları AYNI olan kartlar — aynı ürün için ikinci kart açılmış. '
+        + 'Birleştirmede kaynak kartın tüm geçmişi (fatura satırları, stok hareketleri, '
+        + 'sayımlar, eşleştirmeler) kalan karta taşınır; stok tek yerde toplanır. '
+        + 'En çok stoğu olan kart önce listelenir — genelde onu bırakmak doğrudur.',
+    }));
+  }
+
+  if (benzerler.length) {
+    kap.append(card('🔎 Aynı Ürün Olabilir — Kontrol Edin', benzerler.map((g) => grupSatiri(g, true)), {
+      tight: true,
+      note: 'Adları farklı ama ambalaj/gramaj yazımı çıkarılınca AYNI kelimelerden '
+        + 'oluşuyor (ör. "ÇİLEKLİ SÜT" ile "SÜT ÇİLEKLİ 180 ML"). Bunlar kesin mükerrer '
+        + 'DEĞİL: gerçekten farklı gramaj da olabilir ("MADEN SUYU 20CL" ile "25CL" gibi). '
+        + 'Aynı ürünse birleştirin, değilse dokunmayın.',
+    }));
+  }
 }
 
 /**

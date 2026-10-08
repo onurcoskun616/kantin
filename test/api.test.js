@@ -1376,6 +1376,35 @@ describe('Mukerrer urun karti birlestirme', () => {
     assert.ok(grup.kartlar.some((k) => k.id === b.id));
   });
 
+  test('ADI FARKLI ama ayni urun olanlar ADAY olarak isaretlenir', async () => {
+    // Birebir ad karsilastirmasi bunlari kaciriyordu. Sahadan ornekler:
+    //   "ÇİLEKLİ SÜT" / "SÜT ÇİLEKLİ 180 ML"          (kelime sirasi)
+    //   "CRAX PL ACI BAHARATLI" / "CRAX ACI BAHARATLI" (ambalaj eki)
+    await urun('Çilekli Süt Aday');
+    await urun('Süt Çilekli 180 ML Aday');
+    await urun('Crax PL Acı Baharatlı Aday 50GX20KL');
+    await urun('Crax Acı  Baharatlı  Aday 50GX20 KL');
+
+    const r = await ok('GET', '/api/products/mukerrerler');
+    const sut = r.benzerler.find((g) => g.kartlar.some((k) => k.name === 'Çilekli Süt Aday'));
+    assert.ok(sut, 'kelime sirasi farki aday listesine girmeli');
+    assert.ok(sut.kartlar.some((k) => k.name === 'Süt Çilekli 180 ML Aday'));
+
+    const crax = r.benzerler.find((g) => g.kartlar.some((k) => k.name === 'Crax PL Acı Baharatlı Aday 50GX20KL'));
+    assert.ok(crax, 'ambalaj eki farki aday listesine girmeli');
+    assert.ok(crax.kartlar.some((k) => k.name === 'Crax Acı  Baharatlı  Aday 50GX20 KL'));
+  });
+
+  test('TEK kelimelik adlar aday sayilmaz (fazla genis)', async () => {
+    // "Tost" ile "Tost" ayni, ama tek kelimelik cekirdek gercekten farkli
+    // urunleri de ayni gruba atardi; en az iki kelime aranir.
+    await urun('Tost Aday');
+    await urun('Çay Aday');
+    const r = await ok('GET', '/api/products/mukerrerler');
+    const hepsiBirlikte = r.benzerler.find((g) => g.kartlar.length > 8);
+    assert.ok(!hepsiBirlikte, 'ilgisiz urunler tek grupta toplanmamali');
+  });
+
   test('stok, fatura ve eslestirme HEDEF karta tasinir, kaynak silinir', async () => {
     const a = await urun('Taşıma Testi A');
     const b = await urun('Taşıma Testi B');

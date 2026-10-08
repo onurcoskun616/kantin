@@ -277,29 +277,81 @@ productRoutes.delete('/aliases/:id', async (ctx) => {
  * Kullanici 213 kart icinde mukerrerleri goz ile aramasin diye katalog
  * ekraninda bir panelde listelenir.
  */
+/**
+ * Urun adinin AMBALAJ/GRAMAJ'dan arindirilmis cekirdegi.
+ *
+ * Mukerrerlerin bir kismi birebir ayni ad DEGILDIR; ayni urun baska
+ * yazilmistir. Sahadan ornekler:
+ *
+ *   "ÇİLEKLİ SÜT"                 / "SÜT ÇİLEKLİ 180 ML"      (kelime sirasi)
+ *   "CRAX PL ACI BAHARATLI 50GX20KL" / "CRAX ACI BAHARATLI 50GX20 KL"
+ *   "DUCAT PREMİUM SICAK ÇİKOLATA*10" / "Ducat Sıcak Çikolata 10 Lu"
+ *
+ * Birebir karsilastirma bunlari kacirir. Bu yuzden rakam iceren her
+ * jeton (gramaj, adet, ambalaj) ve bilinen ambalaj ekleri atilir, kalan
+ * kelimeler KUMEYE cevrilir: sira onemini yitirir.
+ *
+ * Sonuc KESIN DEGIL, ADAYDIR: ayni cekirdege sahip iki kart gercekten
+ * farkli gramaj da olabilir ("MADEN SUYU 20CL" / "25CL"). Bu yuzden
+ * arayuzde ayri bir baslik altinda "kontrol edin" diye gosterilir.
+ */
+const AMBALAJ_EKLERI = new Set([
+  'kl', 'tv', 'dp', 'lu', 'no', 'yeni', 'diz', 'bs', 'tyn', 'pet', 'pl',
+  'adet', 'kutu', 'paket', 'ad', 'gr', 'g', 'ml', 'cl', 'lt', 'kg', 'cc',
+]);
+
+function urunCekirdegi(ad) {
+  const kelimeler = normalizeTr(ad).split(' ')
+    .filter((w) => w.length > 1 && !/\d/.test(w) && !AMBALAJ_EKLERI.has(w));
+  const benzersiz = [...new Set(kelimeler)].sort();
+  // TEK kelimelik cekirdek fazla genistir ("Tost", "Çay"): gercekten
+  // farkli urunleri ayni gruba atar. En az iki kelime arariz.
+  return benzersiz.length >= 2 ? benzersiz.join(' ') : '';
+}
+
 productRoutes.get('/mukerrerler', async () => {
   const rows = all('SELECT id, name, unit, barcode, is_active FROM products');
-  const grup = new Map();
-  for (const r of rows) {
-    const anahtar = normalizeTr(r.name);
-    if (!anahtar) continue;
-    if (!grup.has(anahtar)) grup.set(anahtar, []);
-    grup.get(anahtar).push(r);
-  }
-  const items = [];
-  for (const [anahtar, kartlar] of grup) {
-    if (kartlar.length < 2) continue;
-    const stoklu = [];
+  const stokOf = (id) => round2(
+    get('SELECT COALESCE(SUM(quantity), 0) AS q FROM stock_movements WHERE product_id = ?', [id])?.q ?? 0
+  );
+  const kartlar = rows.map((r) => ({ ...r, stok: stokOf(r.id), norm: normalizeTr(r.name) }));
+
+  const topla = (anahtarFn) => {
+    const grup = new Map();
     for (const k of kartlar) {
-      const s = get(
-        "SELECT COALESCE(SUM(quantity), 0) AS q FROM stock_movements WHERE product_id = ?", [k.id]
-      )?.q ?? 0;
-      stoklu.push({ ...k, stok: round2(s) });
+      const a = anahtarFn(k);
+      if (!a) continue;
+      if (!grup.has(a)) grup.set(a, []);
+      grup.get(a).push(k);
     }
-    items.push({ anahtar, kartlar: stoklu.sort((a, b) => b.stok - a.stok) });
+    return grup;
+  };
+
+  // 1) Birebir ayni ad — kesin mukerrer
+  const items = [];
+  const birebirAdlar = new Set();
+  for (const [anahtar, grup] of topla((k) => k.norm)) {
+    if (grup.length < 2) continue;
+    birebirAdlar.add(anahtar);
+    items.push({ anahtar, kartlar: grup.sort((a, b) => b.stok - a.stok) });
   }
-  items.sort((a, b) => b.kartlar.length - a.kartlar.length);
-  return { items };
+
+  // 2) Ayni cekirdek, FARKLI yazim — aday
+  const benzerler = [];
+  for (const [anahtar, grup] of topla((k) => urunCekirdegi(k.name))) {
+    if (grup.length < 2) continue;
+    // Hepsi ayni adi tasiyorsa bu zaten birinci listede
+    if (new Set(grup.map((k) => k.norm)).size < 2) continue;
+    benzerler.push({ anahtar, kartlar: grup.sort((a, b) => b.stok - a.stok) });
+  }
+
+  const stokluOnce = (a, b) => {
+    const s = (g) => g.kartlar.filter((k) => k.stok > 0).length;
+    return (s(b) - s(a)) || (b.kartlar.length - a.kartlar.length);
+  };
+  items.sort(stokluOnce);
+  benzerler.sort(stokluOnce);
+  return { items, benzerler };
 });
 
 productRoutes.get('/:id', async (ctx) => {
