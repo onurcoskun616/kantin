@@ -3004,6 +3004,112 @@ describe('Acilis sayimi', () => {
     assert.equal(rec.openingPeriod.isMarkedOpening, true);
   });
 
+  test('GECMIS YILDAN DEVREDEN stok acilis sayimiyla stoga EKLENIR', async () => {
+    // Sahadan (Ikitelli OSB): "BISKREM KAKAOLU" kartinda olmasi gereken
+    // 36, sayilan 101. Aradaki 65 adet gecen yildan devreden, sisteme hic
+    // girilmemis maldir. Acilis sayimi kesinlesince stok 101 OLMALIDIR.
+    const kampus = (await ok('POST', '/api/campuses',
+      { name: 'Devir Stok Kampüsü', code: 'DVS' })).id;
+    const urun = (await ok('POST', '/api/products',
+      { name: 'Devir Biskrem', salePrice: 50, vatRate: 10, unit: 'ADET' })).id;
+    await ok('POST', '/api/purchases', {
+      campusId: kampus, supplierId, documentNo: 'DVS-1', documentDate: daysAgo(30),
+      lines: [{ productId: urun, quantity: 36, unitPrice: 25, vatRate: 10 }],
+    });
+    const sayim = await ok('POST', '/api/counts',
+      { campusId: kampus, countDate: daysAgo(2), isBlind: false, isOpening: true });
+    await ok('PUT', `/api/counts/${sayim.id}/lines`, {
+      lines: [{ productId: urun, countedQty: 101 }],
+    });
+    await ok('POST', `/api/counts/${sayim.id}/submit`, { witnessName: 'Sayım Tanığı' });
+    await kesinlestir(sayim.id);
+
+    const stok = await ok('GET', `/api/stock?campusId=${kampus}`);
+    const satir = stok.items.find((x) => x.product_id === urun);
+    assert.equal(satir.stock_qty, 101, 'devreden 65 adet stoga eklenmeliydi');
+
+    // Fazla cikan mal SATIS degil SAYIM_FAZLA hareketidir
+    const hareket = await ok('GET', `/api/stock/movements?campusId=${kampus}&productId=${urun}`);
+    assert.ok(hareket.items.some((m) => m.movement_type === 'SAYIM_FAZLA' && m.quantity === 65),
+      JSON.stringify(hareket.items));
+  });
+
+  test('ACILIS isareti sayim ACILDIKTAN SONRA da konabilir', async () => {
+    // Isaretlemeyi unutan kullanicinin tek caresi sayimi SILIP bastan
+    // acmakti; girilen yuzlerce miktar cope giderdi.
+    const kampus = (await ok('POST', '/api/campuses',
+      { name: 'Sonradan Açılış', code: 'SNA' })).id;
+    const urun = (await ok('POST', '/api/products',
+      { name: 'Sonradan Ürün', salePrice: 50, vatRate: 10, unit: 'ADET' })).id;
+    await ok('POST', '/api/purchases', {
+      campusId: kampus, supplierId, documentNo: 'SNA-1', documentDate: daysAgo(30),
+      lines: [{ productId: urun, quantity: 36, unitPrice: 25, vatRate: 10 }],
+    });
+    // ACILIS ISARETI OLMADAN acilir
+    const sayim = await ok('POST', '/api/counts',
+      { campusId: kampus, countDate: daysAgo(2), isBlind: false });
+    assert.equal(sayim.is_opening, 0);
+    await ok('PUT', `/api/counts/${sayim.id}/lines`, {
+      lines: [{ productId: urun, countedQty: 101 }],
+    });
+
+    const sonra = await ok('PUT', `/api/counts/${sayim.id}/acilis`, { isOpening: true });
+    assert.equal(sonra.is_opening, 1, 'isaret sonradan konabilmeli');
+    // Girilen miktar KORUNMALI
+    assert.equal(sonra.lines.find((l) => l.product_id === urun).counted_qty, 101);
+
+    const rec = await ok('GET', `/api/counts/${sayim.id}/reconciliation`);
+    assert.equal(rec.openingPeriod.isMarkedOpening, true);
+
+    // Geri alinabilir
+    const geri = await ok('PUT', `/api/counts/${sayim.id}/acilis`, { isOpening: false });
+    assert.equal(geri.is_opening, 0);
+  });
+
+  test('KESINLESMIS sayimda acilis isareti DEGISTIRILEMEZ', async () => {
+    const kampus = (await ok('POST', '/api/campuses',
+      { name: 'Kilitli Açılış', code: 'KLA' })).id;
+    const urun = (await ok('POST', '/api/products',
+      { name: 'Kilitli Ürün', salePrice: 50, vatRate: 10, unit: 'ADET' })).id;
+    await ok('POST', '/api/purchases', {
+      campusId: kampus, supplierId, documentNo: 'KLA-1', documentDate: daysAgo(30),
+      lines: [{ productId: urun, quantity: 10, unitPrice: 25, vatRate: 10 }],
+    });
+    const sayim = await ok('POST', '/api/counts',
+      { campusId: kampus, countDate: daysAgo(2), isBlind: false, isOpening: true });
+    await ok('PUT', `/api/counts/${sayim.id}/lines`, { lines: [{ productId: urun, countedQty: 8 }] });
+    await ok('POST', `/api/counts/${sayim.id}/submit`, { witnessName: 'Tanık' });
+    await kesinlestir(sayim.id);
+
+    const r = await api('PUT', `/api/counts/${sayim.id}/acilis`, { isOpening: false });
+    assert.equal(r.status, 409);
+    assert.match(r.data.error, /Kesinlesmis/i);
+  });
+
+  test('ILK sayim DEGILSE acilis isaretlenemez', async () => {
+    // Sonraki bir sayimin acilis sayilmasi, o donemin satisini
+    // raporlardan silmek olurdu.
+    const kampus = (await ok('POST', '/api/campuses',
+      { name: 'İkinci Sayım', code: 'IKS' })).id;
+    const urun = (await ok('POST', '/api/products',
+      { name: 'İkinci Ürün', salePrice: 50, vatRate: 10, unit: 'ADET' })).id;
+    await ok('POST', '/api/purchases', {
+      campusId: kampus, supplierId, documentNo: 'IKS-1', documentDate: daysAgo(30),
+      lines: [{ productId: urun, quantity: 100, unitPrice: 25, vatRate: 10 }],
+    });
+    const ilk = await ok('POST', '/api/counts',
+      { campusId: kampus, countDate: daysAgo(10), isBlind: false, isOpening: true });
+    await ok('PUT', `/api/counts/${ilk.id}/lines`, { lines: [{ productId: urun, countedQty: 90 }] });
+    await ok('POST', `/api/counts/${ilk.id}/submit`, { witnessName: 'Tanık' });
+    await kesinlestir(ilk.id);
+
+    const ikinci = await ok('POST', '/api/counts',
+      { campusId: kampus, countDate: daysAgo(1), isBlind: false });
+    const r = await api('PUT', `/api/counts/${ikinci.id}/acilis`, { isOpening: true });
+    assert.equal(r.status, 400);
+    assert.match(r.data.error, /ilk donem sayimi/i);
+  });
+
   test('KESINLESMEMIS sayim fisi donem satisini SIFIR degil GERCEK yazar', async () => {
     // Sahadan: Esenyurt acilis sayiminin CSV'sinde "Fark -485" yazarken
     // "Donem Satisi" ve "Satis Tutari" 0 cikiyordu, cunku o sutunlar

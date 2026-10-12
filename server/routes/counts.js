@@ -414,6 +414,62 @@ countRoutes.post('/:id/reopen', async (ctx) => {
   return loadCount(header.id, ctx.user);
 });
 
+/* ---------------- Mevcut sayimi ACILIS olarak isaretle --------------- */
+/**
+ * GECMIS YILDAN DEVREDEN STOK sisteme boyle kabul edilir.
+ *
+ * Sahadan: Ikitelli OSB'de "BISKREM KAKAOLU" kartinda olmasi gereken 36,
+ * sayilan 101. Aradaki 65 adet gecen yildan devreden, sisteme hic
+ * girilmemis maldir. Acilis sayimi kesinlesince bu 65 adet SAYIM_FAZLA
+ * hareketiyle stoga EKLENIR (stok 101 olur) ve rakam raporlara girmez.
+ *
+ * Sorun suydu: "acilis" isareti YALNIZCA sayim acilirken konabiliyordu.
+ * Isaretlemeyi unutan kullanicinin tek caresi sayimi SILIP bastan acmakti
+ * -- girilen yuzlerce miktar cope giderdi. Artik kesinlesmemis sayim
+ * yerinde isaretlenebilir.
+ *
+ * Kural ayni kalir: acilis yalnizca kampusun ILK donem sayimi olabilir.
+ * Sonraki bir sayimin acilis sayilmasi, o donemin satisini raporlardan
+ * silmek olurdu.
+ */
+countRoutes.put('/:id/acilis', async (ctx) => {
+  // Kesinlestirmeye yetkili olan bu isareti de koyabilmelidir: karar
+  // kesinlestirmeden ONCE verilir ve sonrasinda degistirilemez.
+  requireRole(ctx.user, 'ADMIN', 'GENEL_MUDURLUK', 'KAMPUS_YONETICISI');
+  const header = get('SELECT * FROM counts WHERE id = ?', [Number(ctx.params.id)]);
+  if (!header) throw notFound('Sayim bulunamadi.');
+  assertCampusAccess(ctx.user, header.campus_id);
+
+  const isOpening = bool(ctx.body.isOpening, true);
+  if (header.status === 'KESINLESMIS') {
+    throw conflict('Kesinlesmis sayimin acilis isareti degistirilemez. Kesinlestirmeden once isaretleyin.');
+  }
+  if (header.count_type !== 'DONEM') {
+    throw badRequest('Acilis sayimi donem sayimidir; nokta sayimi acilis olamaz.');
+  }
+  if (isOpening) {
+    const last = lastFinalizedCount(header.campus_id);
+    if (last && last.id !== header.id) {
+      throw badRequest(
+        `Acilis sayimi yalnizca kampusun ilk donem sayimi olabilir. `
+        + `Bu kampuste ${last.count_date} tarihli kesinlesmis bir sayim zaten var.`
+      );
+    }
+  }
+  if (!!header.is_opening === isOpening) return loadCount(header.id, ctx.user);
+
+  run('UPDATE counts SET is_opening = ? WHERE id = ?', [isOpening ? 1 : 0, header.id]);
+  logAudit({
+    user: ctx.user, action: 'UPDATE', entity: 'counts', entityId: header.id, campusId: header.campus_id,
+    detail: {
+      islem: isOpening ? 'acilis-sayimi-isaretlendi' : 'acilis-isareti-kaldirildi',
+      oncesi: !!header.is_opening, sonrasi: isOpening,
+    },
+    ip: ctx.ip,
+  });
+  return loadCount(header.id, ctx.user);
+});
+
 /* ------------------------------ Silme ------------------------------ */
 countRoutes.delete('/:id', async (ctx) => {
   requireWrite(ctx.user);

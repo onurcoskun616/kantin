@@ -223,7 +223,7 @@ export async function renderDetail(root, { params }) {
   if (isSpot) {
     root.append(buildSpotSummary(data, rec));
   } else {
-    root.append(buildReconciliation(data, rec));
+    root.append(buildReconciliation(data, rec, reload));
   }
 
   /* ------------------------ Dönem özeti / grafik -------------------- */
@@ -292,7 +292,40 @@ function finalizeActions(data, reload) {
 }
 
 /* --------------------------- Mutabakat kartı ------------------------ */
-function buildReconciliation(data, rec) {
+/**
+ * ACILIS ISARETINI SONRADAN KOYAR/KALDIRIR.
+ *
+ * Gecmis yildan devreden stok ("olmasi gereken 36, sayilan 101") ancak
+ * acilis sayimiyla sisteme kabul edilir: fazla cikan 65 adet stoga
+ * eklenir ve rakam raporlara girmez. Isaret unutulduysa sayimi silmeye
+ * gerek yok.
+ */
+async function acilisIsaretle(data, isOpening, reload) {
+  const onay = await confirmDialog(
+    isOpening
+      ? 'Bu sayım AÇILIŞ sayımı olur: kesinleştirdiğinizde stok saydığınız miktarlara oturur — '
+        + 'fazla çıkanlar (geçen yıldan devreden mal) stoğa EKLENİR, eksik çıkanlar düşülür. '
+        + 'Hesaplanan fark aylık kârlılık, ürün satış ve kampüs karşılaştırma raporlarına '
+        + 'GİRMEZ, çünkü sistemden önceki dönemi taşır. Girdiğiniz miktarlar korunur.'
+      : 'Bu sayım normal dönem sayımına döner ve farkı raporlara girer.',
+    {
+      title: isOpening ? 'Açılış sayımı olarak işaretle' : 'Açılış işaretini kaldır',
+      confirmText: isOpening ? 'Açılış olarak işaretle' : 'İşareti kaldır',
+    }
+  );
+  if (!onay) return;
+  try {
+    await api.put(`/api/counts/${data.id}/acilis`, { isOpening });
+    toast(isOpening
+      ? 'Sayım açılış sayımı olarak işaretlendi. Kesinleştirdiğinizde stok sayılan miktarlara oturacak.'
+      : 'Açılış işareti kaldırıldı.');
+    reload();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+function buildReconciliation(data, rec, reload) {
   const diff = rec.revenue.difference;
   const tone = diff === null ? '' : diff < -1 ? 'bad' : diff > 1 ? 'warn' : 'ok';
   const wrap = el('div.grid');
@@ -344,8 +377,26 @@ function buildReconciliation(data, rec) {
           + 'gerçeğe oturur ve dönem kilitlenir; gerçek ölçüm bir sonraki sayımdan başlar.'
         : 'satıştır — kasa açığı değildir. Bu sayımı bir DÜZELTME sayımı gibi değerlendirin: '
           + 'kesinleştirdiğinizde stok gerçeğe oturur ve bundan sonraki sayımlar gerçek dönem '
-          + 'satışını gösterir. Rakamların raporlara hiç girmemesini istiyorsanız sayımı '
-          + 'silip "açılış sayımı" işaretiyle yeniden açabilirsiniz.')));
+          + 'satışını gösterir. Rakamların raporlara hiç girmemesini istiyorsanız aşağıdaki '
+          + 'düğmeyle bu sayımı AÇILIŞ olarak işaretleyin — girdiğiniz miktarlar korunur.')));
+
+    // Isaret sonradan da konabilmeli: unutan kullanicinin tek caresi
+    // sayimi silip bastan girmekti, yuzlerce miktar cope giderdi.
+    if (!acilis.isMarkedOpening && isManager() && data.status !== 'KESINLESMIS') {
+      wrap.append(el('div.btn-row', { style: 'margin:-6px 0 4px' }, [
+        el('button.btn.btn-primary', {
+          text: '🏁 Bu sayımı Açılış Sayımı olarak işaretle',
+          onclick: () => acilisIsaretle(data, true, reload),
+        }),
+      ]));
+    } else if (acilis.isMarkedOpening && isManager() && data.status !== 'KESINLESMIS') {
+      wrap.append(el('div.btn-row', { style: 'margin:-6px 0 4px' }, [
+        el('button.btn.btn-sm', {
+          text: 'Açılış işaretini kaldır',
+          onclick: () => acilisIsaretle(data, false, reload),
+        }),
+      ]));
+    }
   }
 
   if (data.status === 'KESINLESMIS') {
