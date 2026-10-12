@@ -525,7 +525,11 @@ function buildCountSheet(root, data, blind, reload) {
 
   const headers = blind
     ? ['Barkod', 'Ürün', 'Kategori', 'Sayılan']
-    : ['Barkod', 'Ürün', 'Kategori', 'Olması Gereken', 'Sayılan', 'Fark', 'Dönem Satışı', 'Satış Fiyatı', 'Satış Tutarı'];
+    // Birim basliklarda YAZAR: "Fark" kolonu TL sanilip eksi fark kasa
+    // acigi gibi okunuyordu. Fark ve donem satisi ADETTIR; yalnizca son
+    // iki kolon TL'dir.
+    : ['Barkod', 'Ürün', 'Kategori', 'Olması Gereken', 'Sayılan', 'Fark (adet)',
+      'Dönem Satışı (adet)', 'Satış Fiyatı (TL)', 'Satış Tutarı (TL)'];
 
   return card(blind ? 'Sayım Fişi — Kör Sayım' : 'Sayım Fişi', [
     el('div.filter-bar', { style: 'margin-bottom:12px' }, [
@@ -546,7 +550,11 @@ function buildCountSheet(root, data, blind, reload) {
   ], {
     note: blind
       ? 'Rafta/depoda fiilen saydığınız miktarı girin. Olması gereken miktar kasıtlı olarak gizlidir — sayımın bağımsız olması için. Barkod okuyucuyla arama kutusunu kullanarak hızlı ilerleyebilirsiniz.'
-      : (editable ? 'Her ürün için fiilen saydığınız miktarı girin.' : 'Bu sayım kilitlenmiştir; satırlar salt okunurdur.'),
+      : (editable ? 'Her ürün için fiilen saydığınız miktarı girin. "Fark" ADETTİR, TL değildir: '
+        + 'eksi fark, raftan çıkmış (satılmış) adedi gösterir — günlük satışlar kalem kalem '
+        + 'düşülmediği için çıkan mal ancak sayımda ortaya çıkar. "Dönem Satışı" o adedin '
+        + 'kendisi, "Satış Tutarı" ise adet × satış fiyatıdır.'
+        : 'Bu sayım kilitlenmiştir; satırlar salt okunurdur.'),
   });
 }
 

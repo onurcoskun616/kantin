@@ -159,17 +159,36 @@ countRoutes.get('/:id', async (ctx) => {
 
   if (ctx.query.format === 'csv') {
     if (data.blind_active) throw conflict('Kor sayim tamamlanmadan fis disari aktarilamaz.');
+
+    // DONEM SATISI / TUTAR / MALIYET sutunlari count_lines'a ancak
+    // KESINLESTIRMEDE yazilir. Fis kesinlesmeden alinirsa bu uc sutun
+    // sifir cikiyordu: kullanici "485 adet eksik ama satis 0 TL" goruyor,
+    // ekranda ise mutabakat ayni anda gercek rakami gosteriyordu. Ayni
+    // hesabi (bkz. /:id/reconciliation) burada da yaparak fisi ekranla
+    // ayni rakama getiririz.
+    const kesinlesti = data.status === 'KESINLESMIS';
+    const tuketim = kesinlesti
+      ? new Map(data.lines.map((l) => [l.product_id, l.recipe_qty || 0]))
+      : recipeConsumption(data.campus_id, data.production);
+    const satilan = (r) => (kesinlesti ? (r.sold_qty || 0)
+      : round4((r.expected_qty ?? 0) - (tuketim.get(r.product_id) || 0) - r.counted_qty));
+
     return sendCsv(ctx.res, `sayim-${data.id}.csv`, toCsv(data.lines, [
       { label: 'Barkod', key: 'barcode' },
       { label: 'Ürün', key: 'product_name' },
       { label: 'Birim', key: 'unit' },
       { label: 'Olması Gereken', value: (r) => tr(r.expected_qty) },
       { label: 'Sayılan', value: (r) => tr(r.counted_qty) },
-      { label: 'Fark', value: (r) => tr(r.diff_qty) },
-      { label: 'Dönem Satışı', value: (r) => tr(r.sold_qty) },
+      { label: 'Fark (adet)', value: (r) => tr(r.diff_qty) },
+      { label: 'Dönem Satışı (adet)', value: (r) => tr(satilan(r)) },
       { label: 'Satış Fiyatı', value: (r) => tr(r.sale_price) },
-      { label: 'Satış Tutarı', value: (r) => tr(r.sales_value) },
-      { label: 'Maliyet', value: (r) => tr(r.cost_value) },
+      { label: 'Satış Tutarı', value: (r) => tr(round2(satilan(r) * r.sale_price)) },
+      { label: 'Maliyet', value: (r) => tr(round2(satilan(r) * r.purchase_price)) },
+      // Fiyati 0 olan kalem satilmis olsa da beklenen ciroya 0 TL yazar;
+      // bu sutun o kalemleri fis uzerinde gorunur kilar.
+      { label: 'Uyarı', value: (r) => (satilan(r) > 0 && !(r.sale_price > 0)
+        ? 'SATIŞ FİYATI TANIMSIZ — ciroya 0 TL yazılacak'
+        : (r.diff_qty > 0 ? 'FAZLA ÇIKTI — mükerrer kart olabilir' : '')) },
     ]));
   }
   return data;

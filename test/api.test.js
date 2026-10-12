@@ -3004,6 +3004,88 @@ describe('Acilis sayimi', () => {
     assert.equal(rec.openingPeriod.isMarkedOpening, true);
   });
 
+  test('KESINLESMEMIS sayim fisi donem satisini SIFIR degil GERCEK yazar', async () => {
+    // Sahadan: Esenyurt acilis sayiminin CSV'sinde "Fark -485" yazarken
+    // "Donem Satisi" ve "Satis Tutari" 0 cikiyordu, cunku o sutunlar
+    // count_lines'a ancak kesinlestirmede yaziliyor. Kullanici "485 adet
+    // eksik ama satis 0 TL" goruyor, ekrandaki mutabakat ise ayni anda
+    // gercek rakami gosteriyordu. Fis ile ekran AYNI rakami vermelidir.
+    const kampus = (await ok('POST', '/api/campuses',
+      { name: 'Fiş Kampüsü', code: 'FIS' })).id;
+    const urun = (await ok('POST', '/api/products',
+      { name: 'Fiş Ürünü', salePrice: 30, vatRate: 10, unit: 'ADET' })).id;
+    await ok('POST', '/api/purchases', {
+      campusId: kampus, supplierId, documentNo: 'FIS-1', documentDate: daysAgo(20),
+      lines: [{ productId: urun, quantity: 500, unitPrice: 10, vatRate: 10 }],
+    });
+    const sayim = await ok('POST', '/api/counts',
+      { campusId: kampus, countDate: daysAgo(1), isBlind: false, isOpening: true });
+    await ok('PUT', `/api/counts/${sayim.id}/lines`, {
+      lines: [{ productId: urun, countedQty: 15 }],
+    });
+
+    // Ekrandaki mutabakat: 485 adet satilmis, 485 x 30 = 14.550 TL
+    const rec = await ok('GET', `/api/counts/${sayim.id}/reconciliation`);
+    assert.equal(rec.revenue.counted, 14550, JSON.stringify(rec.revenue));
+
+    const res = await fetch(`${BASE}/api/counts/${sayim.id}?format=csv`,
+      { headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(res.status, 200);
+    const csv = await res.text();
+    const satir = csv.split('\n').find((l) => l.includes('Fiş Ürünü'));
+    assert.ok(satir, csv.slice(0, 400));
+    const h = csv.split('\n')[0];
+    assert.match(h, /Fark \(adet\)/, 'farkin ADET oldugu baslikta yazmali');
+    const alan = satir.split(';');
+    assert.equal(alan[5], '-485', `fark: ${satir}`);
+    assert.equal(alan[6], '485', `donem satisi SIFIR OLMAMALI: ${satir}`);
+    assert.equal(alan[8].replace('.', ''), '14550', `satis tutari: ${satir}`);
+  });
+
+  test('fiste satis fiyati TANIMSIZ kalemler isaretlenir', async () => {
+    // Fiyati 0 olan kalem satilmis olsa da beklenen ciroya 0 TL yazar:
+    // mutabakatta "kasa fazlasi" gibi gorunur. Fiste uyari cikmali.
+    const kampus = (await ok('POST', '/api/campuses',
+      { name: 'Fiyatsız Kampüs', code: 'FYT' })).id;
+    const urun = (await ok('POST', '/api/products',
+      { name: 'Fiyatsız Ürün', salePrice: 0, vatRate: 10, unit: 'ADET' })).id;
+    await ok('POST', '/api/purchases', {
+      campusId: kampus, supplierId, documentNo: 'FYT-1', documentDate: daysAgo(20),
+      lines: [{ productId: urun, quantity: 100, unitPrice: 10, vatRate: 10 }],
+    });
+    const sayim = await ok('POST', '/api/counts',
+      { campusId: kampus, countDate: daysAgo(1), isBlind: false, isOpening: true });
+    await ok('PUT', `/api/counts/${sayim.id}/lines`, {
+      lines: [{ productId: urun, countedQty: 40 }],
+    });
+    const res = await fetch(`${BASE}/api/counts/${sayim.id}?format=csv`,
+      { headers: { Authorization: `Bearer ${token}` } });
+    const csv = await res.text();
+    const satir = csv.split('\n').find((l) => l.includes('Fiyatsız Ürün'));
+    assert.match(satir, /SATIŞ FİYATI TANIMSIZ/, satir);
+  });
+
+  test('fiste FAZLA CIKAN kalem mukerrer kart uyarisi alir', async () => {
+    const kampus = (await ok('POST', '/api/campuses',
+      { name: 'Fazla Kampüs', code: 'FZL' })).id;
+    const urun = (await ok('POST', '/api/products',
+      { name: 'Fazla Ürün', salePrice: 25, vatRate: 10, unit: 'ADET' })).id;
+    await ok('POST', '/api/purchases', {
+      campusId: kampus, supplierId, documentNo: 'FZL-1', documentDate: daysAgo(20),
+      lines: [{ productId: urun, quantity: 10, unitPrice: 10, vatRate: 10 }],
+    });
+    const sayim = await ok('POST', '/api/counts',
+      { campusId: kampus, countDate: daysAgo(1), isBlind: false, isOpening: true });
+    await ok('PUT', `/api/counts/${sayim.id}/lines`, {
+      lines: [{ productId: urun, countedQty: 90 }],
+    });
+    const res = await fetch(`${BASE}/api/counts/${sayim.id}?format=csv`,
+      { headers: { Authorization: `Bearer ${token}` } });
+    const csv = await res.text();
+    const satir = csv.split('\n').find((l) => l.includes('Fazla Ürün'));
+    assert.match(satir, /FAZLA ÇIKTI/, satir);
+  });
+
   test('acilis sayimi stogu GERCEGE oturtur ve donemi kilitler', async () => {
     const acik = await ok('GET', `/api/counts?campusId=${campusId}`);
     const c = acik.items.find((x) => x.status !== 'KESINLESMIS');
