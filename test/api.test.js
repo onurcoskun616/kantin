@@ -320,6 +320,16 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
     assert.equal(row.profit, 660);
   });
 
+  /** Iki imza kurali: sayimi kilitleyen kendi sayimini kesinlestiremez. */
+  const kesinlestirBaskasi = async (countId) => {
+    const res = await fetch(`${BASE}/api/counts/${countId}/finalize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${managerToken}` },
+      body: '{}',
+    });
+    assert.equal(res.status, 200, JSON.stringify(await res.json().catch(() => ({}))));
+  };
+
   test('KAMPUS KARSILASTIRMASI cironun yaninda SATILAN MAL MALIYETINI verir', async () => {
     // "Bu ciroyu elde etmek icin ne kadarlik mal gitti?" -- ciro ile
     // maliyet yan yana okunabilsin diye.
@@ -340,6 +350,44 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
     assert.ok(satir, JSON.stringify(rep.items));
     assert.equal(satir.cogs, 660);
     assert.equal(satir.grossProfit, Math.round((satir.revenue - 660) * 100) / 100);
+  });
+
+  test('SUTUNLAR BOSSA rapor SEBEBINI soyler', async () => {
+    // "Veri gelmedi" sorusunun cevabi: kullanici hangi caresi uygulamasi
+    // gerektigini bilsin diye uc sebep ayri ayri bildirilir.
+    const rep = await ok('GET',
+      `/api/reports/campus-comparison?from=${daysAgo(60)}&to=${iso(new Date())}`);
+    const dolu = rep.items.find((r) => r.campusId === campusId);
+    assert.ok(dolu.countStatus.countedInRange >= 1, JSON.stringify(dolu.countStatus));
+    assert.ok(dolu.countStatus.lastFinalizedDate, JSON.stringify(dolu.countStatus));
+  });
+
+  test('YALNIZCA ACILIS sayimi varsa rapor bunu AYIRT eder', async () => {
+    // Acilis sayimi kesinlesmis olsa bile satis/maliyet sutunlari
+    // BILEREK bostur; kullanici "yazilim calismiyor" sanmamali.
+    const kampus = (await ok('POST', '/api/campuses',
+      { name: 'Sadece Açılış', code: 'SDA' })).id;
+    const urun = (await ok('POST', '/api/products',
+      { name: 'Sadece Açılış Ürün', salePrice: 50, vatRate: 10, unit: 'ADET' })).id;
+    await ok('POST', '/api/purchases', {
+      campusId: kampus, supplierId, documentNo: 'SDA-1', documentDate: daysAgo(30),
+      lines: [{ productId: urun, quantity: 100, unitPrice: 20, vatRate: 10 }],
+    });
+    await ok('POST', '/api/revenues', { campusId: kampus, revenueDate: daysAgo(3), cashAmount: 2000 });
+    const sayim = await ok('POST', '/api/counts',
+      { campusId: kampus, countDate: daysAgo(2), isBlind: false, isOpening: true });
+    await ok('PUT', `/api/counts/${sayim.id}/lines`, { lines: [{ productId: urun, countedQty: 60 }] });
+    await ok('POST', `/api/counts/${sayim.id}/submit`, { witnessName: 'Tanık' });
+    await kesinlestirBaskasi(sayim.id);
+
+    const rep = await ok('GET',
+      `/api/reports/campus-comparison?from=${daysAgo(60)}&to=${iso(new Date())}`);
+    const satir = rep.items.find((r) => r.campusId === kampus);
+    assert.equal(satir.cogs, null, 'acilis sayimi maliyet hesabina girmemeli');
+    assert.equal(satir.soldQty, null, '"0 adet satildi" degil, bilinmiyor');
+    assert.equal(satir.countStatus.openingInRange, 1);
+    assert.equal(satir.countStatus.countedInRange, 0, 'acilis, sayilan donem sayimi degildir');
+    assert.ok(satir.countStatus.lastWasOpening);
   });
 
   test('KESINLESMIS SAYIM YOKSA maliyet 0 degil BILINMIYOR doner', async () => {

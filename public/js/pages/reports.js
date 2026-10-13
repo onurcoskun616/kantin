@@ -150,9 +150,52 @@ async function monthly(range) {
 }
 
 /* ----------------------- Kampüs karşılaştırma ---------------------- */
+/**
+ * "VERI GELMEDI" SORUSUNUN CEVABI.
+ *
+ * Satilan adet, maliyet, brut kar ve sayim farki sutunlari kesinlesmis
+ * DONEM sayimindan gelir. Bos kalmasinin uc ayri sebebi vardir ve
+ * uculunun caresi farklidir; rapor bunu soylemezse kullanici "veri
+ * gelmedi" diye bakakalir.
+ */
+function sayimUyarisi(items) {
+  const veriliOlan = items.filter((r) => r.cogs !== null);
+  if (veriliOlan.length) return null;
+
+  const d = items.map((r) => r.countStatus || {});
+  const yalnizAcilis = d.filter((x) => x.openingInRange > 0 && x.countedInRange === 0);
+  const araligiDisinda = d.filter((x) => !x.inRange && x.lastFinalizedDate);
+  const hicYok = d.filter((x) => !x.inRange && !x.lastFinalizedDate);
+
+  const satirlar = [];
+  if (yalnizAcilis.length) {
+    const adlar = items.filter((r) => (r.countStatus?.openingInRange > 0)
+      && r.countStatus?.countedInRange === 0).map((r) => shortName(r.campusName));
+    satirlar.push(`${adlar.join(', ')}: bu aralıkta yalnızca AÇILIŞ sayımı kesinleşmiş. `
+      + 'Açılış sayımı sistemden önceki dönemi taşıdığı için satış ve kârlılık hesabına '
+      + 'BİLEREK girmez — stoğu gerçeğe oturtmak içindir. İlk gerçek ölçüm, açılıştan '
+      + 'SONRAKİ dönem sayımında çıkar.');
+  }
+  if (araligiDisinda.length) {
+    const adlar = items.filter((r) => !r.countStatus?.inRange && r.countStatus?.lastFinalizedDate)
+      .map((r) => `${shortName(r.campusName)} (${fmt.date(r.countStatus.lastFinalizedDate)})`);
+    satirlar.push(`Son kesinleşmiş sayım seçtiğiniz tarih aralığının DIŞINDA: ${adlar.join(', ')}. `
+      + 'Bitiş tarihini o günü kapsayacak şekilde genişletin.');
+  }
+  if (hicYok.length) {
+    const adlar = items.filter((r) => !r.countStatus?.inRange && !r.countStatus?.lastFinalizedDate)
+      .map((r) => shortName(r.campusName));
+    satirlar.push(`${adlar.join(', ')}: hiç kesinleşmiş dönem sayımı yok. `
+      + 'Sayım / Envanter ekranından sayımı kilitleyip başka bir yetkiliye kesinleştirtin.');
+  }
+  if (!satirlar.length) return null;
+  return alertBox('warning', 'Satış, maliyet ve kâr sütunları neden boş?', satirlar.join(' '));
+}
+
 async function comparison(range) {
   const data = await api.get('/api/reports/campus-comparison', range);
   return [
+    sayimUyarisi(data.items),
     card('Kampüs Karşılaştırması', [
       table([
         { label: 'Kampüs', value: (r) => shortName(r.campusName), wrap: true },

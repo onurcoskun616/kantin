@@ -264,6 +264,24 @@ reportRoutes.get('/campus-comparison', async (ctx) => {
       `SELECT COALESCE(SUM(quantity * unit_cost), 0) AS cost FROM waste_records
         WHERE campus_id = ? AND waste_date BETWEEN ? AND ?`, [k.id, from, to]
     );
+
+    // SATIS/MALIYET SUTUNLARI NICIN BOS? -- kullaniciya rapor "veri yok"
+    // demeden sebebini soylemeli. Uc ayri sebep var ve uculunun carest
+    // farklidir: (1) hic kesinlesmis donem sayimi yok, (2) yalnizca
+    // ACILIS sayimi var -- o bu hesaba BILEREK girmez, (3) sayim var ama
+    // secilen tarih araliginin disinda.
+    const sayimDurumu = get(
+      `SELECT COUNT(*) AS toplam,
+              COALESCE(SUM(CASE WHEN is_opening = 1 THEN 1 ELSE 0 END), 0) AS acilis
+         FROM counts
+        WHERE campus_id = ? AND status = 'KESINLESMIS' AND count_type = 'DONEM'
+              AND count_date BETWEEN ? AND ?`, [k.id, from, to]
+    );
+    const sonSayim = get(
+      `SELECT count_date, is_opening FROM counts
+        WHERE campus_id = ? AND status = 'KESINLESMIS' AND count_type = 'DONEM'
+        ORDER BY count_date DESC, id DESC LIMIT 1`, [k.id]
+    );
     const revenue = round2(rev.total);
     const expected = round2(cnt.expected);
     const difference = expected > 0 ? round2(revenue - expected) : null;
@@ -284,7 +302,8 @@ reportRoutes.get('/campus-comparison', async (ctx) => {
       revenuePerStudent: k.student_count > 0 ? round2(revenue / k.student_count) : null,
       dailyPerStudent: k.student_count > 0 && rev.school_days > 0
         ? round2(revenue / k.student_count / rev.school_days) : null,
-      soldQty: round2(cnt.sold_qty),
+      // Kesinlesmis sayim yoksa "0 adet satilmis" DEGIL, bilinmiyordur
+      soldQty: cnt.sold_qty > 0 ? round2(cnt.sold_qty) : null,
       expectedRevenue: expected,
       difference,
       differencePct: pctOf(difference, expected),
@@ -296,6 +315,14 @@ reportRoutes.get('/campus-comparison', async (ctx) => {
       wasteCost: round2(wasteRow.cost),
       wastePct: pctOf(wasteRow.cost, revenue),
       schoolShare: k.rent_share_pct > 0 ? round2(revenue * k.rent_share_pct / 100) : null,
+      // Bos sutunlarin sebebi (arayuz bunu kullaniciya aciklar)
+      countStatus: {
+        inRange: sayimDurumu.toplam,
+        openingInRange: sayimDurumu.acilis,
+        countedInRange: sayimDurumu.toplam - sayimDurumu.acilis,
+        lastFinalizedDate: sonSayim?.count_date || null,
+        lastWasOpening: sonSayim ? !!sonSayim.is_opening : null,
+      },
     };
   });
 
