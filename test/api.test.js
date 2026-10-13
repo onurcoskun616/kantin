@@ -320,6 +320,55 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
     assert.equal(row.profit, 660);
   });
 
+  test('KAMPUS KARSILASTIRMASI cironun yaninda SATILAN MAL MALIYETINI verir', async () => {
+    // "Bu ciroyu elde etmek icin ne kadarlik mal gitti?" -- ciro ile
+    // maliyet yan yana okunabilsin diye.
+    const rep = await ok('GET',
+      `/api/reports/campus-comparison?from=${daysAgo(60)}&to=${iso(new Date())}`);
+    const satir = rep.items.find((r) => r.campusId === campusId);
+    assert.ok(satir, JSON.stringify(rep.items.map((r) => r.campusName)));
+    // 60 adet x 11 TL (KDV dahil alis) = 660
+    assert.equal(satir.cogs, 660, JSON.stringify(satir));
+    assert.equal(satir.grossProfit, Math.round((satir.revenue - 660) * 100) / 100);
+    assert.ok(satir.grossMarginPct !== null);
+  });
+
+  test('AYLIK OZET de maliyet ve brut kar tasir', async () => {
+    const rep = await ok('GET',
+      `/api/reports/monthly?campusId=${campusId}&from=${daysAgo(60)}&to=${iso(new Date())}`);
+    const satir = rep.items.find((r) => r.cogs !== null);
+    assert.ok(satir, JSON.stringify(rep.items));
+    assert.equal(satir.cogs, 660);
+    assert.equal(satir.grossProfit, Math.round((satir.revenue - 660) * 100) / 100);
+  });
+
+  test('KESINLESMIS SAYIM YOKSA maliyet 0 degil BILINMIYOR doner', async () => {
+    // 0 yazmak "hic maliyet olmamis" demek olurdu; marj da yaniltici
+    // bicimde %0 cikiyordu.
+    const bos = (await ok('POST', '/api/campuses',
+      { name: 'Sayımsız Kampüs', code: 'SYZ' })).id;
+    await ok('POST', '/api/revenues', {
+      campusId: bos, revenueDate: daysAgo(2), cashAmount: 1000,
+    });
+    const rep = await ok('GET',
+      `/api/reports/campus-comparison?from=${daysAgo(60)}&to=${iso(new Date())}`);
+    const satir = rep.items.find((r) => r.campusId === bos);
+    assert.equal(satir.revenue, 1000);
+    assert.equal(satir.cogs, null, 'maliyet bilinmiyor olmali');
+    assert.equal(satir.grossProfit, null);
+    assert.equal(satir.grossMarginPct, null, 'maliyet bilinmiyorken %0 marj yazilmamali');
+  });
+
+  test('CSV fisinde de maliyet sutunu var', async () => {
+    const res = await fetch(
+      `${BASE}/api/reports/campus-comparison?format=csv&from=${daysAgo(60)}&to=${iso(new Date())}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    assert.equal(res.status, 200);
+    const csv = await res.text();
+    assert.match(csv.split('\n')[0], /Satılan Mal Maliyeti/, csv.slice(0, 200));
+  });
+
   test('ayni gune ikinci sayim acilamaz', async () => {
     const r = await api('POST', '/api/counts', { campusId, countDate: daysAgo(1) });
     assert.equal(r.status, 400);

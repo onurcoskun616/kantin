@@ -227,6 +227,8 @@ reportRoutes.get('/monthly', async (ctx) => {
       { label: 'Ay', key: 'month' },
       { label: 'Kampüs', key: 'campusName' },
       { label: 'Ciro', value: (r) => tr(r.revenue) },
+      { label: 'Satılan Mal Maliyeti (alış)', value: (r) => tr(r.cogs) },
+      { label: 'Brüt Kâr', value: (r) => tr(r.grossProfit) },
       { label: 'Gün Sayısı', key: 'schoolDays' },
       { label: 'Günlük Ortalama', value: (r) => tr(r.dailyAverage) },
       { label: 'Satılan Adet', value: (r) => tr(r.soldQty) },
@@ -266,8 +268,12 @@ reportRoutes.get('/campus-comparison', async (ctx) => {
     const expected = round2(cnt.expected);
     const difference = expected > 0 ? round2(revenue - expected) : null;
     const salesNet = round2(netFromGross(revenue, 10));
+    // SATILAN MALIN MALIYETI: kesinlesmis sayimlarda stoktan eksilen
+    // miktarin ALIS fiyatiyla carpimi. Kesinlesmis sayim yoksa SIFIR
+    // degil BILINMIYOR'dur: 0 yazmak "hic maliyet olmamis" demek olurdu.
+    const cogs = cnt.cogs > 0 ? round2(cnt.cogs) : null;
     // KDV DAHIL ciro - KDV DAHIL maliyet
-    const grossProfit = cnt.cogs > 0 ? round2(revenue - cnt.cogs) : null;
+    const grossProfit = cogs === null ? null : round2(revenue - cogs);
     return {
       campusId: k.id,
       campusName: k.name,
@@ -282,9 +288,11 @@ reportRoutes.get('/campus-comparison', async (ctx) => {
       expectedRevenue: expected,
       difference,
       differencePct: pctOf(difference, expected),
-      cogs: round2(cnt.cogs),
+      cogs,
       grossProfit,
-      grossMarginPct: pctOf(grossProfit, revenue),
+      // pctOf(null, ciro) SIFIR doner; maliyet bilinmiyorken "%0 marj"
+      // yazmak yaniltici oldugu icin acikca null veriyoruz.
+      grossMarginPct: grossProfit === null ? null : pctOf(grossProfit, revenue),
       wasteCost: round2(wasteRow.cost),
       wastePct: pctOf(wasteRow.cost, revenue),
       schoolShare: k.rent_share_pct > 0 ? round2(revenue * k.rent_share_pct / 100) : null,
@@ -296,6 +304,7 @@ reportRoutes.get('/campus-comparison', async (ctx) => {
       { label: 'Kampüs', key: 'campusName' },
       { label: 'Öğrenci', key: 'studentCount' },
       { label: 'Ciro', value: (r) => tr(r.revenue) },
+      { label: 'Satılan Mal Maliyeti (alış)', value: (r) => tr(r.cogs) },
       { label: 'Günlük Ortalama', value: (r) => tr(r.dailyAverage) },
       { label: 'Öğrenci Başına Ciro', value: (r) => tr(r.revenuePerStudent) },
       { label: 'Satılan Adet', value: (r) => tr(r.soldQty) },

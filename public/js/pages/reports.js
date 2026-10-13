@@ -107,12 +107,17 @@ async function monthly(range) {
   return [
     alertBox('info', 'Bu rapor nasıl okunur?',
       '"Beklenen Ciro", o ay kesinleşen sayımlarda stoktan eksilen mal miktarının satış fiyatıyla çarpımıdır. '
+      + '"Maliyet (alış)" ise aynı malın ALIŞ fiyatıyla çarpımı — yani o ciroyu elde etmek için giden malın '
+      + 'tutarı; "Brüt Kâr" ikisinin farkıdır. Üçü de kesinleşmiş sayımdan gelir: sayım kesinleşmemişse '
+      + '"—" görünür ("Alım" sütunu farklıdır, o döneme giren FATURA toplamıdır). '
       + '"Fark" eksi ise girilen ciro, satıldığı hesaplanan maldan düşüktür — kayıt dışı satış veya eksik ciro beyanı işareti olabilir.'),
     card('Aylık Kampüs Özeti', [
       table([
         { label: 'Ay', value: (r) => fmt.monthName(r.month) },
         { label: 'Kampüs', value: (r) => shortName(r.campusName) },
         { label: 'Ciro', num: true, value: (r) => fmt.money(r.revenue) },
+        { label: 'Maliyet (alış)', num: true, value: (r) => (r.cogs === null ? '—' : fmt.money(r.cogs)) },
+        { label: 'Brüt Kâr', num: true, render: (r) => (r.grossProfit === null ? el('span.muted', { text: '—' }) : deltaCell(r.grossProfit)) },
         { label: 'Okul Günü', num: true, value: (r) => r.schoolDays },
         { label: 'Günlük Ort.', num: true, value: (r) => fmt.money(r.dailyAverage) },
         { label: 'Nakit', num: true, value: (r) => fmt.money(r.cash) },
@@ -153,6 +158,9 @@ async function comparison(range) {
         { label: 'Kampüs', value: (r) => shortName(r.campusName), wrap: true },
         { label: 'Öğrenci', num: true, value: (r) => fmt.int(r.studentCount) },
         { label: 'Ciro', num: true, value: (r) => fmt.money(r.revenue) },
+        // Cironun hemen yaninda SATILAN MALIN ALIS TOPLAMI: "bu parayi
+        // kazanmak icin ne kadarlik mal gitti" tek bakista gorulsun.
+        { label: 'Maliyet (alış)', num: true, value: (r) => (r.cogs === null ? '—' : fmt.money(r.cogs)) },
         { label: 'Okul Günü', num: true, value: (r) => r.schoolDays },
         { label: 'Günlük Ort.', num: true, value: (r) => fmt.money(r.dailyAverage) },
         { label: 'Öğr. Başına', num: true, value: (r) => fmt.money(r.revenuePerStudent) },
@@ -166,6 +174,10 @@ async function comparison(range) {
       ], data.items, { rowClass: (r) => (r.difference !== null && r.difference < -1 ? 'is-warn' : '') }),
     ], {
       tight: true,
+      note: '"Ciro" girilen günlük cirolardır. "Maliyet (alış)" o ciroyu elde etmek için stoktan '
+        + 'çıkan malın ALIŞ fiyatıyla toplamıdır; "Brüt Kâr" ikisinin farkıdır. İkisi de kesinleşmiş '
+        + 'sayımdan hesaplandığı için sayım kesinleşmeden "—" görünür. Açılış sayımları bu hesaba '
+        + 'girmez (sistemden önceki dönemi taşırlar).',
       actions: [el('button.btn.btn-sm', { text: '⬇ Excel (CSV)', onclick: () => api.download('/api/reports/campus-comparison', range) })],
     }),
     el('div.grid.grid-2', {}, [
