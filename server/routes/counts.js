@@ -414,6 +414,99 @@ countRoutes.post('/:id/reopen', async (ctx) => {
   return loadCount(header.id, ctx.user);
 });
 
+/* ------------------ Kesinlestirmeyi GERI ALMA ----------------------- */
+/**
+ * KESINLESMIS SAYIMI GERI ALIR (kilitli duruma dondurur).
+ *
+ * Sahadan: Ikitelli'de 30.09 tarihli bir fatura YANLIS girilmis; muhasebe
+ * iptal edip yeniden girmek istiyor. Ama 02.10 tarihli kesinlesmis sayim
+ * o tarihi kilitliyor ve belge ne iptal ne silinebiliyordu. Kesinlesmis
+ * sayimin geri alinmasi hic mumkun degildi: hatali bir kesinlestirme
+ * kalici oluyordu.
+ *
+ * Geri alinca:
+ *   - sayimin yazdigi stok hareketleri (SATIS / SAYIM_FAZLA) SILINIR,
+ *     stok sayim oncesi haline doner;
+ *   - hesaplanmis ciro/maliyet rakamlari temizlenir;
+ *   - durum KILITLI'ye (SAYILDI) doner -- sayilan miktarlar ve tanik
+ *     bilgisi DURUR. Miktarlari da degistirmek gerekiyorsa ayrica
+ *     "Yeniden Ac" ile taslaga dondurulur.
+ *
+ * Duzeltilen fatura girildikten sonra sayim yeniden kesinlestirilir;
+ * "olmasi gereken" rakamlar o anda yeniden hesaplandigi icin duzeltme
+ * kendiliginden yansir.
+ *
+ * GUVENLIK: yalnizca kampusun EN SON kesinlesmis donem sayimi geri
+ * alinabilir. Araya baska bir kesinlesmis sayim girmisse, onceki donemi
+ * acmak sonraki donemin stok temelini bozardi.
+ */
+countRoutes.post('/:id/kesinlestirmeyi-geri-al', async (ctx) => {
+  requireRole(ctx.user, 'ADMIN', 'GENEL_MUDURLUK');
+  const header = get('SELECT * FROM counts WHERE id = ?', [Number(ctx.params.id)]);
+  if (!header) throw notFound('Sayim bulunamadi.');
+  assertCampusAccess(ctx.user, header.campus_id);
+  if (header.status !== 'KESINLESMIS') {
+    throw conflict('Yalnizca KESINLESMIS sayimin kesinlestirmesi geri alinabilir.');
+  }
+  const reason = str(ctx.body.reason, 'Gerekce', { required: true, max: 300, min: 5 });
+
+  const sonraki = get(
+    `SELECT id, count_date FROM counts
+      WHERE campus_id = ? AND status = 'KESINLESMIS' AND count_type = 'DONEM'
+            AND (count_date > ? OR (count_date = ? AND id > ?))
+      ORDER BY count_date, id LIMIT 1`,
+    [header.campus_id, header.count_date, header.count_date, header.id]
+  );
+  if (sonraki) {
+    throw conflict(
+      `Bu sayimdan SONRA ${sonraki.count_date} tarihli kesinlesmis bir sayim daha var (#${sonraki.id}). `
+      + 'Once onun kesinlestirmesini geri alin; donemler en sondan basa dogru acilir.'
+    );
+  }
+
+  const hareketSayisi = get(
+    "SELECT COUNT(*) AS n FROM stock_movements WHERE ref_type = 'count' AND ref_id = ?", [header.id]
+  )?.n ?? 0;
+
+  tx(() => {
+    // Sayimin stoga yazdigi her sey geri alinir
+    run("DELETE FROM stock_movements WHERE ref_type = 'count' AND ref_id = ?", [header.id]);
+    // Kesinlestirmenin SATIRLARA yazdigi satis rakamlari da gitmeli;
+    // yoksa kilitli durumda eski donem satisi duruyormus gibi gorunur.
+    run(
+      `UPDATE count_lines SET sold_qty = 0, sales_value = 0, cost_value = 0, recipe_qty = 0
+        WHERE count_id = ?`, [header.id]
+    );
+    run('UPDATE production_sales SET sales_value = 0, cost_value = 0 WHERE count_id = ?', [header.id]);
+    run(
+      `UPDATE counts SET status = 'SAYILDI', finalized_by = NULL, finalized_at = NULL,
+              expected_revenue = 0, actual_revenue = 0, cogs_total = 0, production_revenue = 0
+        WHERE id = ?`,
+      [header.id]
+    );
+  });
+
+  logAudit({
+    user: ctx.user, action: 'REOPEN_COUNT', entity: 'counts', entityId: header.id,
+    campusId: header.campus_id,
+    detail: {
+      islem: 'kesinlestirme-geri-alindi',
+      gerekce: reason,
+      sayimTarihi: header.count_date,
+      silinenStokHareketi: hareketSayisi,
+      geriAlinanRakamlar: {
+        beklenenCiro: header.expected_revenue,
+        gerceklesenCiro: header.actual_revenue,
+        maliyet: header.cogs_total,
+        uretimCirosu: header.production_revenue,
+      },
+      onceKesinlestiren: header.finalized_by,
+    },
+    ip: ctx.ip,
+  });
+  return loadCount(header.id, ctx.user);
+});
+
 /* ---------------- Mevcut sayimi ACILIS olarak isaretle --------------- */
 /**
  * GECMIS YILDAN DEVREDEN STOK sisteme boyle kabul edilir.
@@ -736,6 +829,28 @@ function loadCount(countId, user) {
        LEFT JOIN categories cat ON cat.id = p.category_id
       WHERE l.count_id = ? ORDER BY cat.sort_order, p.name COLLATE NOCASE`, [countId]
   );
+
+  // "OLMASI GEREKEN" MIKTAR CANLI OKUNUR.
+  //
+  // Bu deger sayim acilirken cekilmis bir fotograftir. Sayim kesinlesene
+  // kadar o donemin belgeleri degisebilir: fatura duzeltilir, iptal
+  // edilir, kesinlestirme geri alinip yanlis fatura dogrusuyla
+  // degistirilir. O an fotograf YALAN soyler -- ekranda hala eski
+  // faturanin miktari yazar ve kullanici neyi sayacagini sasirir.
+  //
+  // Kesinlesmis sayimda ise dondurulmus deger KALIR: orasi artik bir
+  // kayittir, sonradan degismemelidir.
+  if (header.status !== 'KESINLESMIS') {
+    const canli = new Map(
+      stockSnapshot(header.campus_id, { untilDate: header.count_date, onlyActive: false })
+        .map((p) => [p.product_id, p.stock_qty])
+    );
+    lines = lines.map((l) => {
+      if (!canli.has(l.product_id)) return l;
+      const beklenen = round2(canli.get(l.product_id));
+      return { ...l, expected_qty: beklenen, diff_qty: round2(l.counted_qty - beklenen) };
+    });
+  }
 
   const filled = lines.filter((l) => l.counted_qty !== 0).length;
   const progress = { total: lines.length, filled };

@@ -424,6 +424,189 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
 
 });
 
+/* ------------- Kesinlestirmeyi geri alma (yanlis fatura) ------------ */
+/**
+ * Sahadan: Ikitelli'de 30.09 tarihli bir fatura YANLIS girilmis; muhasebe
+ * iptal edip yeniden girmek istiyor. 02.10 tarihli kesinlesmis sayim o
+ * tarihi kilitledigi icin belge ne iptal ne silinebiliyordu ve
+ * kesinlesmis sayim geri alinamiyordu: hatali kesinlestirme kaliciydi.
+ */
+describe('Kesinlestirmeyi geri alma', () => {
+  let campusId; let supplierId; let productId; let mudurJeton;
+
+  const kesinlestir = async (countId) => {
+    const res = await fetch(`${BASE}/api/counts/${countId}/finalize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${mudurJeton}` },
+      body: '{}',
+    });
+    assert.equal(res.status, 200, JSON.stringify(await res.json().catch(() => ({}))));
+    return res.json().catch(() => ({}));
+  };
+  const stok = async () => {
+    const r = await ok('GET', `/api/stock?campusId=${campusId}`);
+    return r.items.find((x) => x.product_id === productId)?.stock_qty ?? 0;
+  };
+  const sayimKur = async (countDate, countedQty) => {
+    const c = await ok('POST', '/api/counts', { campusId, countDate, isBlind: false });
+    await ok('PUT', `/api/counts/${c.id}/lines`, { lines: [{ productId, countedQty }] });
+    await ok('POST', `/api/counts/${c.id}/submit`, { witnessName: 'Geri Al Tanık' });
+    await kesinlestir(c.id);
+    return c.id;
+  };
+
+  before(async () => {
+    campusId = (await ok('POST', '/api/campuses', { name: 'Geri Alma Kampüsü', code: 'GRA' })).id;
+    supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'Geri Alma Tedarikçi', taxNo: '3434343434' })).id;
+    productId = (await ok('POST', '/api/products',
+      { name: 'Geri Alma Ürünü', salePrice: 50, vatRate: 10, unit: 'ADET' })).id;
+    const eposta = `gerial.mudur.${Date.now()}@topkapiokullari.com`;
+    await ok('POST', '/api/users', {
+      email: eposta, fullName: 'Geri Al Müdür', role: 'GENEL_MUDURLUK', password: 'Mudur123456',
+    });
+    mudurJeton = (await api('POST', '/api/auth/login',
+      { email: eposta, password: 'Mudur123456' }, false)).data.token;
+  });
+
+  test('YANLIS girilen fatura kesinlesmis sayim yuzunden kilitli', async () => {
+    // 100 adet girilmesi gerekirken 1000 adet girilmis
+    const fatura = await ok('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'GRA-YANLIS', documentDate: daysAgo(10),
+      lines: [{ productId, quantity: 1000, unitPrice: 10, vatRate: 10 }],
+    });
+    await sayimKur(daysAgo(5), 900);
+
+    const iptal = await api('POST', `/api/purchases/${fatura.id}/cancel`);
+    assert.equal(iptal.status, 409);
+    // Mesaj CIKIS YOLUNU soylemeli
+    assert.match(iptal.data.error, /Kesinlestirmeyi Geri Al/i, iptal.data.error);
+  });
+
+  test('geri alinca STOK sayim oncesine doner, durum KILITLI olur', async () => {
+    const liste = await ok('GET', `/api/counts?campusId=${campusId}`);
+    const sayim = liste.items.find((c) => c.status === 'KESINLESMIS');
+    assert.ok(sayim, JSON.stringify(liste.items));
+    assert.equal(await stok(), 900, 'kesinlesince stok sayilan miktara oturmustu');
+
+    const r = await ok('POST', `/api/counts/${sayim.id}/kesinlestirmeyi-geri-al`,
+      { reason: 'Fatura yanlış girildi, düzeltilip yeniden kesinleştirilecek.' });
+    assert.equal(r.status, 'SAYILDI', 'kilitli duruma donmeli');
+    assert.equal(r.finalized_by, null);
+    // Sayilan miktar ve tanik DURMALI
+    assert.equal(r.lines.find((l) => l.product_id === productId).counted_qty, 900);
+    assert.equal(r.witness_name, 'Geri Al Tanık');
+    assert.equal(await stok(), 1000, 'sayimin yazdigi hareket silinip fatura miktarina donmeli');
+  });
+
+  test('geri alinca kilitli FATURA duzeltilebilir hale gelir', async () => {
+    const belgeler = await ok('GET', `/api/purchases?campusId=${campusId}`);
+    const fatura = belgeler.items.find((p) => p.document_no === 'GRA-YANLIS');
+    await ok('POST', `/api/purchases/${fatura.id}/cancel`);
+    assert.equal(await stok(), 0, 'iptal stok hareketini kaldirmali');
+
+    // Dogrusu girilir: 100 adet
+    await ok('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'GRA-DOGRU', documentDate: daysAgo(10),
+      lines: [{ productId, quantity: 100, unitPrice: 10, vatRate: 10 }],
+    });
+    assert.equal(await stok(), 100);
+  });
+
+  test('duzeltme sonrasi YENIDEN kesinlestirince rakamlar yeniden hesaplanir', async () => {
+    const liste = await ok('GET', `/api/counts?campusId=${campusId}`);
+    const sayim = liste.items.find((c) => c.status === 'SAYILDI');
+    // Sayilan miktar 900'du; artik stokta 100 var, miktari da duzeltelim
+    await ok('POST', `/api/counts/${sayim.id}/reopen`, { reason: 'Sayılan miktar da düzeltilecek.' });
+    await ok('PUT', `/api/counts/${sayim.id}/lines`, { lines: [{ productId, countedQty: 90 }] });
+    await ok('POST', `/api/counts/${sayim.id}/submit`, { witnessName: 'Geri Al Tanık' });
+    await kesinlestir(sayim.id);
+
+    const detay = await ok('GET', `/api/counts/${sayim.id}`);
+    assert.equal(detay.status, 'KESINLESMIS');
+    const satir = detay.lines.find((l) => l.product_id === productId);
+    assert.equal(satir.expected_qty, 100, 'olmasi gereken DUZELTILMIS faturadan gelmeli');
+    assert.equal(satir.sold_qty, 10, '100 - 90 = 10');
+    assert.equal(await stok(), 90);
+  });
+
+  test('ARADA baska kesinlesmis sayim varsa geri alinamaz', async () => {
+    const ilk = (await ok('GET', `/api/counts?campusId=${campusId}`))
+      .items.find((c) => c.status === 'KESINLESMIS');
+    // Sonraki donem sayimi
+    await sayimKur(daysAgo(1), 80);
+
+    const r = await api('POST', `/api/counts/${ilk.id}/kesinlestirmeyi-geri-al`,
+      { reason: 'Eski dönemi açmaya çalışıyorum.' });
+    assert.equal(r.status, 409);
+    assert.match(r.data.error, /en sondan basa|sonra/i, r.data.error);
+  });
+
+  test('EN SON sayim geri alinabilir', async () => {
+    const liste = await ok('GET', `/api/counts?campusId=${campusId}`);
+    const son = liste.items.filter((c) => c.status === 'KESINLESMIS')
+      .sort((a, b) => (a.count_date < b.count_date ? 1 : -1))[0];
+    const r = await ok('POST', `/api/counts/${son.id}/kesinlestirmeyi-geri-al`,
+      { reason: 'En son dönem geri alınabilmeli.' });
+    assert.equal(r.status, 'SAYILDI');
+    // Geri sar: sonraki testler icin yeniden kesinlestir
+    await kesinlestir(son.id);
+  });
+
+  test('GEREKCE zorunludur', async () => {
+    const son = (await ok('GET', `/api/counts?campusId=${campusId}`))
+      .items.filter((c) => c.status === 'KESINLESMIS')
+      .sort((a, b) => (a.count_date < b.count_date ? 1 : -1))[0];
+    const r = await api('POST', `/api/counts/${son.id}/kesinlestirmeyi-geri-al`, {});
+    assert.equal(r.status, 400);
+  });
+
+  test('KESINLESMEMIS sayimda islem reddedilir', async () => {
+    const taslak = await ok('POST', '/api/counts',
+      { campusId, countDate: iso(new Date()), isBlind: false });
+    const r = await api('POST', `/api/counts/${taslak.id}/kesinlestirmeyi-geri-al`,
+      { reason: 'Taslak sayımı geri almaya çalışıyorum.' });
+    assert.equal(r.status, 409);
+    await ok('DELETE', `/api/counts/${taslak.id}`);
+  });
+
+  test('yalnizca ADMIN ve GENEL MUDURLUK geri alabilir', async () => {
+    const son = (await ok('GET', `/api/counts?campusId=${campusId}`))
+      .items.filter((c) => c.status === 'KESINLESMIS')
+      .sort((a, b) => (a.count_date < b.count_date ? 1 : -1))[0];
+    const dene = async (role) => {
+      const eposta = `gerial.${role.toLowerCase()}.${Date.now()}@topkapiokullari.com`;
+      await ok('POST', '/api/users', {
+        fullName: `Geri Al ${role}`, email: eposta, password: 'Gerial123456', role,
+        campusId: role === 'KAMPUS_YONETICISI' || role === 'KANTIN_GOREVLISI' ? campusId : null,
+      });
+      const login = await api('POST', '/api/auth/login',
+        { email: eposta, password: 'Gerial123456' }, false);
+      const res = await fetch(`${BASE}/api/counts/${son.id}/kesinlestirmeyi-geri-al`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${login.data.token}` },
+        body: JSON.stringify({ reason: 'Yetki denemesi yapılıyor.' }),
+      });
+      return res.status;
+    };
+    assert.equal(await dene('KAMPUS_YONETICISI'), 403, 'kampus yoneticisi geri alamamali');
+    assert.equal(await dene('MUHASEBE'), 403, 'on muhasebe geri alamamali');
+    assert.equal(await dene('DENETCI'), 403, 'denetci geri alamamali');
+  });
+
+  test('islem DENETIM IZINE gerekcesiyle yazilir', async () => {
+    const izl = await ok('GET', '/api/audit?entity=counts&limit=40');
+    const kayit = izl.items.find((x) => x.action === 'REOPEN_COUNT'
+      && (typeof x.detail === 'string' ? x.detail : JSON.stringify(x.detail))
+        .includes('kesinlestirme-geri-alindi'));
+    assert.ok(kayit, 'geri alma denetim izinde olmali');
+    const d = typeof kayit.detail === 'string' ? JSON.parse(kayit.detail) : kayit.detail;
+    assert.ok(d.gerekce.length >= 5);
+    assert.ok(d.silinenStokHareketi >= 1, JSON.stringify(d));
+    assert.ok(d.geriAlinanRakamlar);
+  });
+});
+
 /* --------------------- Nokta sayimi (habersiz) --------------------- */
 describe('Nokta sayimi', () => {
   let campusId; let productId; let spotId;

@@ -254,12 +254,17 @@ export function confirmDialog(message, { title = 'Onay', confirmText = 'Evet, de
  *             donmez; "bu alan artik elle girilmiyor, su kaynaktan geliyor"
  *             demek icin kullanilir.
  */
-export function formModal({ title, fields, submitText = 'Kaydet', wide = false, xwide = false, onSubmit }) {
+export function formModal({
+  title, fields, submitText = 'Kaydet', wide = false, xwide = false, onSubmit,
+  // Geri alinamaz islemlerde NE OLACAGINI formun ustunde yazmak icin
+  note = null, noteTone = 'warning', danger = false,
+}) {
   const inputs = {};
   const errorBox = el('div.alert.alert-danger', { hidden: true });
 
   const body = fields.map((f) => {
     if (f.type === 'section') return el('h4', { text: f.label, style: 'margin-top:6px;font-size:13px;color:var(--text-muted)' });
+    if (f.type === 'alert') return alertBox(f.tone || 'warning', f.label, f.value ?? '');
     if (f.type === 'info') {
       return el('div.field', {}, [
         el('span', { text: f.label }),
@@ -293,10 +298,10 @@ export function formModal({ title, fields, submitText = 'Kaydet', wide = false, 
     ]);
   });
 
-  const submitBtn = el('button.btn.btn-primary', { text: submitText });
+  const submitBtn = el(`button.btn.${danger ? 'btn-danger' : 'btn-primary'}`, { text: submitText });
   const m = modal({
     title, wide, xwide,
-    body: [errorBox, ...body],
+    body: [errorBox, note ? alertBox(noteTone, 'Ne olacak?', note) : null, ...body],
     actions: [el('button.btn', { text: 'Vazgeç', onclick: () => m.close() }), submitBtn],
   });
 

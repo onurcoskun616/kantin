@@ -171,9 +171,16 @@ function assertPurchaseMutable(header, eylem) {
     [header.campus_id, header.document_date]
   );
   if (laterCount) {
+    // Cikis yolunu SOYLEMEK zorundayiz: eski mesaj "duzeltme kaydi
+    // giriniz" diyordu ama nereden, nasil girilecegini yazmiyordu;
+    // kullanici ekranda kilitli kaliyordu.
     throw conflict(
-      `Bu belge ${laterCount.count_date} tarihli kesinlesmis sayima dahil oldugu icin ${eylem}. `
-      + 'Duzeltme kaydi giriniz.'
+      `Bu belge ${laterCount.count_date} tarihli kesinlesmis sayima (#${laterCount.id}) dahil `
+      + `oldugu icin ${eylem}. Iki yol var: (1) Fatura yanlis girildiyse Genel Mudurluk `
+      + `Sayim/Envanter ekranindan o sayimin "Kesinlestirmeyi Geri Al" islemini yapar, belge `
+      + `duzeltilir, sayim yeniden kesinlestirilir. (2) Kapanan donem kapali kalacaksa mal `
+      + `eksik/fazla geldiyse Tedarikciye Iade, eksik mal icin yeni bir alim belgesi girilerek `
+      + `ACIK donemde duzeltme kaydi olusturulur.`
     );
   }
   const linkedReturn = get('SELECT id FROM supplier_returns WHERE purchase_id = ? LIMIT 1', [header.id]);

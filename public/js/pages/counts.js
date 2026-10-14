@@ -288,6 +288,12 @@ function finalizeActions(data, reload) {
   if (data.status === 'SAYILDI' && ['ADMIN', 'GENEL_MUDURLUK'].includes(state.user.role)) {
     out.push(el('button.btn.btn-ghost', { text: 'Yeniden Aç', onclick: () => reopen(data, reload) }));
   }
+  // Kesinlesmis sayim bir faturayi kilitliyorsa tek cikis yolu budur
+  if (data.status === 'KESINLESMIS' && ['ADMIN', 'GENEL_MUDURLUK'].includes(state.user.role)) {
+    out.push(el('button.btn.btn-ghost', {
+      text: '↩ Kesinleştirmeyi Geri Al', onclick: () => geriAl(data, reload),
+    }));
+  }
   return out;
 }
 
@@ -754,6 +760,37 @@ async function finalize(data, reload) {
   } catch (err) {
     toast(err.message, 'error');
   }
+}
+
+/**
+ * KESINLESTIRMEYI GERI ALMA.
+ *
+ * Kesinlesmis sayim, tarihi kendinden onceki faturalari kilitler. Yanlis
+ * girilmis bir faturayi duzeltmenin tek yolu sayimi geri almaktir; bu
+ * islem sayimin stoga yazdigi hareketleri siler, dolayisiyla NE OLACAGI
+ * onayda tek tek yazilir.
+ */
+function geriAl(data, reload) {
+  formModal({
+    title: '↩ Kesinleştirmeyi Geri Al',
+    fields: [
+      { name: 'reason', label: 'Gerekçe', type: 'textarea', required: true,
+        hint: 'Örn: "30.09 tarihli CAN2026000089717 no.lu fatura yanlış girilmiş, '
+          + 'düzeltilip sayım yeniden kesinleştirilecek." Bu gerekçe denetim izine yazılır ve silinemez.' },
+    ],
+    submitText: 'Kesinleştirmeyi Geri Al',
+    danger: true,
+    note: 'Sayım KİLİTLİ duruma döner. Sayımın stoğa yazdığı hareketler silinir ve stok, '
+      + 'sayım öncesi hâline döner; hesaplanmış ciro/maliyet rakamları temizlenir. Sayılan '
+      + 'miktarlar ve tanık bilgisi DURUR. Bu dönemin faturaları yeniden düzeltilebilir hâle '
+      + 'gelir. Düzeltmeyi yaptıktan sonra sayımı tekrar kesinleştirin — "olması gereken" '
+      + 'rakamlar o anda yeniden hesaplanır.',
+    onSubmit: async (v) => {
+      await api.post(`/api/counts/${data.id}/kesinlestirmeyi-geri-al`, { reason: v.reason });
+      toast('Kesinleştirme geri alındı. Sayım kilitli duruma döndü; işlem denetim izine yazıldı.');
+      reload();
+    },
+  });
 }
 
 function reopen(data, reload) {
