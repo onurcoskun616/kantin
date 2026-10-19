@@ -92,6 +92,7 @@ export async function renderProducts(root) {
       : priceControl.items;
 
     if (uyarilar.length) {
+      const taniliSayi = uyarilar.filter((r) => r.tani).length;
       sonucBolumu.append(card('⚠️ Fiyat Denetimi Uyarıları', [
         table([
           { label: 'Ürün', value: (r) => r.name, wrap: true },
@@ -99,11 +100,18 @@ export async function renderProducts(root) {
           { label: 'Satış', num: true, value: (r) => fmt.money(r.effective_sale_price) },
           { label: 'Birim Kâr', num: true, render: (r) => deltaCell(r.profit.unitProfit) },
           { label: 'Marj', num: true, value: (r) => fmt.pct(r.profit.marginPct) },
-          { label: 'Sorun', render: (r) => el('div', { style: 'display:flex;gap:4px;flex-wrap:wrap' }, r.issues.map((i) => badge(i, 'warn'))), wrap: true },
+          { label: 'Sorun',
+            render: (r) => el('div', { style: 'display:grid;gap:4px' }, [
+              el('div', { style: 'display:flex;gap:4px;flex-wrap:wrap' }, r.issues.map((i) => badge(i, 'warn'))),
+              taniSatiri(r),
+            ]),
+            wrap: true },
         ], uyarilar, { emptyText: 'Uyarı yok.' }),
       ], {
         tight: true,
         note: `Kâr marjı %${priceControl.minMargin} altında kalan, zararına satılan veya tavan fiyatı aşan ürünler listelenir.`
+          + (taniliSayi ? ` ${taniliSayi} üründe alış fiyatı KOLİ fiyatı gibi duruyor — satırın altında olması gereken `
+            + 'adet fiyatı ve nasıl düzeltileceği yazıyor.' : '')
           + (suzuluyor ? ` Aramaya uyan ${uyarilar.length} uyarı gösteriliyor (toplam ${priceControl.items.length}).` : ''),
       }));
     } else if (suzuluyor && priceControl.items.length) {
@@ -172,6 +180,31 @@ export async function renderProducts(root) {
  * oluşuyor. Kullanıcı 200+ kart içinde bunları gözle arayamaz; sistem
  * kendisi bulup önüne koyar.
  */
+/**
+ * "ZARARINA SATIŞ" SATIRININ ALTINA SEBEBİNİ VE ÇÖZÜMÜNÜ YAZAR.
+ *
+ * 40 satırlık "-%1243" listesi tek başına hiçbir şey söylemiyor.
+ * Sunucu, alış fiyatını ürün adındaki koli adedine bölünce makul bir
+ * marj çıkıyorsa bunu tanı olarak döndürür; burada hem doğru rakamı
+ * hem de hangi işlemin yapılacağını yazarız. İki ayrı sebep, iki ayrı
+ * çare vardır — karıştırılmamalıdır.
+ */
+function taniSatiri(r) {
+  const t = r.tani;
+  if (!t) return null;
+  const hesap = `${fmt.money(r.effective_purchase_price)} ÷ ${t.carpan} = `
+    + `${fmt.money(t.birimAlis)} → satış ${fmt.money(r.effective_sale_price)} ile `
+    + `${fmt.pct(t.marjPct)} marj`;
+  const mesaj = t.sebep === 'ambalaj-birimi'
+    ? `Kartın birimi ${t.birim}: alış ${t.birim} fiyatı, satış ise adet fiyatı gibi girilmiş. `
+      + `Adında ${t.carpan}'lik ambalaj var — ${hesap}. Kartı ADET'e çevirin veya satış `
+      + `fiyatını ${t.birim} başına yazın.`
+    : `Alış fiyatı KOLİ fiyatı gibi duruyor: adında ${t.carpan}'lik koli var — ${hesap}. `
+      + 'Fatura girilirken "bir kolide kaç adet var" çevrimi uygulanmamış olabilir. '
+      + 'Mal Girişi\'nden belgeyi iptal edip çevrimi uygulayarak yeniden girin.';
+  return el('small', { style: 'color:var(--text-muted);line-height:1.45', text: `↳ ${mesaj}` });
+}
+
 async function mukerrerPaneli(kap, onChange) {
   if (!canMergeProducts()) return;
   let veri = null;

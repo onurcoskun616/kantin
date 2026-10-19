@@ -6,7 +6,7 @@ import { logAudit } from '../lib/audit.js';
 import { str, num, int, bool, date, today, oneOf } from '../lib/validate.js';
 import { productProfit, round2 } from '../lib/money.js';
 import { lastPurchaseSql, salePriceSql } from '../lib/stock.js';
-import { normalizeTr, trFold, trFoldSql } from '../lib/metin.js';
+import { normalizeTr, trFold, trFoldSql, adAdetIpucu } from '../lib/metin.js';
 
 export const productRoutes = new Router();
 
@@ -567,28 +567,6 @@ const BIRIMLER = ['ADET', 'KG', 'LT', 'PAKET', 'KUTU', 'PORSIYON'];
 
 /** Icinde tek tek adet bulunan, yani ADET'e cevrilmesi gereken birimler. */
 const AMBALAJ_BIRIMLERI = new Set(['PAKET', 'KUTU']);
-
-/**
- * URUN ADINDAN AMBALAJ ADEDI IPUCU CIKARIR.
- *
- * Kullaniciya "1 PAKET = kac ADET?" diye sorarken bos bir kutu
- * gostermek yerine addaki rakami onerir. Sahadan:
- *
- *   "DUCAT SICAK ÇİKOLATA*10"        -> 10
- *   "Ducat Sıcak Çikolata 10 Lu"     -> 10
- *   "CRAX ACI BAHARATLI 50GX20KL"    -> 20   (50 g degil, 20 koli adedi)
- *   "SÜT 180 ML"                     -> (yok)
- *
- * IPUCUDUR, karar degil: arayuzde onay istenir.
- */
-function adAdetIpucu(ad) {
-  const t = normalizeTr(String(ad || '').replace(/\*/g, ' x '));
-  const bulunan = new Set();
-  for (const m of t.matchAll(/x\s*(\d{1,3})/g)) bulunan.add(Number(m[1]));
-  for (const m of t.matchAll(/(\d{1,3})\s*l[uiy]\b/g)) bulunan.add(Number(m[1]));
-  for (const m of t.matchAll(/(\d{1,3})\s*adet/g)) bulunan.add(Number(m[1]));
-  return [...bulunan].filter((n) => n >= 2 && n <= 500).sort((a, b) => a - b);
-}
 
 /**
  * Birlestirmede kullanilacak birim ve cevrim carpanlarini okur/dogrular.

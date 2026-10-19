@@ -60,3 +60,26 @@ export function trFoldSql(sutun) {
   return ciftler.reduce((ifade, [buyuk, kucuk]) => `REPLACE(${ifade}, '${buyuk}', '${kucuk}')`,
     `LOWER(${sutun})`);
 }
+
+/**
+ * URUN ADINDAN AMBALAJ ADEDI IPUCU CIKARIR.
+ *
+ * Sahadan:
+ *   "DUCAT SICAK ÇİKOLATA*10"        -> 10
+ *   "Ducat Sıcak Çikolata 10 Lu"     -> 10
+ *   "CRAX ACI BAHARATLI 50GX20KL"    -> 20   (50 g degil, 20 koli adedi)
+ *   "BİSKREM KAKAOLU 100GRx18"       -> 18
+ *   "SÜT 180 ML"                     -> (yok)
+ *
+ * IPUCUDUR, karar degil: iki yerde kullanilir -- mukerrer kart
+ * birlestirmede "1 PAKET = kac ADET" on dolgusu, ve fiyat denetiminde
+ * "koli fiyati adet fiyati sanilmis" tanisi.
+ */
+export function adAdetIpucu(ad) {
+  const t = normalizeTr(String(ad || '').replace(/\*/g, ' x '));
+  const bulunan = new Set();
+  for (const m of t.matchAll(/x\s*(\d{1,3})/g)) bulunan.add(Number(m[1]));
+  for (const m of t.matchAll(/(\d{1,3})\s*l[uiy]\b/g)) bulunan.add(Number(m[1]));
+  for (const m of t.matchAll(/(\d{1,3})\s*adet/g)) bulunan.add(Number(m[1]));
+  return [...bulunan].filter((n) => n >= 2 && n <= 500).sort((a, b) => a - b);
+}

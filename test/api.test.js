@@ -424,6 +424,81 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
 
 });
 
+/* ------------------ Fiyat denetimi: koli fiyati tanisi -------------- */
+/**
+ * Sahadan (Esenyurt): 40 kalemde "Zararina satis" uyarisi vardi ve
+ * kullanici ne yapacagini bilemiyordu. Hepsinin sebebi ayniydi: alis
+ * fiyati ADET degil KOLI fiyatiydi. Yazilim artik sebebi ve dogru
+ * rakami kendisi soyluyor.
+ */
+describe('Fiyat denetimi koli fiyatini teshis eder', () => {
+  let campusId; let supplierId;
+
+  before(async () => {
+    campusId = (await ok('POST', '/api/campuses', { name: 'Koli Tanı Kampüsü', code: 'KTN' })).id;
+    supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'Koli Tanı Tedarikçi', taxNo: '3535353535' })).id;
+  });
+
+  /** Alis fiyati faturadan gelir; kart ustunden yazilamaz. */
+  const kartKur = async (name, { unit = 'ADET', salePrice, koliFiyati }) => {
+    const p = await ok('POST', '/api/products', { name, salePrice, vatRate: 0, unit });
+    await ok('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: `KTN-${p.id}`, documentDate: daysAgo(3),
+      lines: [{ productId: p.id, quantity: 1, unitPrice: koliFiyati, vatRate: 0 }],
+    });
+    return p;
+  };
+  const tani = async (productId) => {
+    const r = await ok('GET', `/api/reports/price-control?campusId=${campusId}`);
+    return r.items.find((x) => x.id === productId);
+  };
+
+  test('KOLI fiyati adet fiyati sanilmissa dogru rakami soyler', async () => {
+    // Sahadaki satir: alis 359,96 · satis 50 · marj -%619
+    const u = await kartKur('BİSKREM KAKAOLU 100GRx18', { salePrice: 50, koliFiyati: 359.96 });
+    const r = await tani(u.id);
+    assert.ok(r.issues.includes('Zararina satis'), JSON.stringify(r.issues));
+    assert.ok(r.tani, 'tani uretilmeliydi');
+    assert.equal(r.tani.carpan, 18, 'addaki 18 koli adedi olarak bulunmali');
+    assert.equal(r.tani.birimAlis, 20, '359,96 / 18 = 20,00');
+    assert.equal(r.tani.sebep, 'cevrim-uygulanmamis');
+    assert.ok(r.tani.marjPct > 50, JSON.stringify(r.tani));
+  });
+
+  test('AMBALAJ birimli kartta sebep AYRI isaretlenir', async () => {
+    // Kartin birimi KUTU: alis KUTU fiyati DOGRU, satis adet fiyati
+    const u = await kartKur('A.BAŞAK T.CİP.YO&YEŞ.50GX20',
+      { unit: 'KUTU', salePrice: 35, koliFiyati: 352.09 });
+    const r = await tani(u.id);
+    assert.equal(r.tani.carpan, 20);
+    assert.equal(r.tani.birimAlis, 17.6, '352,09 / 20 = 17,60');
+    assert.equal(r.tani.sebep, 'ambalaj-birimi', 'carenin farkli oldugu belirtilmeli');
+    assert.equal(r.tani.birim, 'KUTU');
+  });
+
+  test('GERCEKTEN zararina satista tani URETILMEZ', async () => {
+    // Adinda ambalaj adedi yok; bolme makul marj vermiyor
+    const u = await kartKur('Gerçek Zarar Ürünü', { salePrice: 10, koliFiyati: 40 });
+    const r = await tani(u.id);
+    assert.ok(r.issues.includes('Zararina satis'));
+    assert.equal(r.tani, null, 'uydurma tani verilmemeli');
+  });
+
+  test('addaki rakam GRAMAJ ise tani uretilmez', async () => {
+    // "180 ML" bir koli adedi degildir
+    const u = await kartKur('Süt Çilekli 180 ML', { salePrice: 15, koliFiyati: 300 });
+    const r = await tani(u.id);
+    assert.equal(r.tani, null, JSON.stringify(r.tani));
+  });
+
+  test('marji ZATEN saglikli olan urun listeye girmez', async () => {
+    const u = await kartKur('Sağlıklı Marj 100GRx18', { salePrice: 50, koliFiyati: 20 });
+    const r = await tani(u.id);
+    assert.equal(r, undefined, 'uyari listesinde olmamali');
+  });
+});
+
 /* ------------- Kesinlestirmeyi geri alma (yanlis fatura) ------------ */
 /**
  * Sahadan: Ikitelli'de 30.09 tarihli bir fatura YANLIS girilmis; muhasebe

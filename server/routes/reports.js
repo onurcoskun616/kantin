@@ -6,6 +6,7 @@ import { today, monthRange } from '../lib/validate.js';
 import { round2, pctOf, netFromGross, productProfit } from '../lib/money.js';
 import { stockSnapshot, stockValue } from '../lib/stock.js';
 import { recipeUnitCost } from '../lib/recipe.js';
+import { adAdetIpucu } from '../lib/metin.js';
 
 export const reportRoutes = new Router();
 
@@ -346,6 +347,47 @@ reportRoutes.get('/campus-comparison', async (ctx) => {
 });
 
 /* --------------------------- Fiyat denetimi ------------------------ */
+/** Kartin birimi tek tek degil, AMBALAJ halinde tutuluyor mu? */
+const AMBALAJ_BIRIMLERI = new Set(['KUTU', 'PAKET', 'KOLI']);
+
+/**
+ * "ZARARINA SATIS" UYARISININ SEBEBINI BULUR.
+ *
+ * Sahadan (Esenyurt): "BISKREM KAKAOLU 100GRx18" kartinda alis 359,96 TL,
+ * satis 50 TL, marj -%619. Kullanici 40 satirlik boyle bir liste gorup
+ * ne yapacagini bilemiyordu. Oysa 359,96 / 18 = 20,00 TL -- yani alis
+ * fiyati ADET degil KOLI fiyatidir; fatura girilirken "bir kolide kac
+ * adet var" cevrimi uygulanmamistir. Ayni hesap listenin tamamini
+ * acikliyor:
+ *
+ *   A.BASAK ...50GX20      352,09 / 20 = 17,60  -> satis 35   -> %50
+ *   DORE ...86GX24         575,94 / 24 = 24,00  -> satis 50   -> %52
+ *   ULKER CUBUK ...40GRX36 215,98 / 36 =  6,00  -> satis 20   -> %70
+ *
+ * Tani KESIN DEGIL, ADAYDIR: ad icindeki rakam her zaman koli adedi
+ * olmayabilir. Bu yuzden arayuzde "kontrol edin" diye gosterilir ve
+ * duzeltmeyi kullanici yapar.
+ */
+function koliFiyatiTanisi(urun, alis, satis, kdv, minMarj) {
+  if (!(alis > 0) || !(satis > 0)) return null;
+  const ambalajKarti = AMBALAJ_BIRIMLERI.has(String(urun.unit || '').toUpperCase());
+  for (const n of adAdetIpucu(urun.name)) {
+    const birimAlis = round2(alis / n);
+    const k = productProfit(birimAlis, satis, kdv);
+    if (k.unitProfit < 0 || k.marginPct < minMarj) continue;
+    return {
+      carpan: n,
+      birimAlis,
+      birimKar: k.unitProfit,
+      marjPct: k.marginPct,
+      // Iki ayri sebep, iki ayri care
+      sebep: ambalajKarti ? 'ambalaj-birimi' : 'cevrim-uygulanmamis',
+      birim: urun.unit,
+    };
+  }
+  return null;
+}
+
 reportRoutes.get('/price-control', async (ctx) => {
   const campusId = ctx.query.campusId ? assertCampusAccess(ctx.user, ctx.query.campusId) : (ctx.user.campusId || null);
   const minMargin = Number(ctx.query.minMargin || 20);
@@ -380,6 +422,10 @@ reportRoutes.get('/price-control', async (ctx) => {
     if (sale <= 0) issues.push('Satis fiyati tanimsiz');
     if (purchase <= 0) issues.push('Alis fiyati tanimsiz');
     if (sale > 0 && purchase > 0 && profit.unitProfit < 0) issues.push('Zararina satis');
+    // Zararina satisin en sik sebebi koli fiyatinin adet fiyati
+    // sanilmasidir; sebebini ve dogru rakami kullaniciya soyleriz.
+    const tani = profit.unitProfit < 0
+      ? koliFiyatiTanisi(r, purchase, sale, r.vat_rate, minMargin) : null;
     if (sale > 0 && purchase > 0 && profit.marginPct < minMargin && profit.unitProfit >= 0) {
       issues.push(`Kar marji %${minMargin} altinda`);
     }
@@ -388,6 +434,7 @@ reportRoutes.get('/price-control', async (ctx) => {
     return {
       ...r, effective_purchase_price: purchase, effective_sale_price: sale, profit, issues,
       has_recipe: recipe?.hasRecipe ?? null,
+      tani,
     };
   }).filter((r) => r.issues.length > 0);
 
