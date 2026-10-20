@@ -424,6 +424,85 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
 
 });
 
+/* ----------- Stok ekrani: belge no ve kampus katalogu --------------- */
+describe('Stok hareketleri ve kampus katalogu', () => {
+  let campusId; let bosKampus; let supplierId; let urun; let girmeyenUrun; let belge;
+
+  before(async () => {
+    campusId = (await ok('POST', '/api/campuses', { name: 'Hareket Kampüsü', code: 'HRK' })).id;
+    bosKampus = (await ok('POST', '/api/campuses', { name: 'Boş Kampüs', code: 'BOS' })).id;
+    supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'Hareket Tedarikçi', taxNo: '3737373737' })).id;
+    urun = (await ok('POST', '/api/products',
+      { name: 'Hareket Ürünü', salePrice: 50, vatRate: 10, unit: 'ADET' })).id;
+    girmeyenUrun = (await ok('POST', '/api/products',
+      { name: 'Hiç Girmeyen Ürün', salePrice: 20, vatRate: 10, unit: 'ADET', criticalStock: 5 })).id;
+    belge = await ok('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'AVP2026000142807', documentDate: daysAgo(6),
+      lines: [{ productId: urun, quantity: 240, unitPrice: 28.96, vatRate: 10 }],
+    });
+  });
+
+  test('hareket satiri FATURA NUMARASINI tasir, "purchase #74" degil', async () => {
+    const r = await ok('GET', `/api/stock/movements?campusId=${campusId}&productId=${urun}`);
+    const giris = r.items.find((m) => m.movement_type === 'ALIS');
+    assert.ok(giris, JSON.stringify(r.items));
+    assert.equal(giris.ref_document_no, 'AVP2026000142807', JSON.stringify(giris));
+    assert.equal(giris.ref_date, daysAgo(6));
+    assert.equal(giris.ref_party, 'Hareket Tedarikçi', 'tedarikci adi da gelmeli');
+  });
+
+  test('IADE belgesinin numarasi da gelir', async () => {
+    await ok('POST', '/api/returns', {
+      campusId, supplierId, purchaseId: belge.id, returnDate: daysAgo(2),
+      reason: 'BOZUK', documentNo: 'IADE-2026-1',
+      lines: [{ productId: urun, quantity: 10, unitPrice: 28.96, vatRate: 10 }],
+    });
+    const r = await ok('GET', `/api/stock/movements?campusId=${campusId}&productId=${urun}`);
+    const iade = r.items.find((m) => m.ref_type === 'return');
+    assert.ok(iade, JSON.stringify(r.items.map((m) => m.ref_type)));
+    assert.equal(iade.ref_document_no, 'IADE-2026-1');
+  });
+
+  test('numarasi OLMAYAN belge turunde tarih doner', async () => {
+    await ok('POST', '/api/waste', {
+      campusId, productId: urun, quantity: 1, reason: 'KIRILMA', wasteDate: daysAgo(1),
+    });
+    const r = await ok('GET', `/api/stock/movements?campusId=${campusId}&productId=${urun}`);
+    const fire = r.items.find((m) => m.ref_type === 'waste');
+    assert.equal(fire.ref_document_no, null, 'fire kaydinin belge numarasi yok');
+  });
+
+  test('O KAMPUSE HIC GIRMEMIS urun stok listesinde CIKMAZ', async () => {
+    const r = await ok('GET', `/api/stock?campusId=${campusId}`);
+    assert.ok(r.items.some((x) => x.product_id === urun), 'giris yapilan urun gorunmeli');
+    assert.ok(!r.items.some((x) => x.product_id === girmeyenUrun),
+      'hic girmemis urun gorunmemeli');
+  });
+
+  test('bos kampuste liste BOS doner (kartlar ortak olsa da)', async () => {
+    const r = await ok('GET', `/api/stock?campusId=${bosKampus}`);
+    assert.equal(r.items.length, 0, JSON.stringify(r.items.slice(0, 3)));
+  });
+
+  test('tumUrunler=1 ile hepsi gosterilebilir', async () => {
+    const r = await ok('GET', `/api/stock?campusId=${campusId}&tumUrunler=1`);
+    assert.ok(r.items.some((x) => x.product_id === girmeyenUrun),
+      'istenirse hic girmemisler de listelenebilmeli');
+  });
+
+  test('ACILIS stogu girilen urun de listeye girer', async () => {
+    await ok('POST', '/api/stock/opening', {
+      campusId: bosKampus, date: daysAgo(3),
+      lines: [{ productId: girmeyenUrun, quantity: 7 }],
+    });
+    const r = await ok('GET', `/api/stock?campusId=${bosKampus}`);
+    assert.equal(r.items.length, 1, 'acilis stogu da bir giristir');
+    assert.equal(r.items[0].product_id, girmeyenUrun);
+    assert.equal(r.items[0].stock_qty, 7);
+  });
+});
+
 /* ------------------- Belge satirlarini duzeltme --------------------- */
 /**
  * Sahadan: fatura koli uzerinden kesilmis, cevrim uygulanmadan
@@ -2664,7 +2743,9 @@ describe('Alis fiyati kaynagi', () => {
   });
 
   test('hic alim yokken katalogdaki baslangic degeri gecerlidir', async () => {
-    const r = await ok('GET', `/api/stock?campusId=${campusA}`);
+    // Urunun bu kampuste hareketi YOK; stok listesi onu normalde
+    // gizler (bkz. tumUrunler). Burada sinanan sey fiyat kaynagi.
+    const r = await ok('GET', `/api/stock?campusId=${campusA}&tumUrunler=1`);
     const satir = r.items.find((x) => x.product_id === productId);
     assert.equal(satir.purchase_price, 10);
     assert.equal(satir.last_purchase_price, null, 'henuz giris yok');
@@ -2832,8 +2913,10 @@ describe('Tarih bazli satis fiyati', () => {
   });
 
   test('gecmise donuk stok degeri O GUNUN fiyatini kullanir', async () => {
-    const bugunku = await ok('GET', `/api/stock?campusId=${campusId}`);
-    const gecmis = await ok('GET', `/api/stock?campusId=${campusId}&date=${daysAgo(5)}`);
+    // Sinanan sey TARIHE BAGLI FIYAT; urunun hareketi olmayabilir
+    const bugunku = await ok('GET', `/api/stock?campusId=${campusId}&tumUrunler=1`);
+    const gecmis = await ok('GET',
+      `/api/stock?campusId=${campusId}&date=${daysAgo(5)}&tumUrunler=1`);
     const b = bugunku.items.find((x) => x.product_id === productId);
     const g = gecmis.items.find((x) => x.product_id === productId);
     assert.equal(b.sale_price, 20, 'bugun 20');
@@ -3001,9 +3084,8 @@ describe('Turkce arama', () => {
   });
 
   test('stok ekrani aramasi da ayni kurali uygular', async () => {
-    // Stok listesi urunu stok hareketi olmasa da gosterir; onemli olan
-    // aramanin Turkce harfte de eslemesidir.
-    const r = await ok('GET', `/api/stock?campusId=${kampusId}&search=`
+    // Sinanan sey ARAMA; urunun hareketi olmadigi icin tumUrunler acilir
+    const r = await ok('GET', `/api/stock?campusId=${kampusId}&tumUrunler=1&search=`
       + encodeURIComponent('çikolatalı'));
     assert.ok(r.items.some((p) => p.product_id === urunId || p.id === urunId),
       JSON.stringify(r.items.slice(0, 3)));

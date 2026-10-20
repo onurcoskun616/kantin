@@ -105,6 +105,13 @@ export function bugun() {
 
 export function stockSnapshot(campusId, {
   untilDate = null, onlyActive = true, search = null, categoryId = null, includeProduced = false,
+  // O KAMPUSE HIC GIRMEMIS URUNU LISTELEME.
+  //
+  // Urun kartlari TUM kampuslerde ortaktir; Kirac'ta 205 kart gorunurken
+  // bunlarin cogu o kampuse hic girmemistir. Hepsini sifir stokla
+  // listelemek stok ekranini okunamaz hale getiriyor. Hareketi olan
+  // (alis, acilis, transfer...) urunler o kampusun gercek katalogudur.
+  onlyWithMovement = false,
 } = {}) {
   const params = [campusId];
   let movFilter = '';
@@ -123,6 +130,15 @@ export function stockSnapshot(campusId, {
     tail.push(q, q);
   }
   if (categoryId) { where.push('p.category_id = ?'); tail.push(Number(categoryId)); }
+  // EN SONA eklenir: tail parametrelerinin sirasi WHERE sirasini izler
+  if (onlyWithMovement) {
+    where.push(
+      `EXISTS (SELECT 1 FROM stock_movements mm
+                WHERE mm.campus_id = ? AND mm.product_id = p.id${untilDate ? ' AND mm.movement_date <= ?' : ''})`
+    );
+    tail.push(campusId);
+    if (untilDate) tail.push(untilDate);
+  }
 
   return all(
     `SELECT
@@ -193,7 +209,32 @@ export function effectivePrices(campusId, productId, onDate = null) {
 /** Belirli bir urunun hareket dokumu. */
 export function movementLedger(campusId, productId, { from = null, to = null, limit = 500 } = {}) {
   const params = [campusId, productId];
-  let sql = `SELECT m.*, u.full_name AS created_by_name
+  // BELGE SUTUNU: "purchase #74" degil, faturanin KENDI numarasi
+  // ("AVP2026000142807") yazmali. Kullanici elindeki kagitla
+  // karsilastirirken ic kayit numarasiyla hicbir sey yapamaz.
+  // Numarasi olmayan belge turlerinde (fire, acilis) tarih/ad yazilir.
+  let sql = `SELECT m.*, u.full_name AS created_by_name,
+                    CASE m.ref_type
+                      WHEN 'purchase' THEN (SELECT p.document_no FROM purchases p WHERE p.id = m.ref_id)
+                      WHEN 'return'   THEN (SELECT r.document_no FROM supplier_returns r WHERE r.id = m.ref_id)
+                      ELSE NULL
+                    END AS ref_document_no,
+                    CASE m.ref_type
+                      WHEN 'purchase' THEN (SELECT p.document_date FROM purchases p WHERE p.id = m.ref_id)
+                      WHEN 'return'   THEN (SELECT r.return_date FROM supplier_returns r WHERE r.id = m.ref_id)
+                      WHEN 'count'    THEN (SELECT c.count_date FROM counts c WHERE c.id = m.ref_id)
+                      WHEN 'transfer' THEN (SELECT t.transfer_date FROM transfers t WHERE t.id = m.ref_id)
+                      ELSE NULL
+                    END AS ref_date,
+                    CASE m.ref_type
+                      WHEN 'purchase' THEN (SELECT s.name FROM purchases p
+                                              JOIN suppliers s ON s.id = p.supplier_id
+                                             WHERE p.id = m.ref_id)
+                      WHEN 'return'   THEN (SELECT s.name FROM supplier_returns r
+                                              JOIN suppliers s ON s.id = r.supplier_id
+                                             WHERE r.id = m.ref_id)
+                      ELSE NULL
+                    END AS ref_party
                FROM stock_movements m
                LEFT JOIN users u ON u.id = m.created_by
               WHERE m.campus_id = ? AND m.product_id = ?`;

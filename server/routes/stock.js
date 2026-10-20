@@ -17,6 +17,10 @@ stockRoutes.get('/', async (ctx) => {
     onlyActive: ctx.query.onlyActive !== '0',
     search: ctx.query.search || null,
     categoryId: ctx.query.categoryId || null,
+    // Varsayilan: yalnizca bu kampuse girmis urunler. Kartlar tum
+    // kampuslerde ortak oldugu icin aksi halde hic gelmemis yuzlerce
+    // urun sifir stokla listeleniyor. tumUrunler=1 ile kapatilabilir.
+    onlyWithMovement: ctx.query.tumUrunler !== '1',
   }).map((r) => {
     const profit = productProfit(r.purchase_price, r.sale_price, r.vat_rate);
     return {

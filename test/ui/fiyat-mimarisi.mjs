@@ -170,9 +170,12 @@ await page.waitForTimeout(600);
 
 console.log('\n6) Gecmise donuk stok degeri O GUNUN fiyatiyla');
 await apiCall('POST', `/api/products/${urunId}/prices`, { salePrice: 15, effectiveFrom: gun(-30) });
-const bugunStok = (await apiCall('GET', `/api/stock?campusId=${kampusId}`)).data.items
+// tumUrunler=1: urunun 20 gun once bu kampuste HAREKETI YOK, stok
+// listesi onu normalde gizler. Burada sinanan sey TARIHE BAGLI FIYAT.
+const bugunStok = (await apiCall('GET', `/api/stock?campusId=${kampusId}&tumUrunler=1`)).data.items
   .find((x) => x.product_id === urunId);
-const eskiStok = (await apiCall('GET', `/api/stock?campusId=${kampusId}&date=${gun(-20)}`)).data.items
+const eskiStok = (await apiCall('GET',
+  `/api/stock?campusId=${kampusId}&date=${gun(-20)}&tumUrunler=1`)).data.items
   .find((x) => x.product_id === urunId);
 ok('Bugun 24,00', Math.abs(bugunStok.sale_price - 24) < 0.01, String(bugunStok.sale_price));
 ok('20 gun once 15,00', Math.abs(eskiStok.sale_price - 15) < 0.01, String(eskiStok.sale_price));

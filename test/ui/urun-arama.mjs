@@ -56,8 +56,21 @@ const apiCall = (method, p, body) => page.evaluate(async ([m, pp, bd]) => {
   return { status: r.status, data: await r.json().catch(() => ({})) };
 }, [method, p, body]);
 
-await apiCall('POST', '/api/products', { name: URUN, salePrice: 20, vatRate: 1, unit: 'ADET' });
+const urun1 = (await apiCall('POST', '/api/products',
+  { name: URUN, salePrice: 20, vatRate: 1, unit: 'ADET' })).data;
 await apiCall('POST', '/api/products', { name: SU, salePrice: 10, vatRate: 1, unit: 'ADET' });
+
+// Stok ekrani yalnizca O KAMPUSE GIRMIS urunleri listeler (urun kartlari
+// tum kampuslerde ortaktir). Arama testinin stokta gercekten duran bir
+// urunu bulmasi icin bir mal girisi yapilir.
+const aramaKampus = (await apiCall('GET', '/api/campuses')).data.items[0].id;
+const aramaTed = (await apiCall('POST', '/api/suppliers',
+  { name: `Arama Ted ${RUN}`, taxNo: String(Date.now()).slice(-10) })).data;
+await apiCall('POST', '/api/purchases', {
+  campusId: aramaKampus, supplierId: aramaTed.id, documentNo: `ARA-${RUN}`,
+  documentDate: new Date().toISOString().slice(0, 10),
+  lines: [{ productId: urun1.id, quantity: 5, unitPrice: 10, vatRate: 1 }],
+});
 
 const git = async (yol) => {
   await page.goto(`${BASE}/#${yol}`, { waitUntil: 'networkidle' });

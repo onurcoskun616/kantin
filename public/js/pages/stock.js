@@ -10,7 +10,10 @@ import { el, card, stat, table, fmt, badge, modal, toast, formModal, empty, delt
  * sonra kutu oluyor, yazdigi islenmiyordu (bkz. catalog.js).
  */
 export async function render(root) {
-  const filters = { search: '', categoryId: '', onlyCritical: false };
+  // tumUrunler: bu kampuse HIC girmemis urunleri de goster. Varsayilan
+  // kapali -- urun kartlari tum kampuslerde ortak oldugu icin acik
+  // birakilirsa hic gelmemis yuzlerce urun sifir stokla listeleniyor.
+  const filters = { search: '', categoryId: '', onlyCritical: false, tumUrunler: '' };
   const container = el('div.grid');
   root.replaceChildren(container);
 
@@ -20,6 +23,8 @@ export async function render(root) {
   catSelect.addEventListener('change', () => { filters.categoryId = catSelect.value; draw(); });
   const criticalToggle = el('input', { type: 'checkbox' });
   criticalToggle.addEventListener('change', () => { filters.onlyCritical = criticalToggle.checked; draw(); });
+  const hepsiToggle = el('input', { type: 'checkbox' });
+  hepsiToggle.addEventListener('change', () => { filters.tumUrunler = hepsiToggle.checked ? '1' : ''; draw(); });
 
   const ozetBolumu = el('div.grid');
   const listeBolumu = el('div.grid');
@@ -30,6 +35,10 @@ export async function render(root) {
         searchInput,
         catSelect,
         el('label.inline-field', {}, [criticalToggle, el('span', { text: 'Sadece kritik stok' })]),
+        el('label.inline-field', {
+          title: 'Ürün kartları tüm kampüslerde ortaktır. Normalde yalnızca bu kampüse '
+            + 'girişi olmuş ürünler listelenir; işaretlerseniz hiç girmemişler de görünür.',
+        }, [hepsiToggle, el('span', { text: 'Hiç girişi olmayanları da göster' })]),
         el('div', { style: 'flex:1' }),
         canWrite() ? el('button.btn', { text: '📥 Açılış Stoğu Gir', onclick: () => openOpening(draw) }) : null,
         el('button.btn', { text: '⬇ Excel (CSV)', onclick: () => api.download('/api/stock', { campusId: state.campusId, ...filters }) }),
@@ -42,7 +51,9 @@ export async function render(root) {
 
   async function draw() {
     const [data, cats] = await Promise.all([
-      api.get('/api/stock', { campusId: state.campusId, ...filters, onlyCritical: filters.onlyCritical ? '1' : '' }),
+      api.get('/api/stock', {
+        campusId: state.campusId, ...filters, onlyCritical: filters.onlyCritical ? '1' : '',
+      }),
       api.get('/api/products/categories'),
     ]);
 
@@ -96,6 +107,35 @@ const MOVEMENT_LABELS = {
   SATIS: 'Satış (sayımdan)', SAYIM_FAZLA: 'Sayım fazlası',
 };
 
+/**
+ * HAREKETIN DAYANDIGI BELGE.
+ *
+ * Eskiden "purchase #74" yaziyordu: ic kayit numarasi. Kullanici elindeki
+ * faturayla karsilastirirken o numarayla hicbir sey yapamaz; aradigi
+ * "AVP2026000142807"dir. Belge numarasi olan turlerde numara, olmayanlarda
+ * (fire, acilis, transfer) ne oldugu ve tarihi yazilir.
+ */
+const BELGE_TURLERI = {
+  purchase: 'Alım belgesi', return: 'İade belgesi', count: 'Sayım',
+  transfer: 'Transfer', waste: 'Fire kaydı', opening: 'Açılış stoğu',
+};
+
+function belgeHucresi(r) {
+  if (!r.ref_type) return el('span.muted', { text: '—' });
+  const tur = BELGE_TURLERI[r.ref_type] || r.ref_type;
+  const satirlar = [];
+  if (r.ref_document_no) {
+    satirlar.push(el('strong', { text: r.ref_document_no }));
+    satirlar.push(el('small.muted', {
+      style: 'display:block',
+      text: tur + (r.ref_party ? ` · ${shortName(r.ref_party)}` : ''),
+    }));
+  } else {
+    satirlar.push(el('span', { text: r.ref_date ? `${tur} · ${fmt.date(r.ref_date)}` : tur }));
+  }
+  return el('div', {}, satirlar);
+}
+
 async function showLedger(product) {
   const data = await api.get('/api/stock/movements', { campusId: state.campusId, productId: product.product_id });
   let running = 0;
@@ -112,7 +152,11 @@ async function showLedger(product) {
         { label: 'Miktar', num: true, render: (r) => deltaCell(r.quantity, fmt.num) },
         { label: 'Kalan', num: true, value: (r) => fmt.num(r.running) },
         { label: 'Birim Maliyet', num: true, value: (r) => fmt.money(r.unit_cost) },
-        { label: 'Belge', value: (r) => (r.ref_type ? `${r.ref_type} #${r.ref_id ?? ''}` : '—') },
+        {
+          label: 'Belge',
+          render: (r) => belgeHucresi(r),
+          wrap: true,
+        },
         { label: 'Kullanıcı', value: (r) => r.created_by_name || '—' },
         { label: 'Not', value: (r) => r.note || '—', wrap: true },
       ], rows, { emptyText: 'Bu ürün için hareket kaydı yok.' }),
