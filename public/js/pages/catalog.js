@@ -96,7 +96,14 @@ export async function renderProducts(root) {
       sonucBolumu.append(card('⚠️ Fiyat Denetimi Uyarıları', [
         table([
           { label: 'Ürün', value: (r) => r.name, wrap: true },
-          { label: 'Alış', num: true, value: (r) => fmt.money(r.effective_purchase_price) },
+          {
+            label: 'Alış',
+            num: true,
+            render: (r) => el('div', {}, [
+              el('span', { text: fmt.money(r.effective_purchase_price) }),
+              alisKaynagi(r),
+            ]),
+          },
           { label: 'Satış', num: true, value: (r) => fmt.money(r.effective_sale_price) },
           { label: 'Birim Kâr', num: true, render: (r) => deltaCell(r.profit.unitProfit) },
           { label: 'Marj', num: true, value: (r) => fmt.pct(r.profit.marginPct) },
@@ -109,7 +116,10 @@ export async function renderProducts(root) {
         ], uyarilar, { emptyText: 'Uyarı yok.' }),
       ], {
         tight: true,
-        note: `Kâr marjı %${priceControl.minMargin} altında kalan, zararına satılan veya tavan fiyatı aşan ürünler listelenir.`
+        note: `Kâr marjı %${priceControl.minMargin} altında kalan, zararına satılan veya tavan fiyatı aşan ürünler listelenir. `
+          + `Fiyatlar seçili kampüse (${campusName(state.campusId) || '—'}) göre çözülür: önce bu kampüsün son alışı, `
+          + 'yoksa kampüs fiyatı, o da yoksa katalog fiyatı. Ürün kartları tüm kampüslerde ortaktır, '
+          + 'bu yüzden listede bu kampüse hiç girmemiş ürünler de yer alabilir — alış rakamının altında kaynağı yazar.'
           + (taniliSayi ? ` ${taniliSayi} üründe alış fiyatı KOLİ fiyatı gibi duruyor — satırın altında olması gereken `
             + 'adet fiyatı ve nasıl düzeltileceği yazıyor.' : '')
           + (suzuluyor ? ` Aramaya uyan ${uyarilar.length} uyarı gösteriliyor (toplam ${priceControl.items.length}).` : ''),
@@ -189,6 +199,26 @@ export async function renderProducts(root) {
  * hem de hangi işlemin yapılacağını yazarız. İki ayrı sebep, iki ayrı
  * çare vardır — karıştırılmamalıdır.
  */
+/**
+ * ALIS FIYATI NEREDEN GELDI?
+ *
+ * Urun kartlari tum kampuslerde ORTAKTIR ve products.purchase_price
+ * HANGI KAMPUSTE olursa olsun her alimda guncellenir. Bu yuzden seciliy
+ * kampuse hic mal girmemis bir urun, baska kampuste girilen faturanin
+ * fiyatiyla burada uyari uretebilir. Kullanici bunu gormeden rakami
+ * degerlendiremez.
+ */
+function alisKaynagi(r) {
+  if (r.purchase_price_source === 'ALIM' || !r.purchase_price_source) return null;
+  const metin = {
+    KAMPUS: 'kampüs fiyatı',
+    RECETE: 'reçeteden',
+    KATALOG: 'bu kampüse giriş yok — katalog fiyatı',
+  }[r.purchase_price_source];
+  if (!metin) return null;
+  return el('small.muted', { style: 'display:block;font-weight:400', text: metin });
+}
+
 function taniSatiri(r) {
   const t = r.tani;
   if (!t) return null;

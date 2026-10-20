@@ -4,9 +4,9 @@ import { sendCsv, toCsv, badRequest } from '../lib/http.js';
 import { assertCampusAccess, campusFilter, seesAllCampuses } from '../lib/auth.js';
 import { today, monthRange } from '../lib/validate.js';
 import { round2, pctOf, netFromGross, productProfit } from '../lib/money.js';
-import { stockSnapshot, stockValue } from '../lib/stock.js';
+import { stockSnapshot, stockValue, salePriceSql, lastPurchaseSql } from '../lib/stock.js';
 import { recipeUnitCost } from '../lib/recipe.js';
-import { adAdetIpucu } from '../lib/metin.js';
+import { adAdetIpucu, trFoldSql } from '../lib/metin.js';
 
 export const reportRoutes = new Router();
 
@@ -392,21 +392,42 @@ reportRoutes.get('/price-control', async (ctx) => {
   const campusId = ctx.query.campusId ? assertCampusAccess(ctx.user, ctx.query.campusId) : (ctx.user.campusId || null);
   const minMargin = Number(ctx.query.minMargin || 20);
 
+  // FIYATLAR SECILI KAMPUSE GORE COZULUR.
+  //
+  // Bu panel eskiden yalnizca campus_products'a ve katalog alanina
+  // bakiyordu: kampusun KENDI son alisini ve TARIHE BAGLI satis
+  // fiyatini hic okumuyordu. Sonuc: ayni ekranda ust paneldeki alis
+  // ile alttaki urun listesindeki alis farkli cikiyor, hatta baska bir
+  // kampuste girilen fatura Esenyurt uyarisi gibi gorunuyordu
+  // (products.purchase_price HANGI KAMPUSTE olursa olsun her alimda
+  // guncellenir). Urun listesiyle AYNI kaynaklari, ayni sirayla
+  // kullaniriz (bkz. products.js decorate).
+  const kid = campusId ?? 0;
   const rows = all(
     `SELECT p.*, c.name AS category_name,
-            cp.purchase_price AS campus_purchase_price, cp.sale_price AS campus_sale_price
+            cp.purchase_price AS campus_purchase_price, cp.sale_price AS campus_sale_price,
+            lp.unit_cost     AS last_purchase_price,
+            lp.movement_date AS last_purchase_date,
+            ${salePriceSql()} AS resolved_sale_price
        FROM products p
        LEFT JOIN categories c ON c.id = p.category_id
        LEFT JOIN campus_products cp ON cp.product_id = p.id AND cp.campus_id = ?
-      WHERE p.is_active = 1 ORDER BY p.name COLLATE NOCASE`,
-    [campusId ?? 0]
+       LEFT JOIN (${lastPurchaseSql()}) lp ON lp.product_id = p.id
+      WHERE p.is_active = 1 ORDER BY ${trFoldSql('p.name')}`,
+    // Sirasi: (satis fiyati) campus_id + tarih + tarih, cp.campus_id, (son alis) campus_id
+    [kid, today(), today(), kid, kid]
   );
 
   const items = rows.map((r) => {
     // Uretilen urunlerde maliyet receteden gelir; recete yoksa elle girilen tahmindir
     const recipe = r.product_type === 'URETILEN' ? recipeUnitCost(campusId ?? 0, r.id) : null;
-    const purchase = recipe?.hasRecipe ? recipe.unitCost : (r.campus_purchase_price ?? r.purchase_price);
-    const sale = r.campus_sale_price ?? r.sale_price;
+    // Alis: once BU KAMPUSUN son alisi, sonra kampus fiyati, sonra katalog
+    let purchase = r.last_purchase_price;
+    let purchaseSource = 'ALIM';
+    if (purchase === null || purchase === undefined) { purchase = r.campus_purchase_price; purchaseSource = 'KAMPUS'; }
+    if (purchase === null || purchase === undefined) { purchase = r.purchase_price; purchaseSource = 'KATALOG'; }
+    if (recipe?.hasRecipe) { purchase = recipe.unitCost; purchaseSource = 'RECETE'; }
+    const sale = r.resolved_sale_price ?? r.campus_sale_price ?? r.sale_price;
     const profit = productProfit(purchase, sale, r.vat_rate);
     const issues = [];
 
@@ -434,6 +455,10 @@ reportRoutes.get('/price-control', async (ctx) => {
     return {
       ...r, effective_purchase_price: purchase, effective_sale_price: sale, profit, issues,
       has_recipe: recipe?.hasRecipe ?? null,
+      // Alis fiyatinin NEREDEN geldigi: "KATALOG" ise bu kampuse hic mal
+      // girmemis demektir, rakam baska bir kampusun alisindan kalmis
+      // olabilir. Kullanici uyariyi buna gore degerlendirsin.
+      purchase_price_source: purchaseSource,
       tani,
     };
   }).filter((r) => r.issues.length > 0);

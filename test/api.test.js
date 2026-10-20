@@ -424,6 +424,84 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
 
 });
 
+/* ----------- Fiyat denetimi KAMPUSE GORE cozulur -------------------- */
+/**
+ * Urun kartlari tum kampuslerde ORTAKTIR ve products.purchase_price
+ * hangi kampuste olursa olsun her alimda guncellenir. Panel eskiden
+ * kampusun KENDI son alisini okumuyordu: Esenyurt'ta uyari gorunen bir
+ * urunun rakami aslinda Ikitelli'de girilen faturadan kalmis olabiliyor
+ * ve ayni ekranda ust panel ile alttaki urun listesi farkli alis
+ * gosteriyordu.
+ */
+describe('Fiyat denetimi kampuse gore cozulur', () => {
+  const round2 = (n) => Math.round(Number(n) * 100) / 100;
+  let kampusA; let kampusB; let supplierId; let urun;
+
+  before(async () => {
+    kampusA = (await ok('POST', '/api/campuses', { name: 'Fiyat Kampüs A', code: 'FKA' })).id;
+    kampusB = (await ok('POST', '/api/campuses', { name: 'Fiyat Kampüs B', code: 'FKB' })).id;
+    supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'Fiyat Kampüs Tedarikçi', taxNo: '3939393939' })).id;
+    urun = (await ok('POST', '/api/products',
+      { name: 'Kampüse Göre Ürün', salePrice: 50, vatRate: 1, unit: 'ADET' })).id;
+    // YALNIZCA A kampusune, pahali bir alis
+    await ok('POST', '/api/purchases', {
+      campusId: kampusA, supplierId, documentNo: 'FK-A1', documentDate: daysAgo(3),
+      lines: [{ productId: urun, quantity: 1, unitPrice: 400, vatRate: 1 }],
+    });
+  });
+
+  const satir = async (campusId) => {
+    const r = await ok('GET', `/api/reports/price-control?campusId=${campusId}`);
+    return r.items.find((x) => x.id === urun);
+  };
+
+  test('alisi OLAN kampuste fiyat O KAMPUSUN son alisidir', async () => {
+    const a = await satir(kampusA);
+    assert.ok(a, 'zararina satis uyarisi cikmali');
+    assert.equal(round2(a.effective_purchase_price), 404, '400 + %1 KDV');
+    assert.equal(a.purchase_price_source, 'ALIM');
+  });
+
+  test('alisi OLMAYAN kampuste kaynak KATALOG olarak isaretlenir', async () => {
+    const b = await satir(kampusB);
+    assert.ok(b, 'katalog fiyatiyla yine uyari cikar');
+    assert.equal(b.purchase_price_source, 'KATALOG',
+      'bu kampuse giris yok; rakam baska kampusten kalmis olabilir');
+  });
+
+  test('KAMPUSE OZEL alis fiyati katalogu ezer', async () => {
+    // Panel yalnizca SORUNLU urunleri dondurur; zararina kalmasi icin
+    // alis satistan yuksek secilir.
+    await ok('PUT', `/api/products/${urun}/campus-price/${kampusB}`,
+      { purchasePrice: 60, salePrice: 50 });
+    const b = await satir(kampusB);
+    assert.ok(b, 'zararina satis uyarisi surmeli');
+    assert.equal(round2(b.effective_purchase_price), 60);
+    assert.equal(b.purchase_price_source, 'KAMPUS');
+  });
+
+  test('TARIHE BAGLI satis fiyati da okunur', async () => {
+    // Kampuse ozel, dunden gecerli DUSUK satis fiyati: hem uyari surer
+    // hem de panelin product_prices tablosunu okudugu gorulur.
+    await ok('POST', `/api/products/${urun}/prices`,
+      { salePrice: 10, campusId: kampusA, effectiveFrom: daysAgo(1) });
+    const a = await satir(kampusA);
+    assert.ok(a, JSON.stringify(a));
+    assert.equal(a.effective_sale_price, 10,
+      'panel product_prices tablosunu da okumali');
+  });
+
+  test('URUN LISTESI ile PANEL ayni alis fiyatini gosterir', async () => {
+    const liste = (await ok('GET', `/api/products?campusId=${kampusA}`))
+      .items.find((p) => p.id === urun);
+    const panel = await satir(kampusA);
+    assert.equal(round2(liste.effective_purchase_price), round2(panel.effective_purchase_price),
+      `liste ${liste.effective_purchase_price} / panel ${panel.effective_purchase_price}`);
+    assert.equal(liste.effective_sale_price, panel.effective_sale_price);
+  });
+});
+
 /* --------------- Sayim fisi A'dan Z'ye siralidir -------------------- */
 describe('Sayim fisi siralamasi', () => {
   test('TEK liste, kategoriye gore BLOKLANMADAN, Turkce harfler dogru yerde', async () => {
