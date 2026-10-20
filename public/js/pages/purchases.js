@@ -104,6 +104,13 @@ async function showDetail(id, onChange) {
         text: '✏️ Belge No / Tarih Düzelt',
         onclick: () => openHeaderForm(data, onChange),
       }) : null,
+      // Satir duzeltme: urun, miktar, birim fiyat, iskonto, KDV, SKT.
+      // Koli/adet karisikligi en sik duzeltme sebebi oldugu icin
+      // formda cevrim yardimcisi var.
+      canEditDocumentHeader() && data.status !== 'IPTAL' ? el('button.btn', {
+        text: '✏️ Satırları Düzelt',
+        onclick: () => openLinesForm(data, onChange),
+      }) : null,
       // İptal: belge kayıtta kalır, stok hareketi geri alınır. Düzeltme yolu.
       canWrite('purchases') && data.status !== 'IPTAL' ? el('button.btn', {
         text: 'Belgeyi İptal Et',
@@ -138,6 +145,186 @@ async function showDetail(id, onChange) {
  * kalır. Tarih değişirse stok hareketleri de o güne taşınır — kullanıcı
  * bunu bilerek onaylasın diye formda yazıyor.
  */
+/**
+ * BELGE SATIRLARINI DUZELTME PENCERESI.
+ *
+ * Sahadan: faturalar koli uzerinden kesiliyor; cevrim uygulanmadan
+ * kaydedilen belgede stokta 2 adet x 534,60 TL goruluyor, oysa 2 koli
+ * (36 adet x 29,70 TL) gelmis. Bugune kadar tek care belgeyi silip
+ * yeniden girmekti; fatura dosyasi ve belge numarasi gidiyordu.
+ *
+ * "Birim" ayri bir alan degildir: birim urun kartinda durur. Satirda
+ * birimi duzeltmek demek MIKTARI CARPIP FIYATI BOLMEK demektir; bu
+ * yuzden her satirda bir cevrim yardimcisi var ve belge tutarinin
+ * degismedigi anlik olarak gorunur.
+ */
+async function openLinesForm(data, onChange) {
+  const products = await api.get('/api/products', { campusId: data.campus_id, onlyActive: '0' });
+  const productMap = new Map(products.items.map((p) => [p.id, p]));
+
+  const satirlar = [];
+  const govde = el('tbody');
+  const toplamKutu = el('div.row', { style: 'gap:14px;justify-content:flex-end;margin-top:8px' });
+  const hata = el('div.alert.alert-danger', { hidden: true });
+
+  const hesapla = () => {
+    let net = 0;
+    let kdv = 0;
+    for (const l of satirlar) {
+      if (l.silindi) continue;
+      const m = Number(l.qty.value) || 0;
+      const f = Number(l.price.value) || 0;
+      const i = Number(l.disc.value) || 0;
+      const k = Number(l.vat.value) || 0;
+      l.net = Math.round(m * f * (1 - i / 100) * 100) / 100;
+      l.kdv = Math.round(l.net * (k / 100) * 100) / 100;
+      l.totalCell.textContent = fmt.money(l.net + l.kdv);
+      net += l.net;
+      kdv += l.kdv;
+    }
+    const fark = Math.round((net + kdv - data.gross_total) * 100) / 100;
+    toplamKutu.replaceChildren(
+      el('span', { text: `Net: ${fmt.money(net)}` }),
+      el('span', { text: `KDV: ${fmt.money(kdv)}` }),
+      el('span', { text: `Genel Toplam: ${fmt.money(net + kdv)}`, style: 'font-size:15px;font-weight:600' }),
+      el('span', {
+        text: fark === 0 ? '• belge tutarı değişmiyor' : `• belge tutarı ${fmt.money(fark)} değişiyor`,
+        style: `color:var(--${fark === 0 ? 'success' : 'warning'})`,
+      }),
+    );
+  };
+
+  const satirEkle = (kaynak) => {
+    // Kart birimi secimle birlikte guncellenir: kullanici "bu kart ADET
+    // mi KUTU mu" sorusunu pencereden cikmadan gorsun.
+    const birimNotu = el('small.muted', { style: 'display:block;margin-top:2px' });
+    const birimYaz = (pid) => {
+      const p = productMap.get(pid);
+      birimNotu.textContent = p ? `Kart birimi: ${p.unit}` : '';
+    };
+    const picker = createProductPicker({
+      products: products.items,
+      value: kaynak?.product_id ?? null,
+      onChange: () => { birimYaz(picker.getValue()); hesapla(); },
+    });
+    birimYaz(kaynak?.product_id ?? null);
+    const sayi = (deger, opts = {}) => el('input.num', {
+      type: 'number', step: opts.step || '0.01', min: opts.min ?? '0',
+      max: opts.max, value: deger === null || deger === undefined ? '' : String(deger),
+      style: 'width:100%',
+    });
+    const qty = sayi(kaynak?.quantity ?? 1, { min: '0.001' });
+    const price = sayi(kaynak?.unit_price ?? 0);
+    const disc = sayi(kaynak?.discount_pct ?? 0, { max: '100' });
+    const vat = sayi(kaynak?.vat_rate ?? 10, { step: '0.1', max: '100' });
+    const expiry = el('input', { type: 'date', value: kaynak?.expiry_date || '', style: 'width:100%' });
+    const totalCell = el('td.num');
+
+    const l = { picker, qty, price, disc, vat, expiry, totalCell, silindi: false };
+
+    // KOLI CEVRIMI: miktar carpilir, birim fiyat bolunur, TUTAR AYNI KALIR
+    const carpanGirdi = el('input.num', {
+      type: 'number', step: '1', min: '0.001', placeholder: 'koli içi adet', style: 'width:110px',
+    });
+    const cevir = () => {
+      const n = Number(carpanGirdi.value);
+      if (!(n > 0)) { carpanGirdi.focus(); return; }
+      qty.value = String(Math.round((Number(qty.value) || 0) * n * 10000) / 10000);
+      price.value = String(Math.round(((Number(price.value) || 0) / n) * 1e6) / 1e6);
+      carpanGirdi.value = '';
+      hesapla();
+    };
+    carpanGirdi.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); cevir(); }
+    });
+
+    const tr = el('tr', {}, [
+      el('td', { style: 'min-width:230px' }, [picker.node, birimNotu]),
+      el('td', {}, [qty]), el('td', {}, [price]), el('td', {}, [disc]), el('td', {}, [vat]),
+      el('td', {}, [expiry]), totalCell,
+      el('td', {}, [el('div.row', { style: 'gap:4px;align-items:center' }, [
+        carpanGirdi,
+        el('button.btn.btn-sm', { type: 'button', text: '× çevir', title: 'Koli → adet: miktarı çarpar, fiyatı böler', onclick: cevir }),
+        el('button.icon-btn', {
+          type: 'button', text: '✕', title: 'Satırı sil',
+          onclick: () => { l.silindi = true; tr.remove(); hesapla(); },
+        }),
+      ])]),
+    ]);
+    l.tr = tr;
+    [qty, price, disc, vat].forEach((n) => n.addEventListener('input', hesapla));
+    satirlar.push(l);
+    govde.append(tr);
+  };
+
+  for (const r of data.lines) satirEkle(r);
+  hesapla();
+
+  const kaydet = el('button.btn.btn-primary', { text: 'Satırları Kaydet' });
+  const gerekce = el('textarea', { placeholder: 'Örn: Fatura koli üzerinden kesilmiş, adede çevrildi.' });
+
+  const m = modal({
+    title: `✏️ Satırları Düzelt — Belge #${data.id}`,
+    xwide: true,
+    body: [
+      hata,
+      alertBox('warning', 'Ne olacak?',
+        'Belgenin satırları ve stok hareketleri BAŞTAN kurulur; ürün kartlarının alış '
+        + 'fiyatı bu belgeden yeniden hesaplanır. Belge numarası, tarihi ve eklenmiş '
+        + 'fatura dosyaları yerinde kalır. İşlem öncesi ve sonrası hâliyle denetim izine yazılır.'),
+      el('p.card-note', {
+        text: 'Birim (adet / koli / paket) ürün kartında tutulur, satırda değil. Faturadaki '
+          + 'miktar koli ise, kolide kaç adet olduğunu son sütuna yazıp "× çevir" deyin: '
+          + 'miktar çarpılır, birim fiyat bölünür, BELGE TUTARI DEĞİŞMEZ. Kartın kendi '
+          + 'birimini değiştirmek için Ürünler ve Fiyatlar ekranını kullanın.',
+      }),
+      el('div.table-wrap', {}, [el('table.data.line-table', {}, [
+        el('thead', {}, [el('tr', {}, ['Ürün', 'Miktar', 'Birim Fiyat (KDV hariç)', 'İsk %', 'KDV %', 'SKT', 'Toplam', 'Koli çevrimi']
+          .map((h, i) => el(i >= 1 && i <= 6 ? 'th.num' : 'th', { text: h })))]),
+        govde,
+      ])]),
+      el('button.btn.btn-sm', { type: 'button', text: '+ Satır Ekle', onclick: () => { satirEkle(null); hesapla(); } }),
+      toplamKutu,
+      el('label.field', {}, [
+        el('span', { text: 'Gerekçe *' }), gerekce,
+        el('small', { text: 'Denetim izine yazılır ve silinemez.' }),
+      ]),
+    ],
+    actions: [el('button.btn', { text: 'Vazgeç', onclick: () => m.close() }), kaydet],
+  });
+
+  kaydet.addEventListener('click', async () => {
+    const gonderilecek = satirlar.filter((l) => !l.silindi).map((l) => ({
+      productId: l.picker.getValue(),
+      quantity: Number(l.qty.value),
+      unitPrice: Number(l.price.value),
+      discountPct: Number(l.disc.value) || 0,
+      vatRate: Number(l.vat.value) || 0,
+      expiryDate: l.expiry.value || null,
+    }));
+    if (!gonderilecek.length) { hata.textContent = 'En az bir satır olmalı.'; hata.hidden = false; return; }
+    if (gonderilecek.some((l) => !l.productId)) {
+      hata.textContent = 'Ürün seçilmemiş satır var.'; hata.hidden = false; return;
+    }
+    hata.hidden = true;
+    kaydet.disabled = true;
+    kaydet.textContent = 'Kaydediliyor...';
+    try {
+      await api.put(`/api/purchases/${data.id}/lines`, { lines: gonderilecek, reason: gerekce.value });
+      toast('Belge satırları düzeltildi; stok hareketleri yeniden kuruldu.');
+      m.close();
+      document.querySelector('.modal-backdrop')?.remove();
+      onChange();
+    } catch (err) {
+      hata.textContent = err.message;
+      hata.hidden = false;
+    } finally {
+      kaydet.disabled = false;
+      kaydet.textContent = 'Satırları Kaydet';
+    }
+  });
+}
+
 function openHeaderForm(data, onChange) {
   formModal({
     title: `Belge Künyesini Düzelt — #${data.id}`,

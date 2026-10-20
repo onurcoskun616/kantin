@@ -424,6 +424,167 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
 
 });
 
+/* ------------------- Belge satirlarini duzeltme --------------------- */
+/**
+ * Sahadan: fatura koli uzerinden kesilmis, cevrim uygulanmadan
+ * kaydedilmis. Stokta 2 adet x 534,60 TL duruyor, oysa 2 koli
+ * (36 adet x 29,70 TL) gelmis. Bugune kadar tek care belgeyi SILIP
+ * yeniden girmekti; fatura dosyasi ve belge numarasi gidiyordu.
+ */
+describe('Belge satirlarini duzeltme', () => {
+  let campusId; let supplierId; let urunA; let urunB;
+  const round2 = (n) => Math.round(Number(n) * 100) / 100;
+
+  before(async () => {
+    campusId = (await ok('POST', '/api/campuses', { name: 'Satır Düzeltme', code: 'STD' })).id;
+    supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'Satır Düzeltme Tedarikçi', taxNo: '3636363636' })).id;
+    urunA = (await ok('POST', '/api/products',
+      { name: 'Düzeltme Ürün A', salePrice: 50, vatRate: 1, unit: 'ADET' })).id;
+    urunB = (await ok('POST', '/api/products',
+      { name: 'Düzeltme Ürün B', salePrice: 40, vatRate: 1, unit: 'ADET' })).id;
+  });
+
+  const stok = async (id) => {
+    const r = await ok('GET', `/api/stock?campusId=${campusId}`);
+    return r.items.find((x) => x.product_id === id)?.stock_qty ?? 0;
+  };
+  const belgeKur = async (no) => ok('POST', '/api/purchases', {
+    campusId, supplierId, documentNo: no, documentDate: daysAgo(4),
+    lines: [{ productId: urunA, quantity: 2, unitPrice: 534.60, vatRate: 1 }],
+  });
+
+  test('KOLI olarak girilmis satir adede cevrilebilir, TUTAR AYNI KALIR', async () => {
+    const belge = await belgeKur('STD-1');
+    assert.equal(await stok(urunA), 2, 'once koli miktariyla girmis');
+    const oncekiTutar = belge.grossTotal;   // POST yaniti camelCase doner
+
+    // 2 koli x 534,60  ->  36 adet x 29,70  (1 koli = 18 adet)
+    await ok('PUT', `/api/purchases/${belge.id}/lines`, {
+      reason: 'Fatura koli üzerinden kesilmiş, adede çevrildi.',
+      lines: [{ productId: urunA, quantity: 36, unitPrice: 29.70, vatRate: 1 }],
+    });
+
+    assert.equal(await stok(urunA), 36, 'stok adede cevrilmeli');
+    const sonra = await ok('GET', `/api/purchases/${belge.id}`);
+    assert.equal(round2(sonra.gross_total), round2(oncekiTutar), 'BELGE TUTARI DEGISMEMELI');
+    assert.equal(sonra.lines.length, 1);
+    assert.equal(sonra.lines[0].quantity, 36);
+    assert.equal(sonra.lines[0].unit_price, 29.7);
+  });
+
+  test('duzeltilen maliyet URUN KARTINA yansir', async () => {
+    const kart = await ok('GET', `/api/products/${urunA}`);
+    // 29,70 + %1 KDV = 29,997 -> 30,00 (stok maliyeti KDV DAHIL)
+    assert.equal(round2(kart.purchase_price), 30, JSON.stringify(kart.purchase_price));
+  });
+
+  test('URUN de degistirilebilir; eski urunun stogu geri alinir', async () => {
+    const belge = await belgeKur('STD-2');
+    assert.equal(await stok(urunA), 38, '36 + 2');
+
+    await ok('PUT', `/api/purchases/${belge.id}/lines`, {
+      reason: 'Yanlış ürüne girilmiş, doğru ürüne taşındı.',
+      lines: [{ productId: urunB, quantity: 10, unitPrice: 20, vatRate: 1 }],
+    });
+    assert.equal(await stok(urunA), 36, 'eski urunun hareketi silinmeli');
+    assert.equal(await stok(urunB), 10, 'yeni urune girmeli');
+  });
+
+  test('SATIR EKLENIP SILINEBILIR, toplam yeniden hesaplanir', async () => {
+    const belge = await belgeKur('STD-3');
+    await ok('PUT', `/api/purchases/${belge.id}/lines`, {
+      reason: 'Faturada iki kalem varmış, ikincisi eklendi.',
+      lines: [
+        { productId: urunA, quantity: 2, unitPrice: 100, vatRate: 1 },
+        { productId: urunB, quantity: 3, unitPrice: 50, vatRate: 1 },
+      ],
+    });
+    const sonra = await ok('GET', `/api/purchases/${belge.id}`);
+    assert.equal(sonra.lines.length, 2);
+    // (200 + 150) x 1,01 = 353,50
+    assert.equal(round2(sonra.gross_total), 353.5, String(sonra.gross_total));
+  });
+
+  test('GEREKCE zorunludur', async () => {
+    const belge = await belgeKur('STD-4');
+    const r = await api('PUT', `/api/purchases/${belge.id}/lines`, {
+      lines: [{ productId: urunA, quantity: 1, unitPrice: 10, vatRate: 1 }],
+    });
+    assert.equal(r.status, 400);
+  });
+
+  test('KESINLESMIS SAYIM donemindeki belge degistirilemez', async () => {
+    const belge = await belgeKur('STD-5');
+    const sayim = await ok('POST', '/api/counts',
+      { campusId, countDate: daysAgo(1), isBlind: false });
+    await ok('PUT', `/api/counts/${sayim.id}/lines`, { lines: [{ productId: urunA, countedQty: 1 }] });
+    await ok('POST', `/api/counts/${sayim.id}/submit`, { witnessName: 'Tanık' });
+    const eposta = `std.mudur.${Date.now()}@topkapiokullari.com`;
+    await ok('POST', '/api/users',
+      { email: eposta, fullName: 'STD Müdür', role: 'GENEL_MUDURLUK', password: 'Mudur123456' });
+    const jeton = (await api('POST', '/api/auth/login',
+      { email: eposta, password: 'Mudur123456' }, false)).data.token;
+    const fin = await fetch(`${BASE}/api/counts/${sayim.id}/finalize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jeton}` },
+      body: '{}',
+    });
+    assert.equal(fin.status, 200);
+
+    const r = await api('PUT', `/api/purchases/${belge.id}/lines`, {
+      reason: 'Kilitli dönemde düzeltmeye çalışıyorum.',
+      lines: [{ productId: urunA, quantity: 5, unitPrice: 10, vatRate: 1 }],
+    });
+    assert.equal(r.status, 409);
+    assert.match(r.data.error, /Kesinlestirmeyi Geri Al/i, r.data.error);
+  });
+
+  test('yalnizca ADMIN ve GENEL MUDURLUK duzeltebilir', async () => {
+    const kampus2 = (await ok('POST', '/api/campuses', { name: 'Satır Yetki', code: 'STY' })).id;
+    const belge = await ok('POST', '/api/purchases', {
+      campusId: kampus2, supplierId, documentNo: 'STY-1', documentDate: daysAgo(2),
+      lines: [{ productId: urunA, quantity: 1, unitPrice: 10, vatRate: 1 }],
+    });
+    const dene = async (role) => {
+      const eposta = `satir.${role.toLowerCase()}.${Date.now()}@topkapiokullari.com`;
+      await ok('POST', '/api/users', {
+        fullName: `Satır ${role}`, email: eposta, password: 'Satir123456', role,
+        campusId: ['KAMPUS_YONETICISI', 'KANTIN_GOREVLISI'].includes(role) ? kampus2 : null,
+      });
+      const login = await api('POST', '/api/auth/login',
+        { email: eposta, password: 'Satir123456' }, false);
+      const res = await fetch(`${BASE}/api/purchases/${belge.id}/lines`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${login.data.token}` },
+        body: JSON.stringify({
+          reason: 'Yetki denemesi yapılıyor.',
+          lines: [{ productId: urunA, quantity: 2, unitPrice: 10, vatRate: 1 }],
+        }),
+      });
+      return res.status;
+    };
+    assert.equal(await dene('MUHASEBE'), 403, 'on muhasebe duzeltememeli');
+    assert.equal(await dene('KAMPUS_YONETICISI'), 403, 'kampus yoneticisi duzeltememeli');
+    assert.equal(await dene('KANTIN_GOREVLISI'), 403, 'kantin gorevlisi duzeltememeli');
+    assert.equal(await dene('DENETCI'), 403, 'denetci duzeltememeli');
+    assert.equal(await dene('GENEL_MUDURLUK'), 200, 'genel mudurluk duzeltebilmeli');
+  });
+
+  test('ONCESI ve SONRASI denetim izine yazilir', async () => {
+    const izl = await ok('GET', '/api/audit?entity=purchases&limit=40');
+    const kayit = izl.items.find((x) => {
+      const d = typeof x.detail === 'string' ? x.detail : JSON.stringify(x.detail);
+      return d.includes('belge-satirlari-duzeltildi') && d.includes('adede çevrildi');
+    });
+    assert.ok(kayit, 'duzeltme denetim izinde olmali');
+    const d = typeof kayit.detail === 'string' ? JSON.parse(kayit.detail) : kayit.detail;
+    assert.equal(d.onceki[0].miktar, 2);
+    assert.equal(d.yeni[0].miktar, 36);
+    assert.ok(d.gerekce.length >= 5);
+  });
+});
+
 /* ------------------ Fiyat denetimi: koli fiyati tanisi -------------- */
 /**
  * Sahadan (Esenyurt): 40 kalemde "Zararina satis" uyarisi vardi ve

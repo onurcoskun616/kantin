@@ -280,6 +280,123 @@ purchaseRoutes.put('/:id/belge', async (ctx) => {
 });
 
 /**
+ * BELGE SATIRLARINI DUZELTIR: urun, miktar, birim fiyat, iskonto, KDV, SKT.
+ *
+ * Sahadan: faturalar koli uzerinden kesiliyor ve cevrim uygulanmadan
+ * kaydedildiginde stoga 2 adet @ 534,60 TL giriyor -- oysa 2 koli, yani
+ * 36 adet @ 29,70 TL gelmistir. Bugune kadar tek care belgeyi SILIP
+ * yeniden girmekti: fatura dosyasi, ekleri ve belge numarasi gidiyordu.
+ * Artik satirlar yerinde duzeltilir.
+ *
+ * Birim (adet/koli/paket) ayri bir alan DEGILDIR: birim urun kartinda
+ * durur. Satirda "birimi degistirmek" demek, miktari carpip birim
+ * fiyati bolmek demektir (arayuzdeki cevrim yardimcisi bunu yapar);
+ * belge tutari degismez. Kartin kendi birimi Urunler ekranindan
+ * degistirilir.
+ *
+ * Yalnizca ADMIN ve GENEL_MUDURLUK: belge tutari ve stok birlikte
+ * degisir, bu bir maddi duzeltmedir ve iz birakmalidir.
+ */
+purchaseRoutes.put('/:id/lines', async (ctx) => {
+  requireRole(ctx.user, 'ADMIN', 'GENEL_MUDURLUK');
+  const id = Number(ctx.params.id);
+  const header = get('SELECT * FROM purchases WHERE id = ?', [id]);
+  if (!header) throw notFound('Alim belgesi bulunamadi.');
+  assertCampusAccess(ctx.user, header.campus_id);
+  if (header.status === 'IPTAL') {
+    throw conflict('Iptal edilmis belgenin satirlari degistirilemez. Belgeyi yeniden girin.');
+  }
+  // Kesinlesmis sayim donemine giren belge degistirilemez; once
+  // sayimin kesinlestirmesi geri alinir (bkz. counts.js).
+  assertPurchaseMutable(header, 'satirlari degistirilemez');
+
+  const gerekce = str(ctx.body.reason, 'Gerekce', { required: true, max: 300, min: 5 });
+  const lines = arr(ctx.body.lines, 'Satirlar', { required: true, min: 1 });
+
+  const prepared = lines.map((raw, i) => {
+    const productId = int(raw.productId, `Satir ${i + 1} urun`, { required: true });
+    const product = get('SELECT * FROM products WHERE id = ?', [productId]);
+    if (!product) throw badRequest(`Satir ${i + 1}: urun bulunamadi.`);
+    const quantity = num(raw.quantity, `Satir ${i + 1} miktar`, { required: true, min: 0.001 });
+    const unitPrice = num(raw.unitPrice, `Satir ${i + 1} birim fiyat`, { required: true, min: 0 });
+    const vatRate = num(raw.vatRate, `Satir ${i + 1} KDV`, { min: 0, max: 100, def: product.vat_rate })
+      ?? product.vat_rate;
+    const discountPct = num(raw.discountPct, `Satir ${i + 1} iskonto`, { min: 0, max: 100, def: 0 }) ?? 0;
+    const totals = purchaseLineTotals({ quantity, unitPrice, vatRate, discountPct });
+    return {
+      productId, product, quantity, unitPrice, vatRate, discountPct, ...totals,
+      expiryDate: date(raw.expiryDate, `Satir ${i + 1} SKT`, { def: null }),
+      effectiveUnitCost: quantity > 0 ? round2(totals.grossTotal / quantity) : 0,
+    };
+  });
+
+  const netTotal = round2(prepared.reduce((s, l) => s + l.netTotal, 0));
+  const vatTotal = round2(prepared.reduce((s, l) => s + l.vatTotal, 0));
+  const grossTotal = round2(netTotal + vatTotal);
+
+  const oncekiSatirlar = all(
+    `SELECT pl.*, pr.name AS product_name, pr.unit FROM purchase_lines pl
+       JOIN products pr ON pr.id = pl.product_id WHERE pl.purchase_id = ?`, [id]
+  );
+
+  tx(() => {
+    // Stok hareketleri BAŞTAN kurulur: miktar da urun de degismis olabilir
+    run("DELETE FROM stock_movements WHERE ref_type = 'purchase' AND ref_id = ?", [id]);
+    run('DELETE FROM purchase_lines WHERE purchase_id = ?', [id]);
+    run('UPDATE purchases SET net_total = ?, vat_total = ?, gross_total = ? WHERE id = ?',
+      [netTotal, vatTotal, grossTotal, id]);
+
+    for (const l of prepared) {
+      insert(
+        `INSERT INTO purchase_lines (purchase_id, product_id, quantity, unit_price, vat_rate, discount_pct,
+                                     net_total, vat_total, gross_total, expiry_date)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, l.productId, l.quantity, l.unitPrice, l.vatRate, l.discountPct,
+         l.netTotal, l.vatTotal, l.grossTotal, l.expiryDate]
+      );
+      addMovement({
+        campusId: header.campus_id, productId: l.productId, type: 'ALIS', quantity: l.quantity,
+        unitCost: l.effectiveUnitCost, date: header.document_date,
+        refType: 'purchase', refId: id, userId: ctx.user.id,
+      });
+      // Duzeltilen maliyet kataloga da yansisin (girişteki ile ayni kural)
+      if (round2(l.product.purchase_price) !== l.effectiveUnitCost) {
+        run("UPDATE products SET purchase_price = ?, updated_at = datetime('now') WHERE id = ?",
+          [l.effectiveUnitCost, l.productId]);
+        insert(
+          `INSERT INTO price_history (product_id, campus_id, old_purchase, new_purchase,
+                                      old_sale, new_sale, effective_date, changed_by)
+           VALUES (?, NULL, ?, ?, ?, ?, ?, ?)`,
+          [l.productId, l.product.purchase_price, l.effectiveUnitCost,
+           l.product.sale_price, l.product.sale_price, header.document_date, ctx.user.id]
+        );
+      }
+    }
+  });
+
+  logAudit({
+    user: ctx.user, action: 'UPDATE', entity: 'purchases', entityId: id, campusId: header.campus_id,
+    detail: {
+      islem: 'belge-satirlari-duzeltildi',
+      gerekce,
+      belgeNo: header.document_no,
+      oncekiToplam: header.gross_total,
+      yeniToplam: grossTotal,
+      onceki: oncekiSatirlar.map((l) => ({
+        urun: l.product_name, birim: l.unit, miktar: l.quantity, birimFiyat: l.unit_price,
+        iskonto: l.discount_pct, kdv: l.vat_rate, tutar: l.gross_total,
+      })),
+      yeni: prepared.map((l) => ({
+        urun: l.product.name, birim: l.product.unit, miktar: l.quantity, birimFiyat: l.unitPrice,
+        iskonto: l.discountPct, kdv: l.vatRate, tutar: l.grossTotal,
+      })),
+    },
+    ip: ctx.ip,
+  });
+  return get('SELECT * FROM purchases WHERE id = ?', [id]);
+});
+
+/**
  * Belgeyi ve BAGLI HER SEYI kalici olarak siler: satirlar, stok hareketleri,
  * fatura dosyalari (diskten de), fiyat gecmisi kaydi.
  *
