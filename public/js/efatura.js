@@ -759,7 +759,18 @@ export function matchProducts(lines, products, aliases = []) {
     // girmistir. Sayimda kocaman bir fark cikar ve nereden geldigi
     // anlasilmaz. Bu yuzden uyusmazligi ISARETLERIZ; carpan verilmisse
     // (cevrildi) is zaten cozulmustur, uyarmayiz.
+    //
+    // BILINMEYEN BIRIM KODU DA UYUSMAZLIKTIR.
+    //
+    // Sahadan: CAN Gida faturasinda birim "KL" (koli) yaziyordu. Kod
+    // tablosunda olmadigi icin faturaBirimi NULL donuyor, uyusmazlik
+    // isaretlenmiyor ve 13 kalem HIC SORULMADAN koli miktariyla stoga
+    // giriyordu -- "40 kalemde zararina satis" listesinin kaynagi tam
+    // olarak buydu. Tanimadigimiz bir birimde ADET varsaymak en
+    // tehlikeli varsayimdir: bilmiyorsak SORARIZ, ham kodu da yaziya
+    // dokeriz ki kullanici neye cevap verdigini gorsun.
     const faturaBirimi = unitFromCode(line.unitCode);
+    const hamBirim = String(line.unitCode || '').trim().toUpperCase();
     const kartBirimi = product && product.unit ? String(product.unit).toUpperCase() : null;
     return {
       ...line,
@@ -767,9 +778,11 @@ export function matchProducts(lines, products, aliases = []) {
       matchedBy: how,
       aliasFactor: factor,
       convertedByFactor: cevrildi,
-      sourceUnit: faturaBirimi,
-      unitMismatch: Boolean(product && !cevrildi && faturaBirimi && kartBirimi
-        && faturaBirimi !== kartBirimi),
+      // Tanimadigimiz kodu ham haliyle gosteririz ("fatura 2 KL")
+      sourceUnit: faturaBirimi || hamBirim || null,
+      sourceUnitBilinmiyor: Boolean(hamBirim && !faturaBirimi),
+      unitMismatch: Boolean(product && !cevrildi && hamBirim && kartBirimi
+        && (faturaBirimi ? faturaBirimi !== kartBirimi : true)),
       productUnit: kartBirimi,
       quantity: cevrildi ? round4(line.quantity * factor) : line.quantity,
       unitPrice: cevrildi ? round6(line.unitPrice / factor) : line.unitPrice,
@@ -815,15 +828,22 @@ export function matchSupplier(party, suppliers) {
  */
 const BIRIM_KODLARI = {
   C62: 'ADET', H87: 'ADET', EA: 'ADET', NIU: 'ADET', PCE: 'ADET',
+  // Turk entegratorleri standart kodun yanina kendi kisaltmasini da yazar
+  AD: 'ADET', ADT: 'ADET', ADET: 'ADET', PCS: 'ADET',
   KGM: 'KG', GRM: 'KG', KG: 'KG',
-  LTR: 'LT', MLT: 'LT', L: 'LT',
-  PK: 'PAKET', XPK: 'PAKET', PA: 'PAKET',
+  LTR: 'LT', MLT: 'LT', L: 'LT', LT: 'LT', LITRE: 'LT',
+  PK: 'PAKET', XPK: 'PAKET', PA: 'PAKET', PKT: 'PAKET', PAKET: 'PAKET',
   // NPL/NMP: "kac paket/koli" anlamindadir. ERBAK-Uludag gibi toptancilar
   // LOGO dosyalarinda koli miktarini bu kodla yazar; ADET sayilirsa stoga
   // 30 adet girer, oysa 30 koli gelmistir.
   NPL: 'PAKET', NMP: 'PAKET', PK2: 'PAKET',
-  BX: 'KUTU', XBX: 'KUTU', CT: 'KUTU', CS: 'KUTU',
-  PR: 'PORSIYON',
+  BX: 'KUTU', XBX: 'KUTU', CT: 'KUTU', CS: 'KUTU', CTN: 'KUTU',
+  // KL / KOLI: CAN Gida gibi gida toptancilarinin faturalarinda koli
+  // boyle yazar ("2 KL × 534,60"). UN/ECE'de KL baska bir sey demek
+  // olabilir ama kantin faturasinda kilolitre gecmez; koli saymak
+  // dogru okumadir.
+  KL: 'KUTU', KOLI: 'KUTU', 'KOLİ': 'KUTU', KOL: 'KUTU', KT: 'KUTU', KUTU: 'KUTU',
+  PR: 'PORSIYON', POR: 'PORSIYON', PORSIYON: 'PORSIYON',
 };
 
 export function unitFromCode(code) {

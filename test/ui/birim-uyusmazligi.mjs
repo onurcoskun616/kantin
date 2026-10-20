@@ -270,6 +270,61 @@ const metin4 = await toplamMetni();
 ok('Faturadan acilan kart icin de soruldu',
   /1 PAKET kaç ADET/.test(metin4), metin4.slice(0, 400));
 
+/*
+ * TANIMADIGIMIZ BIRIM KODU DA SORULMALIDIR.
+ *
+ * Sahadan: CAN Gida faturasinda birim "KL" (koli) yaziyordu. Kod
+ * tablosunda olmadigi icin uyusmazlik hic isaretlenmedi ve 13 kalem
+ * SORULMADAN koli miktariyla stoga girdi. "40 kalemde zararina satis"
+ * listesinin kaynagi buydu: tanimadigimiz birimde ADET varsaymak en
+ * tehlikeli varsayimdir.
+ */
+console.log('\n7) Birim kodlari: Turkce kisaltmalar ve BILINMEYEN kod');
+const birim = await page.evaluate(async () => {
+  const m = await import('/js/efatura.js');
+  const xml = (kod) => `<?xml version="1.0" encoding="UTF-8"?>
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+ xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+ xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+ <cbc:ID>BT1</cbc:ID><cbc:UUID>bt</cbc:UUID><cbc:IssueDate>2026-10-12</cbc:IssueDate>
+ <cac:AccountingSupplierParty><cac:Party><cac:PartyName><cbc:Name>T</cbc:Name></cac:PartyName>
+ </cac:Party></cac:AccountingSupplierParty>
+ <cac:LegalMonetaryTotal><cbc:LineExtensionAmount>100.00</cbc:LineExtensionAmount>
+ <cbc:TaxExclusiveAmount>100.00</cbc:TaxExclusiveAmount>
+ <cbc:PayableAmount>101.00</cbc:PayableAmount></cac:LegalMonetaryTotal>
+ <cac:InvoiceLine><cbc:ID>1</cbc:ID>
+  <cbc:InvoicedQuantity unitCode="${kod}">2</cbc:InvoicedQuantity>
+  <cbc:LineExtensionAmount>100.00</cbc:LineExtensionAmount>
+  <cac:Item><cbc:Name>BİRİM DENEME</cbc:Name></cac:Item>
+  <cac:Price><cbc:PriceAmount>50.00</cbc:PriceAmount></cac:Price>
+ </cac:InvoiceLine></Invoice>`;
+  const urunler = [{ id: 1, name: 'BİRİM DENEME', unit: 'ADET', vat_rate: 1 }];
+  const dene = (kod) => {
+    const [l] = m.matchProducts(m.parseEFatura(xml(kod)).lines, urunler, []);
+    return { birim: l.sourceUnit, bilinmiyor: !!l.sourceUnitBilinmiyor, uyusmaz: !!l.unitMismatch };
+  };
+  return {
+    kod: {
+      KL: m.unitFromCode('KL'), KOLI: m.unitFromCode('KOLI'), KT: m.unitFromCode('KT'),
+      AD: m.unitFromCode('AD'), ADET: m.unitFromCode('ADET'), PKT: m.unitFromCode('PKT'),
+    },
+    KL: dene('KL'), C62: dene('C62'), XYZ: dene('XYZ'), bos: dene(''),
+  };
+});
+ok('"KL" koli olarak taniniyor', birim.kod.KL === 'KUTU', birim.kod.KL);
+ok('"KOLI" / "KT" koli olarak taniniyor',
+  birim.kod.KOLI === 'KUTU' && birim.kod.KT === 'KUTU', JSON.stringify(birim.kod));
+ok('"AD" / "ADET" adet olarak taniniyor',
+  birim.kod.AD === 'ADET' && birim.kod.ADET === 'ADET', JSON.stringify(birim.kod));
+ok('"PKT" paket olarak taniniyor', birim.kod.PKT === 'PAKET', birim.kod.PKT);
+ok('KL faturasi ADET kartla uyusmaz sayiliyor', birim.KL.uyusmaz === true, JSON.stringify(birim.KL));
+ok('C62 (adet) ADET kartla UYUSUR, bosuna sorulmaz',
+  birim.C62.uyusmaz === false, JSON.stringify(birim.C62));
+ok('BILINMEYEN kod uyusmazlik sayilir', birim.XYZ.uyusmaz === true, JSON.stringify(birim.XYZ));
+ok('Bilinmeyen kod HAM haliyle gosterilir',
+  birim.XYZ.birim === 'XYZ' && birim.XYZ.bilinmiyor === true, JSON.stringify(birim.XYZ));
+ok('Birim HIC yazmiyorsa sorulmaz', birim.bos.uyusmaz === false, JSON.stringify(birim.bos));
+
 await b.close();
 if (problems.length) {
   console.log(`\n✗ ${problems.length} sorun: ${problems.join(' | ')}\n`);

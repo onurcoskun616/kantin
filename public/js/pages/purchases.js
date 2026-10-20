@@ -419,7 +419,9 @@ async function openPurchaseForm(onDone) {
         el('div.row', { style: 'gap:8px;align-items:center;flex-wrap:wrap' }, [
           el('small', {
             text: `${l.sourceName || 'Satır'} — fatura ${fmt.num(l.sourceQuantity ?? l.quantity)} `
-              + `${l.sourceUnit}${l.unitMismatch ? `, ürün kartı ${l.productUnit}` : ''}. `
+              + `${l.sourceUnit}`
+              + (l.sourceUnitBilinmiyor ? ' (bu birimi tanımıyoruz)' : '')
+              + `${l.unitMismatch && l.productUnit ? `, ürün kartı ${l.productUnit}` : ''}. `
               + `1 ${l.sourceUnit} kaç ${hedefBirim(l)}?`,
           }),
           giris,
@@ -448,6 +450,14 @@ async function openPurchaseForm(onDone) {
           + 'birim fiyat bölünür, BELGE TUTARI DEĞİŞMEZ. Çarpan belge kaydedilince '
           + 'öğrenilir; bu tedarikçinin sonraki faturalarında bir daha sorulmaz.',
       }),
+      aday.some((l) => l.sourceUnitBilinmiyor)
+        ? el('div', {
+          style: 'margin:0 0 2px',
+          text: 'Bazı satırlarda faturanın yazdığı birimi tanımıyoruz. Tanımadığımız '
+            + 'birimde ADET varsaymıyoruz — yanlış varsayım stoğu koli kadar gösterir. '
+            + 'Faturaya bakıp cevaplayın.',
+        })
+        : null,
       ...satirlar,
       el('small.muted', {
         style: 'display:block;margin-top:10px',
@@ -536,6 +546,7 @@ async function openPurchaseForm(onDone) {
       sourceUnitPrice: p0.sourceUnitPrice ?? p0.unitPrice ?? null,
       productUnit: p0.productUnit || null,
       unitMismatch: Boolean(p0.unitMismatch),
+      sourceUnitBilinmiyor: Boolean(p0.sourceUnitBilinmiyor),
       aliasFactor: p0.aliasFactor ?? 1,
       matchedBy: p0.matchedBy || null,
     };
