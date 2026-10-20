@@ -29,6 +29,7 @@ import { str, num, int, bool, date, arr, today, oneOf } from '../lib/validate.js
 import { stockSnapshot, addMovement, effectivePrices } from '../lib/stock.js';
 import { round2, round4, netFromGross, pctOf } from '../lib/money.js';
 import { recipeConsumption, recipeUnitCost } from '../lib/recipe.js';
+import { trFoldSql } from '../lib/metin.js';
 
 export const countRoutes = new Router();
 
@@ -796,7 +797,7 @@ function producedProducts(campusId) {
        FROM products p
        LEFT JOIN campus_products cp ON cp.product_id = p.id AND cp.campus_id = ?
       WHERE p.is_active = 1 AND p.product_type = 'URETILEN'
-      ORDER BY p.name COLLATE NOCASE`,
+      ORDER BY ${trFoldSql('p.name')}`,
     [campusId]
   );
 }
@@ -827,7 +828,16 @@ function loadCount(countId, user) {
        FROM count_lines l
        JOIN products p ON p.id = l.product_id
        LEFT JOIN categories cat ON cat.id = p.category_id
-      WHERE l.count_id = ? ORDER BY cat.sort_order, p.name COLLATE NOCASE`, [countId]
+      WHERE l.count_id = ?
+      -- SAYIM FISI BASTAN SONA A'DAN Z'YE.
+      --
+      -- Eskiden once kategoriye, sonra ada gore siralaniyordu: kategorisiz
+      -- urunler bir blok, "Su ve Icecek" baska bir blok olunca sayan kisi
+      -- aradigi urunu bulamiyordu. Ustelik COLLATE NOCASE yalnizca ASCII
+      -- harfte calistigi icin "DIDI" (İ) "DUCAT"in ARKASINA dusuyordu.
+      -- trFoldSql Turkce harfleri ASCII karsiligina indirger: tek liste,
+      -- gercekten alfabetik.
+      ORDER BY ${trFoldSql('p.name')}`, [countId]
   );
 
   // "OLMASI GEREKEN" MIKTAR CANLI OKUNUR.
@@ -865,7 +875,7 @@ function loadCount(countId, user) {
   const production = all(
     `SELECT ps.*, p.name AS product_name, p.unit
        FROM production_sales ps JOIN products p ON p.id = ps.product_id
-      WHERE ps.count_id = ? ORDER BY p.name COLLATE NOCASE`, [countId]
+      WHERE ps.count_id = ? ORDER BY ${trFoldSql('p.name')}`, [countId]
   );
 
   return withVariance({

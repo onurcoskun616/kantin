@@ -424,6 +424,59 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
 
 });
 
+/* --------------- Sayim fisi A'dan Z'ye siralidir -------------------- */
+describe('Sayim fisi siralamasi', () => {
+  test('TEK liste, kategoriye gore BLOKLANMADAN, Turkce harfler dogru yerde', async () => {
+    // Eskiden once kategoriye sonra ada gore siralaniyordu: kategorisiz
+    // urunler bir blok, "Su ve Icecek" baska blok. Ustelik COLLATE
+    // NOCASE yalnizca ASCII harfte calistigi icin "DİDİ" (İ) "DUCAT"in
+    // ARKASINA dusuyordu.
+    const campusId = (await ok('POST', '/api/campuses',
+      { name: 'Sıralama Kampüsü', code: 'SRL' })).id;
+    const kategori = (await ok('POST', '/api/products/categories',
+      { name: `Su ve İçecek ${Date.now()}`, sortOrder: 9 })).id;
+
+    // Kasten karisik girilir; bir kismi kategorili, bir kismi degil
+    const adlar = [
+      ['ZEYTİN EZMESİ', null],
+      ['DUCAT PREMİUM SICAK ÇİKOLATA', kategori],
+      ['AYRAN', kategori],
+      ['ÇİZİ 70 GR.24 AD.', null],
+      ['DİDİ ÇEŞİTLERİ', kategori],
+      ['BISCOLATA MOOD', null],
+      ['ÖZSÜT KAYMAK', null],
+      ['SİMİT', null],
+    ];
+    const idler = {};
+    for (const [ad, categoryId] of adlar) {
+      idler[ad] = (await ok('POST', '/api/products',
+        { name: ad, salePrice: 10, vatRate: 1, unit: 'ADET', categoryId })).id;
+    }
+    const supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'Sıralama Tedarikçi', taxNo: '3838383838' })).id;
+    await ok('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'SRL-1', documentDate: daysAgo(3),
+      lines: adlar.map(([ad]) => ({ productId: idler[ad], quantity: 5, unitPrice: 5, vatRate: 1 })),
+    });
+
+    const sayim = await ok('POST', '/api/counts',
+      { campusId, countDate: daysAgo(1), isBlind: false });
+    const detay = await ok('GET', `/api/counts/${sayim.id}`);
+    // Sayim fisi tum urunleri icerir; baska testlerin urunleri arada
+    // kalmasin diye yalnizca bu testin adlari suzulur. Siralamanin
+    // kendisi bozulmaz: suzme sirayi korur.
+    const benim = new Set(adlar.map(([ad]) => ad));
+    const sirali = detay.lines.map((l) => l.product_name).filter((ad) => benim.has(ad));
+
+    // Turkce harfler ASCII karsiligina indirgenerek siralanir:
+    // AYRAN, BISCOLATA, ÇİZİ(c), DİDİ(d), DUCAT, ÖZSÜT(o), SİMİT(s), ZEYTİN
+    assert.deepEqual(sirali, [
+      'AYRAN', 'BISCOLATA MOOD', 'ÇİZİ 70 GR.24 AD.', 'DİDİ ÇEŞİTLERİ',
+      'DUCAT PREMİUM SICAK ÇİKOLATA', 'ÖZSÜT KAYMAK', 'SİMİT', 'ZEYTİN EZMESİ',
+    ], JSON.stringify(sirali));
+  });
+});
+
 /* ----------- Stok ekrani: belge no ve kampus katalogu --------------- */
 describe('Stok hareketleri ve kampus katalogu', () => {
   let campusId; let bosKampus; let supplierId; let urun; let girmeyenUrun; let belge;
