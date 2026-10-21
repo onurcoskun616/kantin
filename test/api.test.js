@@ -463,11 +463,37 @@ describe('Fiyat denetimi kampuse gore cozulur', () => {
     assert.equal(a.purchase_price_source, 'ALIM');
   });
 
-  test('alisi OLMAYAN kampuste kaynak KATALOG olarak isaretlenir', async () => {
-    const b = await satir(kampusB);
-    assert.ok(b, 'katalog fiyatiyla yine uyari cikar');
+  test('BU KAMPUSE HIC GIRMEMIS urun denetime ALINMAZ', async () => {
+    // Sahadan: Esenyurt panelinde "HALLEY MİNİ KARADUT DOLGULU 74GRx24"
+    // uyarisi cikiyordu; kullanici "boyle bir urun yok" dedi -- hakli,
+    // cunku o kampuste gercekten yok, rakam Ikitelli faturasindan
+    // kalmisti.
+    const r = await ok('GET', `/api/reports/price-control?campusId=${kampusB}`);
+    assert.ok(!r.items.some((x) => x.id === urun),
+      'bu kampuse girmemis urun uyari uretmemeli');
+    assert.ok(r.gizlenen >= 1, `gizlenen sayisi bildirilmeli: ${r.gizlenen}`);
+  });
+
+  test('URETILEN urun stok hareketi olmasa da denetlenir', async () => {
+    // Tost/cay raftan sayilmaz, hic stok hareketi olmaz; ama fiyati ve
+    // recetesi her kampuste denetlenmelidir.
+    const tost = (await ok('POST', '/api/products', {
+      name: 'Kampüs Denetim Tostu', productType: 'URETILEN',
+      purchasePrice: 40, salePrice: 30, vatRate: 1,
+    })).id;
+    const r = await ok('GET', `/api/reports/price-control?campusId=${kampusB}`);
+    const satir = r.items.find((x) => x.id === tost);
+    assert.ok(satir, 'uretilen urun hareketi olmasa da listede olmali');
+    assert.ok(satir.issues.some((i) => /Recete tanimsiz/i.test(i)), JSON.stringify(satir.issues));
+  });
+
+  test('tumUrunler=1 ile kaynak KATALOG olarak gosterilebilir', async () => {
+    const r = await ok('GET', `/api/reports/price-control?campusId=${kampusB}&tumUrunler=1`);
+    const b = r.items.find((x) => x.id === urun);
+    assert.ok(b, 'istenirse hepsi denetlenebilmeli');
     assert.equal(b.purchase_price_source, 'KATALOG',
       'bu kampuse giris yok; rakam baska kampusten kalmis olabilir');
+    assert.equal(r.gizlenen, 0);
   });
 
   test('KAMPUSE OZEL alis fiyati katalogu ezer', async () => {
@@ -475,7 +501,9 @@ describe('Fiyat denetimi kampuse gore cozulur', () => {
     // alis satistan yuksek secilir.
     await ok('PUT', `/api/products/${urun}/campus-price/${kampusB}`,
       { purchasePrice: 60, salePrice: 50 });
-    const b = await satir(kampusB);
+    // Urunun B kampusunde hareketi yok; denetime girmesi icin tumUrunler
+    const b = (await ok('GET', `/api/reports/price-control?campusId=${kampusB}&tumUrunler=1`))
+      .items.find((x) => x.id === urun);
     assert.ok(b, 'zararina satis uyarisi surmeli');
     assert.equal(round2(b.effective_purchase_price), 60);
     assert.equal(b.purchase_price_source, 'KAMPUS');

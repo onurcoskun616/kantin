@@ -403,6 +403,22 @@ reportRoutes.get('/price-control', async (ctx) => {
   // guncellenir). Urun listesiyle AYNI kaynaklari, ayni sirayla
   // kullaniriz (bkz. products.js decorate).
   const kid = campusId ?? 0;
+  // BU KAMPUSE HIC GIRMEMIS URUNU UYARMA.
+  //
+  // Urun kartlari tum kampuslerde ortaktir. Esenyurt'ta hic satilmamis
+  // bir urunun marjini Esenyurt panelinde uyari olarak gostermek
+  // kullaniciya "boyle bir urun yok" dedirtiyor -- hakli, cunku o
+  // kampuste gercekten yok. Rakam da baska bir kampusun faturasindan
+  // kalmistir. Istenirse tumUrunler=1 ile hepsi gorulebilir.
+  const tumUrunler = ctx.query.tumUrunler === '1';
+  //
+  // URETILEN urunler (tost, cay) HARICTIR: raftan sayilmadiklari icin
+  // hic stok hareketleri olmaz, ama fiyatlari ve receteleri her kampuste
+  // denetlenmelidir.
+  const girisSarti = tumUrunler ? '' : `
+        AND (p.product_type = 'URETILEN'
+             OR EXISTS (SELECT 1 FROM stock_movements mm
+                         WHERE mm.campus_id = ? AND mm.product_id = p.id))`;
   const rows = all(
     `SELECT p.*, c.name AS category_name,
             cp.purchase_price AS campus_purchase_price, cp.sale_price AS campus_sale_price,
@@ -413,10 +429,21 @@ reportRoutes.get('/price-control', async (ctx) => {
        LEFT JOIN categories c ON c.id = p.category_id
        LEFT JOIN campus_products cp ON cp.product_id = p.id AND cp.campus_id = ?
        LEFT JOIN (${lastPurchaseSql()}) lp ON lp.product_id = p.id
-      WHERE p.is_active = 1 ORDER BY ${trFoldSql('p.name')}`,
-    // Sirasi: (satis fiyati) campus_id + tarih + tarih, cp.campus_id, (son alis) campus_id
-    [kid, today(), today(), kid, kid]
+      WHERE p.is_active = 1${girisSarti}
+      ORDER BY ${trFoldSql('p.name')}`,
+    // Sirasi: (satis fiyati) campus_id + tarih + tarih, cp.campus_id,
+    //         (son alis) campus_id, (giris sarti) campus_id
+    [kid, today(), today(), kid, kid, ...(tumUrunler ? [] : [kid])]
   );
+
+  // Gizlenen urun sayisi: arayuz "12 urun bu kampuse hic girmedigi icin
+  // listelenmedi" diyebilsin.
+  const gizlenen = tumUrunler ? 0 : (get(
+    `SELECT COUNT(*) AS n FROM products p
+      WHERE p.is_active = 1 AND p.product_type <> 'URETILEN'
+        AND NOT EXISTS (SELECT 1 FROM stock_movements mm
+                         WHERE mm.campus_id = ? AND mm.product_id = p.id)`, [kid]
+  )?.n ?? 0);
 
   const items = rows.map((r) => {
     // Uretilen urunlerde maliyet receteden gelir; recete yoksa elle girilen tahmindir
@@ -463,7 +490,7 @@ reportRoutes.get('/price-control', async (ctx) => {
     };
   }).filter((r) => r.issues.length > 0);
 
-  return { minMargin, items };
+  return { minMargin, items, gizlenen, tumUrunler };
 });
 
 /* ---------------------------- Kritik stok -------------------------- */

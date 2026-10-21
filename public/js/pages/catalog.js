@@ -25,11 +25,21 @@ export async function renderProducts(root) {
   searchInput.addEventListener('input', debounce(() => { filters.search = searchInput.value; draw(); }, 350));
   const catSelect = el('select', {}, [el('option', { value: '' }, ['Tüm kategoriler'])]);
   catSelect.addEventListener('change', () => { filters.categoryId = catSelect.value; draw(); });
+  // Fiyat uyarilari varsayilan olarak YALNIZCA bu kampuse girmis
+  // urunleri kapsar; kartlar ortak oldugu icin aksi halde hic
+  // satilmamis urunler de uyari uretiyor.
+  let tumUrunler = false;
+  const tumToggle = el('input', { type: 'checkbox' });
+  tumToggle.addEventListener('change', () => { tumUrunler = tumToggle.checked; draw(); });
 
   const sonucBolumu = el('div.grid');
   container.append(
     el('div.filter-bar', {}, [
       searchInput, catSelect,
+      el('label.inline-field', {
+        title: 'Ürün kartları tüm kampüslerde ortaktır. Normalde yalnızca bu kampüse '
+          + 'girişi olmuş ürünler fiyat uyarısı üretir.',
+      }, [tumToggle, el('span', { text: 'Bu kampüse girmemişleri de denetle' })]),
       el('div', { style: 'flex:1' }),
       canWrite('products') ? el('button.btn.btn-primary', {
         text: '+ Yeni Ürün', onclick: () => openProductForm(kategoriler, null, draw),
@@ -58,7 +68,9 @@ export async function renderProducts(root) {
     const [data, cats, priceControl] = await Promise.all([
       api.get('/api/products', { campusId: state.campusId, ...filters }),
       api.get('/api/products/categories'),
-      api.get('/api/reports/price-control', { campusId: state.campusId }),
+      api.get('/api/reports/price-control', {
+        campusId: state.campusId, tumUrunler: tumUrunler ? '1' : '',
+      }),
     ]);
     kategoriler = cats.items;
 
@@ -118,8 +130,14 @@ export async function renderProducts(root) {
         tight: true,
         note: `Kâr marjı %${priceControl.minMargin} altında kalan, zararına satılan veya tavan fiyatı aşan ürünler listelenir. `
           + `Fiyatlar seçili kampüse (${campusName(state.campusId) || '—'}) göre çözülür: önce bu kampüsün son alışı, `
-          + 'yoksa kampüs fiyatı, o da yoksa katalog fiyatı. Ürün kartları tüm kampüslerde ortaktır, '
-          + 'bu yüzden listede bu kampüse hiç girmemiş ürünler de yer alabilir — alış rakamının altında kaynağı yazar.'
+          + 'yoksa kampüs fiyatı, o da yoksa katalog fiyatı.'
+          + (priceControl.gizlenen
+            ? ` Ürün kartları tüm kampüslerde ortaktır; bu kampüse hiç girmemiş ${priceControl.gizlenen} ürün `
+              + 'denetime alınmadı (yukarıdaki kutuyla açabilirsiniz).'
+            : '')
+          + (priceControl.tumUrunler
+            ? ' Bu kampüse hiç girmemiş ürünler de denetleniyor — alış rakamının altında fiyatın kaynağı yazar.'
+            : '')
           + (taniliSayi ? ` ${taniliSayi} üründe alış fiyatı KOLİ fiyatı gibi duruyor — satırın altında olması gereken `
             + 'adet fiyatı ve nasıl düzeltileceği yazıyor.' : '')
           + (suzuluyor ? ` Aramaya uyan ${uyarilar.length} uyarı gösteriliyor (toplam ${priceControl.items.length}).` : ''),
