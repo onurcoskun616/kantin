@@ -352,6 +352,46 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
     assert.equal(satir.grossProfit, Math.round((satir.revenue - 660) * 100) / 100);
   });
 
+  test('her kampusun SEBEBI AYRI AYRI bildirilir', async () => {
+    // Ekranda satir satir "— sayim yok" / "— acilis sayimi" yazabilmek
+    // icin her kampusun kendi durumu gelir.
+    const acilisli = (await ok('POST', '/api/campuses',
+      { name: 'Sadece Açılışlı', code: 'SAC' })).id;
+    const urun2 = (await ok('POST', '/api/products',
+      { name: 'Sadece Açılışlı Ürün', salePrice: 30, vatRate: 1, unit: 'ADET' })).id;
+    await ok('POST', '/api/purchases', {
+      campusId: acilisli, supplierId, documentNo: 'SAC-1', documentDate: daysAgo(20),
+      lines: [{ productId: urun2, quantity: 50, unitPrice: 10, vatRate: 1 }],
+    });
+    const sayim = await ok('POST', '/api/counts',
+      { campusId: acilisli, countDate: daysAgo(4), isBlind: false, isOpening: true });
+    await ok('PUT', `/api/counts/${sayim.id}/lines`, { lines: [{ productId: urun2, countedQty: 40 }] });
+    await ok('POST', `/api/counts/${sayim.id}/submit`, { witnessName: 'Tanık' });
+    await kesinlestirBaskasi(sayim.id);
+
+    const rep = await ok('GET',
+      `/api/reports/campus-comparison?from=${daysAgo(60)}&to=${iso(new Date())}`);
+
+    // Yalnizca ACILIS sayimi olan kampus
+    const a = rep.items.find((r) => r.campusId === acilisli);
+    assert.equal(a.cogs, null, 'acilis sayimi maliyet uretmez');
+    assert.equal(a.countStatus.openingInRange, 1);
+    assert.equal(a.countStatus.countedInRange, 0);
+
+    // Hic sayimi olmayan kampus
+    const bos = (await ok('POST', '/api/campuses', { name: 'Hiç Sayımsız', code: 'HSZ' })).id;
+    const rep2 = await ok('GET',
+      `/api/reports/campus-comparison?from=${daysAgo(60)}&to=${iso(new Date())}`);
+    const h = rep2.items.find((r) => r.campusId === bos);
+    assert.equal(h.countStatus.inRange, 0);
+    assert.equal(h.countStatus.lastFinalizedDate, null, '"sayim yok" sebebi');
+
+    // Sayimi OLAN kampus bunlardan AYRISMALI
+    const dolu = rep2.items.find((r) => r.campusId === campusId);
+    assert.ok(dolu.countStatus.countedInRange >= 1);
+    assert.ok(dolu.cogs !== null, 'sayimi olan kampuste maliyet yazilmali');
+  });
+
   test('SUTUNLAR BOSSA rapor SEBEBINI soyler', async () => {
     // "Veri gelmedi" sorusunun cevabi: kullanici hangi caresi uygulamasi
     // gerektigini bilsin diye uc sebep ayri ayri bildirilir.

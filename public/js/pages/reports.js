@@ -158,6 +158,34 @@ async function monthly(range) {
  * uculunun caresi farklidir; rapor bunu soylemezse kullanici "veri
  * gelmedi" diye bakakalir.
  */
+/**
+ * BOS HUCRENIN SEBEBI, HUCRENIN KENDISINDE.
+ *
+ * Tablonun ustunde zaten uzun bir aciklama var ama kullanici boş
+ * "—" isaretine bakip "neden yazmiyor" diye soruyor -- hakli, cevap
+ * onun baktigi yerde degil. Satis/maliyet/kar sutunlari kesinlesmis
+ * DONEM sayimindan gelir; her kampusun eksigi farklidir, o yuzden
+ * sebep satir satir yazilir.
+ */
+function sayimYokSebebi(r) {
+  const c = r.countStatus || {};
+  if (c.openingInRange > 0 && c.countedInRange === 0) return 'açılış sayımı';
+  if (!c.inRange && c.lastFinalizedDate) return 'sayım aralık dışı';
+  if (!c.inRange) return 'sayım yok';
+  return null;
+}
+
+/** Sayim olmadigi icin bos kalan sayisal hucre. */
+function sayimsizHucre(r) {
+  const sebep = sayimYokSebebi(r);
+  return el('span.muted', {
+    title: sebep
+      ? 'Bu sütun kesinleşmiş dönem sayımından hesaplanır; bu kampüste henüz yok.'
+      : '',
+    text: sebep ? `— ${sebep}` : '—',
+  });
+}
+
 function sayimUyarisi(items) {
   const veriliOlan = items.filter((r) => r.cogs !== null);
   if (veriliOlan.length) return null;
@@ -203,15 +231,20 @@ async function comparison(range) {
         { label: 'Ciro', num: true, value: (r) => fmt.money(r.revenue) },
         // Cironun hemen yaninda SATILAN MALIN ALIS TOPLAMI: "bu parayi
         // kazanmak icin ne kadarlik mal gitti" tek bakista gorulsun.
-        { label: 'Maliyet (alış)', num: true, value: (r) => (r.cogs === null ? '—' : fmt.money(r.cogs)) },
+        { label: 'Maliyet (alış)', num: true,
+          render: (r) => (r.cogs === null ? sayimsizHucre(r) : el('span', { text: fmt.money(r.cogs) })) },
         { label: 'Okul Günü', num: true, value: (r) => r.schoolDays },
         { label: 'Günlük Ort.', num: true, value: (r) => fmt.money(r.dailyAverage) },
         { label: 'Öğr. Başına', num: true, value: (r) => fmt.money(r.revenuePerStudent) },
         { label: 'Öğr. Günlük', num: true, value: (r) => fmt.money(r.dailyPerStudent) },
-        { label: 'Satılan Adet', num: true, value: (r) => fmt.int(r.soldQty) },
-        { label: 'Brüt Kâr', num: true, render: (r) => (r.grossProfit === null ? el('span.muted', { text: '—' }) : deltaCell(r.grossProfit)) },
-        { label: 'Marj', num: true, render: (r) => marginBadge(r.grossMarginPct) },
-        { label: 'Sayım Farkı', num: true, render: (r) => (r.difference === null ? el('span.muted', { text: '—' }) : deltaCell(r.difference)) },
+        { label: 'Satılan Adet', num: true,
+          render: (r) => (r.soldQty === null ? sayimsizHucre(r) : el('span', { text: fmt.int(r.soldQty) })) },
+        { label: 'Brüt Kâr', num: true,
+          render: (r) => (r.grossProfit === null ? sayimsizHucre(r) : deltaCell(r.grossProfit)) },
+        { label: 'Marj', num: true,
+          render: (r) => (r.grossMarginPct === null ? sayimsizHucre(r) : marginBadge(r.grossMarginPct)) },
+        { label: 'Sayım Farkı', num: true,
+          render: (r) => (r.difference === null ? sayimsizHucre(r) : deltaCell(r.difference)) },
         { label: 'Fire', num: true, value: (r) => fmt.money(r.wasteCost) },
         { label: 'Okul Payı', num: true, value: (r) => (r.schoolShare === null ? '—' : fmt.money(r.schoolShare)) },
       ], data.items, { rowClass: (r) => (r.difference !== null && r.difference < -1 ? 'is-warn' : '') }),
