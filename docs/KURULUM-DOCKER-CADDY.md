@@ -262,10 +262,20 @@ fiyatı tanımsız ürünler, mükerrer kartlar, kampüs sayım durumu…) tek k
 tarar. **Salt okunurdur**, hiçbir şeyi değiştirmez ve rapora kişisel veri
 yazmaz — güvenle paylaşılabilir.
 
+**Panelden (önerilen):** *Sistem Durumu* ekranındaki **🔍 Veri Teşhis Raporu**
+kartı aynı raporu sayfada gösterir; **⬇ Raporu İndir (TXT)** düğmesi metin
+hâlini indirir. Sunucuya bağlanmak gerekmez. Yalnızca sistem yöneticisi ve
+genel müdürlük görür.
+
+**Sunucudan (komut satırı):**
+
 ```bash
 sudo docker exec topkapi-kantin node scripts/veri-teshis.mjs > veri-teshis.txt
 less veri-teshis.txt
 ```
+
+İkisi aynı kontrolleri çalıştırır: kontroller tek yerde,
+`server/lib/veri-teshis.js` içinde durur.
 
 Rapor yedi başlık altında bulguları ve her birinin olması gereken rakamını
 yazar. Örnek:

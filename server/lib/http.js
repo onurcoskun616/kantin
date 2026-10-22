@@ -57,6 +57,16 @@ export function sendCsv(res, filename, csv) {
   res.end(body);
 }
 
+/** Duz metin dosyasi indirmesi (teshis raporu gibi). */
+export function sendText(res, filename, text) {
+  res.writeHead(200, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'Content-Disposition': `attachment; filename="${filename}"`,
+    'Content-Length': Buffer.byteLength(text),
+  });
+  res.end(text);
+}
+
 export function toCsv(rows, columns) {
   const esc = (v) => {
     if (v === null || v === undefined) return '';

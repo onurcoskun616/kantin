@@ -84,42 +84,55 @@ describe('Teshis araci', () => {
 
   after(() => rmSync(dir, { recursive: true, force: true }));
 
+  /** Rapordan N numarali bolumu keser (baslik metnine bagli kalmaz). */
+  const bolum = (n) => {
+    const bas = rapor.indexOf(`\n${n}. `);
+    const son = rapor.indexOf(`\n${n + 1}. `);
+    assert.ok(bas > -1, `${n}. bolum bulunamadi`);
+    return rapor.slice(bas, son > -1 ? son : undefined);
+  };
+
   test('1 — koli fiyati adet sanilmis kalemi bulur ve dogru rakami verir', () => {
     assert.match(rapor, /BİSKREM KAKAOLU 100GRx18/);
-    assert.match(rapor, /÷ 18 = ₺20,00/, rapor.slice(0, 900));
+    assert.match(bolum(1), /÷ 18 = ₺20,00/, rapor.slice(0, 900));
   });
 
   test('2 — satilmis ama fiyatsiz kalemi adet ve maliyetiyle bulur', () => {
-    assert.match(rapor, /ETİ ÇİK BOL SÜTLÜ MİNİ 32GX12X12/);
-    assert.match(rapor, /136 ADET satilmis/);
-    assert.match(rapor, /ciroya ₺0,00/);
+    const b = bolum(2);
+    assert.match(b, /ETİ ÇİK BOL SÜTLÜ MİNİ 32GX12X12/);
+    assert.match(b, /136 ADET satılmış/);
+    assert.match(b, /ciroya ₺0,00/);
   });
 
   test('3 — mukerrer kartlari gruplar', () => {
-    const bolum = rapor.split('3. MUKERRER')[1].split('4. BIRIMI')[0];
-    assert.match(bolum, /#5/);
-    assert.match(bolum, /#6/);
+    const b = bolum(3);
+    assert.match(b, /#5/);
+    assert.match(b, /#6/);
   });
 
   test('4 — ambalaj birimli kullanimdaki karti bulur', () => {
-    const bolum = rapor.split('4. BIRIMI')[1].split('5. SATIS')[0];
-    assert.match(bolum, /ÇİZİ 70 GR\.24 AD\./);
-    assert.match(bolum, /birim KUTU/);
+    const b = bolum(4);
+    assert.match(b, /ÇİZİ 70 GR\.24 AD\./);
+    assert.match(b, /birim KUTU/);
   });
 
   test('5 — bozuk ondalikli satis fiyatini isaretler', () => {
-    assert.match(rapor, /HANIMELLER FINDIKLI RULO[^\n]*2\.777778/);
-    assert.match(rapor, /ondalik bozuk/);
+    const b = bolum(5);
+    assert.match(b, /HANIMELLER FINDIKLI RULO/);
+    assert.match(b, /2\.777778/);
+    assert.match(b, /ondalık bozuk/);
   });
 
   test('6 — kampus sayim durumunu yazar', () => {
-    assert.match(rapor, /Teşhis Kampüsü\s+son donem sayimi 2026-10-20/);
+    const b = bolum(6);
+    assert.match(b, /Teşhis Kampüsü/);
+    assert.match(b, /son dönem sayımı 2026-10-20/);
   });
 
   test('7 — koli girilmis fatura satirini bulur', () => {
-    const bolum = rapor.split('7. FATURA')[1];
-    assert.match(bolum, /2 ADET × ₺356,40/);
-    assert.match(bolum, /÷18 = ₺19,80/);
+    const b = bolum(7);
+    assert.match(b, /2 ADET × ₺356,40/);
+    assert.match(b, /÷18 = ₺19,80/);
   });
 
   test('SAGLIKLI kayit hicbir listede YOK (yanlis alarm vermez)', () => {
@@ -129,6 +142,24 @@ describe('Teshis araci', () => {
   test('KISISEL VERI yazmaz', () => {
     assert.ok(!/@/.test(rapor), 'raporda e-posta olmamali');
     assert.ok(!/password|parola|hash/i.test(rapor), 'raporda parola izi olmamali');
+  });
+
+  test('OZET ve BOLUMLER yapisal olarak da donuyor (panel bunu kullanir)', async () => {
+    // Komut satiri ve panel AYNI modulu kullanir; yapisal cikti
+    // bozulursa panel sessizce bos kalir.
+    const { veriTeshisi } = await import('../server/lib/veri-teshis.js');
+    const db2 = new DatabaseSync(dbPath, { readOnly: true });
+    const r = veriTeshisi((sql, p = []) => db2.prepare(sql).all(...p));
+    db2.close();
+    assert.equal(r.bolumler.length, 7);
+    assert.ok(r.ozet.toplamBulgu > 0);
+    // 6. bolum (sayim durumu) bulgu sayilmaz
+    assert.equal(r.ozet.toplamBulgu,
+      r.bolumler.filter((b) => b.no !== 6).reduce((t, b) => t + b.sayi, 0));
+    for (const b of r.bolumler) {
+      assert.ok(b.baslik && b.aciklama, JSON.stringify(b));
+      for (const f of b.bulgular) assert.ok(f.baslik && f.detay, JSON.stringify(f));
+    }
   });
 
   test('veritabanini DEGISTIRMEZ', () => {

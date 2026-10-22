@@ -315,8 +315,84 @@ export async function renderSystem(root) {
         + 'sunucu küçükse gecikme ağda ya da vekil sunucudadır — uygulamada değil.',
     }));
 
+    await veriTeshisKarti(container);
     await hataKarti(container);
   }
+}
+
+/**
+ * VERİ TEŞHİS RAPORU.
+ *
+ * Aynı rapor sunucuda `node scripts/veri-teshis.mjs` ile de alınır;
+ * kontroller tek yerde (server/lib/veri-teshis.js) durur. Panelden
+ * alınabilmesi kullanıcıyı SSH'a muhtaç bırakmamak içindir: veri
+ * kalitesi sorunlarını gören kişi çoğu zaman sunucuya giremeyen kişidir.
+ *
+ * Salt okunurdur ve raporda kişisel veri yoktur; indirilen dosya
+ * güvenle paylaşılabilir.
+ */
+async function veriTeshisKarti(container) {
+  const govde = el('div');
+  const indirBtn = el('button.btn.btn-sm', { text: '⬇ Raporu İndir (TXT)', disabled: true });
+  const kart = card('🔍 Veri Teşhis Raporu', [govde], {
+    tight: true,
+    note: 'Veri kalitesi sorunlarını tarar: koli fiyatı adet sanılmış kalemler, satılmış '
+      + 'ama fiyatı tanımsız ürünler, mükerrer kartlar, kampüs sayım durumu. Salt '
+      + 'okunurdur, hiçbir şeyi değiştirmez. Rapor kişisel veri içermez.',
+    actions: [indirBtn],
+  });
+  container.append(kart);
+  govde.append(el('p.card-note', { text: 'Taranıyor…' }));
+
+  let rapor;
+  try {
+    rapor = await api.get('/api/health/veri-teshis');
+  } catch (err) {
+    govde.replaceChildren(alertBox('warning', 'Rapor alınamadı',
+      `${err.message} — sunucudaki sürüm güncel olmayabilir.`));
+    return;
+  }
+  indirBtn.disabled = false;
+  indirBtn.addEventListener('click', () => api.download('/api/health/veri-teshis', { format: 'txt' }));
+
+  const o = rapor.ozet;
+  govde.replaceChildren(
+    el('div.grid.grid-4', { style: 'margin-bottom:10px' }, [
+      stat('Toplam Bulgu', fmt.int(o.toplamBulgu), {
+        tone: o.toplamBulgu ? 'warn' : 'ok',
+        sub: o.toplamBulgu ? 'incelenmeli' : 'veri temiz görünüyor',
+      }),
+      stat('Kampüs', fmt.int(o.kampus)),
+      stat('Ürün', fmt.int(o.urun)),
+      stat('Alım Belgesi', fmt.int(o.belge)),
+    ]),
+    ...rapor.bolumler.map((b) => {
+      const sorunlu = b.no === 6 ? b.bulgular.filter((f) => f.sorunlu).length : b.sayi;
+      return el('details', {
+        // Bulgusu olan bölüm açık gelir: kullanıcı tıklamadan görsün
+        open: sorunlu > 0 ? '' : null,
+        style: 'border-top:1px solid var(--border);padding:8px 0',
+      }, [
+        el('summary', { style: 'cursor:pointer;font-weight:600' }, [
+          el('span', { text: `${b.no}. ${b.baslik}` }),
+          el('span', {
+            style: `margin-left:8px;color:var(--${sorunlu ? 'warning' : 'success'})`,
+            text: sorunlu ? `${sorunlu} bulgu` : '✓ temiz',
+          }),
+        ]),
+        el('p.card-note', { style: 'margin:6px 0', text: b.aciklama }),
+        b.bulgular.length
+          ? el('div', { style: 'display:grid;gap:6px' }, b.bulgular.map((f) => el('div', {
+            style: 'font-size:13px;line-height:1.45',
+          }, [
+            el('div', {}, [el('strong', { text: f.baslik })]),
+            el('div.muted', { text: f.detay }),
+          ])))
+          : el('p.card-note', { text: 'Bulgu yok.' }),
+        b.ozet ? el('p.card-note', { style: 'margin-top:6px', text: b.ozet }) : null,
+      ]);
+    }),
+  );
 }
 
 /**

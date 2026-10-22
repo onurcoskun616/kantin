@@ -99,7 +99,46 @@ ok('Sunucu kunyesi var', /Çalışma süresi/.test(ekran) && /Node sürümü/.te
 ok('En yavas istekler listeleniyor', /En Yavaş İstekler/.test(ekran));
 ok('Sunucu ve ag sutunlari ayri', /Sunucu/.test(ekran) && /Ağ/.test(ekran));
 
-console.log('\n4) Menude yalnizca yoneticiye gorunuyor');
+console.log('\n4) VERI TESHIS RAPORU ayni ekrandan alinabiliyor');
+// Kullanici veri kalitesi sorunlarini gormek icin SSH'a muhtac kalmamali:
+// komut satiri araciyla ayni kontroller panelden de calisir.
+ok('Teshis karti ekranda', /Veri Teşhis Raporu/.test(ekran), ekran.slice(0, 200));
+ok('Salt okunur oldugu yaziyor', /Salt\s+okunurdur/.test(ekran));
+ok('Kisisel veri icermedigi yaziyor', /kişisel veri içermez/.test(ekran));
+ok('Bolumler listeleniyor', /Mükerrer/i.test(ekran) && /sayım durumu/i.test(ekran), ekran.slice(0, 400));
+ok('Toplam bulgu sayisi gosteriliyor', /Toplam Bulgu/.test(ekran));
+
+const indir = page.locator('button', { hasText: 'Raporu İndir' }).first();
+ok('Indirme dugmesi var', await indir.count() > 0);
+ok('Indirme dugmesi etkin (rapor geldi)', await indir.isEnabled());
+
+// TXT ucu gercekten indirilebilir duz metin veriyor mu?
+const txt = await page.evaluate(async () => {
+  const t = localStorage.getItem('kantin_token');
+  const r = await fetch('/api/health/veri-teshis?format=txt', { headers: { Authorization: `Bearer ${t}` } });
+  return { tip: r.headers.get('Content-Type'), ek: r.headers.get('Content-Disposition'), govde: await r.text() };
+});
+ok('TXT ucu duz metin donuyor', /text\/plain/.test(txt.tip || ''), String(txt.tip));
+ok('Dosya olarak iniyor', /attachment; filename="veri-teshis-\d{4}-\d{2}-\d{2}\.txt"/.test(txt.ek || ''), String(txt.ek));
+ok('Rapor govdesi bolumleri tasiyor', /TESHIS RAPORU/.test(txt.govde) && /\n6\. /.test(txt.govde),
+  txt.govde.slice(0, 200));
+// Raporun paylasilabilmesi buna bagli: icinde e-posta ya da parola olmamali
+ok('Raporda kisisel veri YOK', !/@topkapiokullari\.com|\$2[aby]\$|scrypt/i.test(txt.govde));
+
+// Yetkisiz rol teshis raporunu da GORMEZ
+const gorevliTeshis = await page.evaluate(async (e) => {
+  const g = await (await fetch('/api/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: e, password: 'Gorevli12345' }),
+  })).json();
+  const r = await fetch('/api/health/veri-teshis', {
+    credentials: 'omit', headers: { Authorization: `Bearer ${g.token}` },
+  });
+  return r.status;
+}, eposta);
+ok('Kantin gorevlisi teshis raporunu GORMUYOR', gorevliTeshis === 403, String(gorevliTeshis));
+
+console.log('\n5) Menude yalnizca yoneticiye gorunuyor');
 const menu = await page.textContent('#sidebar');
 ok('Yonetici menude goruyor', /Sistem Durumu/.test(menu), menu.slice(-200));
 

@@ -89,7 +89,12 @@ ok('Iki kartta da stok oldugu isaretli', /kartta birden stok var/.test(metin), m
 console.log('\n2) Birlestirme penceresi NE OLACAGINI soyluyor');
 await page.click(`button:has-text("#${silinecek.id} kartını #${kalan.id} ile birleştir")`);
 await page.waitForSelector('.modal-backdrop');
-await page.waitForTimeout(1500);
+// Pencere once bos acilir, icerigi sunucudan gelen tasinacak-kayit sayimlariyla
+// dolar. Sabit bekleme yuk altinda yetmiyordu; icerigin KENDISINI bekle.
+await page.waitForFunction(() => {
+  const t = document.querySelector('.modal-body')?.textContent || '';
+  return /Taşınacak kayıtlar/.test(t) && /Çevrim adedini girin/.test(t);
+}, null, { timeout: 20000 });
 const pencere = await page.textContent('.modal-body');
 ok('Geri alinamaz uyarisi var', /geri alınamaz/.test(pencere), pencere.slice(0, 200));
 ok('Hangi kartin silinecegi yaziyor', pencere.includes(`#${silinecek.id}`), pencere.slice(0, 300));

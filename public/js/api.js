@@ -191,9 +191,15 @@ export const api = {
   // DELETE govde tasiyabilir: geri alinamaz silmeler gerekce ve dogrulama
   // ister (or. teslim fisi silerken belge numarasinin elle yazilmasi).
   del: (path, body) => request('DELETE', path, body),
-  /** CSV indirmesini yeni sekmede acar. */
+  /**
+   * Dosya indirmesini yeni sekmede acar. Oturum cerezle tasinir, bu yuzden
+   * window.open yeterlidir -- Authorization basligi gonderemezdik.
+   *
+   * Bicim ustune yazilabilir: cagiran taraf format verirse o kullanilir,
+   * vermezse CSV. Indirmelerin cogu CSV oldugu icin varsayilan odur.
+   */
   download(path, params) {
-    window.open(withQuery(path, { ...params, format: 'csv' }), '_blank');
+    window.open(withQuery(path, { format: 'csv', ...params }), '_blank');
   },
 };
 

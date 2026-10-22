@@ -3,16 +3,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { config } from './config.js';
-import { migrate, get as dbGet, setSetting } from './db.js';
+import { migrate, all, get as dbGet, setSetting } from './db.js';
 import { Router } from './lib/router.js';
 import {
-  HttpError, readJsonBody, sendJson, serveStatic, clientIp, parseCookies, forbidden, conflict,
+  HttpError, readJsonBody, sendJson, sendText, serveStatic, clientIp, parseCookies, forbidden, conflict,
 } from './lib/http.js';
 import { resolveSession, purgeExpiredSessions, requireAuth, requireRole } from './lib/auth.js';
 import { logAudit } from './lib/audit.js';
 import { ensureSeedData } from './seed.js';
 import { guncellemeVarMi, calisanSurum } from './lib/surum.js';
 import { istekBirak, guncellemeDurumu } from './lib/guncelleyici.js';
+import { veriTeshisi, raporMetni } from './lib/veri-teshis.js';
 
 import { authRoutes } from './routes/auth.js';
 import { campusRoutes } from './routes/campuses.js';
@@ -141,6 +142,26 @@ router.get('/api/health/guncelleme/durum', async (ctx) => {
 router.get('/api/health/hatalar', async (ctx) => {
   if (!ctx.user || !TESHIS_ROLLERI.includes(ctx.user.role)) throw forbidden();
   return { items: [...SON_HATALAR].reverse(), toplam: hataSayaci };
+});
+
+/**
+ * VERI TESHIS RAPORU.
+ *
+ * Ayni rapor sunucuda `node scripts/veri-teshis.mjs` ile de alinir;
+ * kontroller tek yerde (lib/veri-teshis.js) durur. Panelden alinabilmesi
+ * kullaniciyi SSH'a muhtac birakmamak icindir.
+ *
+ * Salt okunurdur: yalnizca SELECT calistirir. Raporda kisisel veri
+ * yoktur. Yalnizca teshis rolleri (ADMIN / GENEL_MUDURLUK).
+ */
+router.get('/api/health/veri-teshis', async (ctx) => {
+  if (!ctx.user || !TESHIS_ROLLERI.includes(ctx.user.role)) throw forbidden();
+  const rapor = veriTeshisi(all);
+  if (ctx.query.format === 'txt') {
+    const gun = new Date().toISOString().slice(0, 10);
+    return sendText(ctx.res, `veri-teshis-${gun}.txt`, raporMetni(rapor, config.dbPath));
+  }
+  return rapor;
 });
 router.use('/api/auth', authRoutes);
 router.use('/api/campuses', campusRoutes);
