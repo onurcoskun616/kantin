@@ -255,6 +255,31 @@ sudo docker restart topkapi-kantin
 
 ---
 
+## Veri teşhis raporu
+
+Veri kalitesi sorunlarını (koli fiyatı adet sanılmış kalemler, satılmış ama
+fiyatı tanımsız ürünler, mükerrer kartlar, kampüs sayım durumu…) tek komutla
+tarar. **Salt okunurdur**, hiçbir şeyi değiştirmez ve rapora kişisel veri
+yazmaz — güvenle paylaşılabilir.
+
+```bash
+sudo docker exec topkapi-kantin node scripts/veri-teshis.mjs > veri-teshis.txt
+less veri-teshis.txt
+```
+
+Rapor yedi başlık altında bulguları ve her birinin olması gereken rakamını
+yazar. Örnek:
+
+```
+1. KOLI FIYATI ADET FIYATI SANILMIS OLABILIR
+  #24 BİSKREM KAKAOLU 100GRx18
+      alis ₺359,96 ÷ 18 = ₺20,00 → satis ₺50,00 ile %60.0 marj
+```
+
+> `deploy/teshis.sh` **başka** bir araçtır: o, "site açılmıyor" durumunda
+> erişimi (konteyner, Caddy, ağ, sertifika) teşhis eder. Bu betik veriyi
+> inceler.
+
 ## Yedekleme
 
 Yedek betiği konteyner içinde çalışır; çıktı host'taki `backups/` klasörüne

@@ -1,5 +1,5 @@
 /**
- * Teshis araci (tools/teshis.mjs) regresyon testi.
+ * Veri teshis araci (scripts/veri-teshis.mjs) regresyon testi.
  *
  * Arac sahada elle tespit ettigimiz hata turlerini ariyor. Burada o
  * hatalarin AYNISI gecici bir veritabanina kurulur ve aracin hepsini
@@ -79,7 +79,7 @@ describe('Teshis araci', () => {
     );
     db.close();
 
-    rapor = execFileSync('node', ['tools/teshis.mjs', dbPath], { encoding: 'utf8' });
+    rapor = execFileSync('node', ['scripts/veri-teshis.mjs', dbPath], { encoding: 'utf8' });
   });
 
   after(() => rmSync(dir, { recursive: true, force: true }));

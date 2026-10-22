@@ -9,14 +9,22 @@
  * yer almaz. Rapor tedarikci/urun/kampus adlari ve sayilardan ibarettir,
  * boylece guvenle paylasilabilir.
  *
- * Kullanim (sunucuda, uygulama dizininde):
- *   node tools/teshis.mjs > teshis.txt
- *   node tools/teshis.mjs /opt/kantin-uygulama/data/kantin.db > teshis.txt
+ * Bu betik IMAJIN ICINDEDIR (Dockerfile scripts/ dizinini kopyalar),
+ * veritabani da konteynerde /app/data/kantin.db yolundadir. Sunucuda:
+ *
+ *   docker exec topkapi-kantin node scripts/veri-teshis.mjs > veri-teshis.txt
+ *
+ * Konteyner disinda, dosya yolunu vererek de calisir:
+ *   node scripts/veri-teshis.mjs /yol/kantin.db > veri-teshis.txt
+ *
+ * NOT: deploy/teshis.sh BASKA bir aractir -- o, "site acilmiyor"
+ * durumunda ERISIMI teshis eder. Bu betik VERIYI inceler.
  */
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 
-const DB = process.argv[2] || path.resolve(process.cwd(), 'data/kantin.db');
+const DB = process.argv[2] || process.env.DB_PATH
+  || path.resolve(process.cwd(), 'data/kantin.db');
 let db;
 try {
   db = new DatabaseSync(DB, { readOnly: true });
