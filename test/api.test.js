@@ -464,6 +464,104 @@ describe('Alim -> ciro -> sayim -> mutabakat akisi', () => {
 
 });
 
+/* -------- Satilmis ama fiyati tanimsiz kalemler (mutabakat) --------- */
+/**
+ * Sahadan (Ikitelli): "ETİ ÇİK BOL SÜTLÜ MİNİ 32GX12X12" -- olmasi
+ * gereken 144, sayilan 8, donem satisi 136 adet, satis fiyati 0,00 TL.
+ * 136 adet mal raftan cikmis ama beklenen ciroya SIFIR yazilmis ve
+ * mutabakat ekrani bunu hic soylememis.
+ */
+describe('Fiyatsiz satis mutabakatta bildirilir', () => {
+  const round2 = (n) => Math.round(Number(n) * 100) / 100;
+  let campusId; let supplierId; let fiyatli; let fiyatsiz; let hammadde; let mudurJeton;
+
+  before(async () => {
+    campusId = (await ok('POST', '/api/campuses', { name: 'Fiyatsız Satış', code: 'FSZ' })).id;
+    supplierId = (await ok('POST', '/api/suppliers',
+      { name: 'Fiyatsız Satış Tedarikçi', taxNo: '4141414141' })).id;
+    fiyatli = (await ok('POST', '/api/products',
+      { name: 'Fiyatlı Ürün', salePrice: 25, vatRate: 1, unit: 'ADET' })).id;
+    fiyatsiz = (await ok('POST', '/api/products',
+      { name: 'ETİ ÇİK BOL SÜTLÜ MİNİ 32GX12X12', salePrice: 0, vatRate: 1, unit: 'ADET' })).id;
+    // Satilmayan sarf: HAMMADDE, ciro hesabina hic girmemeli
+    hammadde = (await ok('POST', '/api/products',
+      { name: 'Peçete Sarf', productType: 'HAMMADDE', salePrice: 0, vatRate: 1, unit: 'ADET' })).id;
+    await ok('POST', '/api/purchases', {
+      campusId, supplierId, documentNo: 'FSZ-1', documentDate: daysAgo(10),
+      lines: [
+        { productId: fiyatli, quantity: 100, unitPrice: 10, vatRate: 1 },
+        { productId: fiyatsiz, quantity: 144, unitPrice: 5, vatRate: 1 },
+        { productId: hammadde, quantity: 50, unitPrice: 1, vatRate: 1 },
+      ],
+    });
+    const eposta = `fsz.mudur.${Date.now()}@topkapiokullari.com`;
+    await ok('POST', '/api/users',
+      { email: eposta, fullName: 'FSZ Müdür', role: 'GENEL_MUDURLUK', password: 'Mudur123456' });
+    mudurJeton = (await api('POST', '/api/auth/login',
+      { email: eposta, password: 'Mudur123456' }, false)).data.token;
+  });
+
+  test('satilmis fiyatsiz kalem ADIYLA ve MIKTARIYLA bildirilir', async () => {
+    const sayim = await ok('POST', '/api/counts',
+      { campusId, countDate: daysAgo(2), isBlind: false });
+    await ok('PUT', `/api/counts/${sayim.id}/lines`, {
+      lines: [
+        { productId: fiyatli, countedQty: 90 },     // 10 satilmis, fiyati var
+        { productId: fiyatsiz, countedQty: 8 },     // 136 satilmis, fiyati YOK
+        { productId: hammadde, countedQty: 20 },    // 30 cikmis ama HAMMADDE
+      ],
+    });
+    const rec = await ok('GET', `/api/counts/${sayim.id}/reconciliation`);
+    const f = rec.fiyatsizSatis;
+    assert.ok(f, 'fiyatsizSatis dondurulmeli');
+    assert.equal(f.count, 2, 'fiyatsiz satilan iki kalem var (urun + hammadde)');
+    const eti = f.items.find((x) => x.product_id === fiyatsiz);
+    assert.ok(eti, JSON.stringify(f.items));
+    assert.equal(eti.sold, 136, '144 - 8 = 136');
+    assert.equal(round2(eti.cost_value), round2(136 * 5.05), 'maliyet KDV dahil alistan');
+
+    // Fiyati OLAN kalem bu listeye GIRMEMELI
+    assert.ok(!f.items.some((x) => x.product_id === fiyatli), 'fiyatli urun listede olmamali');
+    return sayim.id;
+  });
+
+  test('BEKLENEN CIRO fiyatsiz kalemden hic katki almaz', async () => {
+    const liste = await ok('GET', `/api/counts?campusId=${campusId}`);
+    const sayim = liste.items.find((c) => c.status !== 'KESINLESMIS');
+    const rec = await ok('GET', `/api/counts/${sayim.id}/reconciliation`);
+    // Yalnizca fiyatli kalem: 10 adet x 25 TL = 250 TL
+    assert.equal(rec.revenue.counted, 250,
+      'fiyatsiz 136 adet beklenen ciroya 0 TL yazar');
+  });
+
+  test('fiyat girilince kalem listeden DUSER ve ciro duzelir', async () => {
+    await ok('PUT', `/api/products/${fiyatsiz}`, {
+      name: 'ETİ ÇİK BOL SÜTLÜ MİNİ 32GX12X12', salePrice: 20, vatRate: 1, unit: 'ADET',
+      productType: 'SATIN_ALINAN', purchasePrice: 5, criticalStock: 0,
+      mebApproved: true, maxPrice: 0, isActive: true,
+    });
+    const liste = await ok('GET', `/api/counts?campusId=${campusId}`);
+    const sayim = liste.items.find((c) => c.status !== 'KESINLESMIS');
+    const rec = await ok('GET', `/api/counts/${sayim.id}/reconciliation`);
+    assert.ok(!rec.fiyatsizSatis.items.some((x) => x.product_id === fiyatsiz),
+      'fiyat girilince listeden dusmeli');
+    // 250 + 136 x 20 = 2970
+    assert.equal(rec.revenue.counted, 2970, 'beklenen ciro duzelmeli');
+  });
+
+  test('HAMMADDE isaretlenince ciro hesabina hic girmez', async () => {
+    const liste = await ok('GET', `/api/counts?campusId=${campusId}`);
+    const sayim = liste.items.find((c) => c.status !== 'KESINLESMIS');
+    const rec = await ok('GET', `/api/counts/${sayim.id}/reconciliation`);
+    const kalan = rec.fiyatsizSatis.items;
+    assert.equal(kalan.length, 1, 'yalnizca hammadde kaldi');
+    assert.equal(kalan[0].product_id, hammadde);
+    // Hammadde fiyatsiz oldugu icin yine 0 TL katar; kullanici bunu
+    // gorup "satilmiyor, sarf" diyebilsin diye listede DURUR.
+    assert.equal(rec.revenue.counted, 2970);
+  });
+});
+
 /* ----------- Fiyat denetimi KAMPUSE GORE cozulur -------------------- */
 /**
  * Urun kartlari tum kampuslerde ORTAKTIR ve products.purchase_price

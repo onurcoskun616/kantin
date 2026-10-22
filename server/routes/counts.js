@@ -322,20 +322,28 @@ countRoutes.post('/:id/finalize', async (ctx) => {
     let cogsTotal = 0;
 
     for (const line of all('SELECT * FROM count_lines WHERE count_id = ?', [header.id])) {
-      const expected = round2(snap.has(line.product_id) ? snap.get(line.product_id).stock_qty : line.expected_qty);
+      const canli = snap.get(line.product_id);
+      const expected = round2(canli ? canli.stock_qty : line.expected_qty);
       const counted = round2(line.counted_qty);
       const diff = round2(counted - expected);
       const recipeQty = round4(consumption.get(line.product_id) || 0);
       // Dogrudan satis: toplam cikistan recete tuketimi dusuldukten sonrasi
       const sold = round2(expected - recipeQty - counted);
-      const salesValue = round2(sold * line.sale_price);
-      const costValue = round2(sold * line.purchase_price);
+      // FIYATLAR DA KESINLESME ANINDA TAZELENIR: sayim acildiktan sonra
+      // girilen/duzeltilen satis fiyati mutabakata yansisin. Satira da
+      // yazilir, cunku kesinlesmis sayim artik bir KAYITTIR.
+      const salePrice = canli ? canli.sale_price : line.sale_price;
+      const purchasePrice = canli ? canli.purchase_price : line.purchase_price;
+      const vatRate = canli ? canli.vat_rate : line.vat_rate;
+      const salesValue = round2(sold * salePrice);
+      const costValue = round2(sold * purchasePrice);
 
       run(
         `UPDATE count_lines SET expected_qty = ?, diff_qty = ?, recipe_qty = ?, sold_qty = ?,
-                sales_value = ?, cost_value = ?
+                sales_value = ?, cost_value = ?, sale_price = ?, purchase_price = ?, vat_rate = ?
           WHERE id = ?`,
-        [expected, diff, recipeQty, sold, salesValue, costValue, line.id]
+        [expected, diff, recipeQty, sold, salesValue, costValue,
+         salePrice, purchasePrice, vatRate, line.id]
       );
       expectedRevenue += salesValue;
       cogsTotal += costValue;
@@ -346,7 +354,7 @@ countRoutes.post('/:id/finalize', async (ctx) => {
           productId: line.product_id,
           type: diff < 0 ? 'SATIS' : 'SAYIM_FAZLA',
           quantity: diff,
-          unitCost: line.purchase_price,
+          unitCost: purchasePrice,
           date: header.count_date,
           refType: 'count',
           refId: header.id,
@@ -732,6 +740,36 @@ countRoutes.get('/:id/reconciliation', async (ctx) => {
       withRecipe: data.production.filter((r) => r.quantity > 0
         && recipeUnitCost(data.campus_id, r.product_id).hasRecipe).length,
     },
+    // SATILMIS AMA FIYATI TANIMSIZ KALEMLER.
+    //
+    // Sahadan (Ikitelli): "ETİ ÇİK BOL SÜTLÜ MİNİ 32GX12X12" -- olmasi
+    // gereken 144, sayilan 8, donem satisi 136 adet, satis fiyati 0,00
+    // TL. 136 adet mal raftan cikmis ama beklenen ciroya SIFIR TL
+    // yazilmis. Mutabakat ekrani bunu hic soylemiyordu: kullanici
+    // beklenen ciroyla gerceklesen ciroyu karsilastirirken rakamin
+    // neden eksik oldugunu goremiyordu. Fiyat denetimi paneli bu
+    // urunleri listeler ama o BASKA bir ekrandir ve satilip
+    // satilmadigina bakmaz; burada yalnizca GERCEKTEN SATILMIS olanlar
+    // ve beklenen ciroya kattiklari sifir vurgulanir.
+    fiyatsizSatis: (() => {
+      const kalemler = data.lines
+        .filter((l) => directSold(l) > 0 && !(l.sale_price > 0))
+        .map((l) => ({
+          product_id: l.product_id,
+          product_name: l.product_name,
+          unit: l.unit,
+          sold: round4(directSold(l)),
+          // Satis fiyati bilinmiyor; buyuklugu MALIYETTEN tahmin edilir
+          cost_value: round2(directSold(l) * (l.purchase_price || 0)),
+        }))
+        .sort((a, b) => b.cost_value - a.cost_value || b.sold - a.sold);
+      return {
+        items: kalemler,
+        count: kalemler.length,
+        totalQty: round2(kalemler.reduce((t, k) => t + k.sold, 0)),
+        totalCost: round2(kalemler.reduce((t, k) => t + k.cost_value, 0)),
+      };
+    })(),
     recipeCheck: {
       items: recipeCheck,
       // Hammaddede aciklanamayan tuketim, dogrudan satilmadigi icin kayip isaretidir
@@ -853,12 +891,24 @@ function loadCount(countId, user) {
   if (header.status !== 'KESINLESMIS') {
     const canli = new Map(
       stockSnapshot(header.campus_id, { untilDate: header.count_date, onlyActive: false })
-        .map((p) => [p.product_id, p.stock_qty])
+        .map((p) => [p.product_id, p])
     );
     lines = lines.map((l) => {
-      if (!canli.has(l.product_id)) return l;
-      const beklenen = round2(canli.get(l.product_id));
-      return { ...l, expected_qty: beklenen, diff_qty: round2(l.counted_qty - beklenen) };
+      const p = canli.get(l.product_id);
+      if (!p) return l;
+      const beklenen = round2(p.stock_qty);
+      return {
+        ...l,
+        expected_qty: beklenen,
+        diff_qty: round2(l.counted_qty - beklenen),
+        // FIYATLAR DA CANLI. Satir fiyati sayim acilirken dondurulur;
+        // satis fiyati tanimsiz bir urune sonradan fiyat girildiginde
+        // acik sayim eski (sifir) fiyatla kaliyordu ve kullanicinin
+        // duzeltmesi hicbir ise yaramiyordu.
+        purchase_price: p.purchase_price,
+        sale_price: p.sale_price,
+        vat_rate: p.vat_rate,
+      };
     });
   }
 

@@ -255,6 +255,11 @@ export async function renderDetail(root, { params }) {
     }));
   }
 
+  /* ------------ Satılmış ama fiyatı tanımsız kalemler ---------------- */
+  if (rec.fiyatsizSatis?.count) {
+    root.append(buildFiyatsizSatis(rec));
+  }
+
   /* -------------------------- Reçete kontrolü ----------------------- */
   if (!isSpot && rec.recipeCheck?.items?.length) {
     root.append(buildRecipeCheck(rec));
@@ -616,6 +621,44 @@ function buildCountSheet(root, data, blind, reload) {
 }
 
 /* --------------------------- Reçete kontrolü ------------------------- */
+/**
+ * SATILMIŞ AMA FİYATI TANIMSIZ KALEMLER.
+ *
+ * Sahadan (İkitelli): "ETİ ÇİK BOL SÜTLÜ MİNİ 32GX12X12" — olması
+ * gereken 144, sayılan 8, dönem satışı 136 adet, satış fiyatı ₺0,00.
+ * 136 adet mal raftan çıkmış ama beklenen ciroya SIFIR TL yazılmış.
+ * Ekran bunu hiç söylemiyordu: kullanıcı beklenen ciro ile gerçekleşen
+ * ciroyu karşılaştırırken rakamın neden eksik olduğunu göremiyordu.
+ *
+ * "Fiyat Denetimi" paneli bu ürünleri zaten listeler ama o BAŞKA bir
+ * ekrandır ve ürünün satılıp satılmadığına bakmaz; buradaki liste
+ * yalnızca BU DÖNEMDE GERÇEKTEN SATILMIŞ olanları gösterir.
+ */
+function buildFiyatsizSatis(rec) {
+  const f = rec.fiyatsizSatis;
+  return card('⚠️ Satılmış Ama Satış Fiyatı Tanımsız', [
+    alertBox('warning',
+      `${f.count} kalem · ${fmt.num(f.totalQty)} birim · beklenen ciroya ₺0,00 yazıldı`,
+      'Bu kalemler raftan çıkmış, yani satılmış. Satış fiyatları tanımsız olduğu için '
+      + 'BEKLENEN CİRO\'ya hiçbir katkı yapmadılar — yani beklenen ciro OLMASI '
+      + 'GEREKENDEN DÜŞÜK. Ürünler ve Fiyatlar ekranından fiyatı girin: sayım '
+      + 'kesinleşmediği sürece bu ekran fiyatı anında okur, beklenen ciro kendiliğinden '
+      + 'düzelir. Sayım kesinleştiyse önce "Kesinleştirmeyi Geri Al" gerekir. Ücretsiz '
+      + 'verilen (ikram, personel) ya da satılmayan sarf malzemesiyse ürünü HAMMADDE '
+      + 'işaretleyin; o zaman ciro hesabına hiç girmez.'),
+    table([
+      { label: 'Ürün', value: (r) => r.product_name, wrap: true },
+      { label: 'Satılan', num: true, value: (r) => `${fmt.num(r.sold)} ${r.unit}` },
+      { label: 'Maliyeti', num: true, value: (r) => fmt.money(r.cost_value) },
+      { label: 'Ciroya Katkısı', num: true, render: () => el('strong', { style: 'color:var(--danger)', text: '₺0,00' }) },
+    ], f.items, { emptyText: 'Yok.' }),
+  ], {
+    tight: true,
+    note: `Çıkan malın alış karşılığı ${fmt.money(f.totalCost)}. Satış fiyatı bilinmediği `
+      + 'için ciro karşılığı hesaplanamıyor; en azından maliyeti kadar bir ciro beklenir.',
+  });
+}
+
 function buildRecipeCheck(rec) {
   const raw = rec.recipeCheck.items.filter((r) => r.product_type === 'HAMMADDE');
   const threshold = (r) => Math.abs(r.unexplained_pct ?? 0) > 5;
