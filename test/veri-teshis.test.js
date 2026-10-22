@@ -50,8 +50,13 @@ describe('Teshis araci', () => {
     urun(9, 'Tekli Sakız', 'ADET', 1, 2.5);
     // HAMMADDE'nin satis fiyati olmaz; eksiklik sayilmamali
     urun(10, 'Un', 'KG', 30, 0, 'HAMMADDE');
+    // Fiyati SAYIMDAN SONRA gecerli: o sayim icin fiyat YOK demektir
+    urun(11, 'Tarihi Geç Fiyat', 'ADET', 10, 0);
+    // Fiyati SAYIMDAN ONCE gecerli: sorun yok
+    urun(12, 'Tarihi Erken Fiyat', 'ADET', 10, 0);
 
-    for (const [pid, qty] of [[1, 2], [2, 4], [4, 144], [7, 10], [8, 50], [10, 25]]) {
+    for (const [pid, qty] of [[1, 2], [2, 4], [4, 144], [7, 10], [8, 50], [10, 25],
+      [11, 20], [12, 20]]) {
       calistir(
         `INSERT INTO stock_movements (campus_id, product_id, movement_type, quantity, unit_cost, movement_date)
          VALUES (1, ?, 'ALIS', ?, 1, '2026-10-01')`, [pid, qty]
@@ -83,6 +88,18 @@ describe('Teshis araci', () => {
                                 sold_qty, purchase_price, sale_price, vat_rate)
        VALUES (1, 7, 10, 4, -6, 6, 20, 50, 1)`
     );
+    // Satis fiyati TARIHLIDIR: kesinlestirme sayimin GUNUNDE gecerli olani
+    // kullanir. 22 Ekim'de girilen fiyat 19 Ekim sayimini kurtarmaz.
+    calistir(
+      `INSERT INTO product_prices (product_id, campus_id, sale_price, effective_from)
+       VALUES (11, NULL, 40, '2026-10-22'), (12, NULL, 40, '2026-09-01')`
+    );
+    // Kesinlesmeyi bekleyen DONEM sayimi: kontrol BU gune bakmali
+    calistir(
+      `INSERT INTO counts (id, campus_id, count_date, count_type, status, is_opening)
+       VALUES (3, 1, '2026-10-19', 'DONEM', 'SAYILDI', 0)`
+    );
+
     // ACILIS (devir) sayimi: farki satis sayilmamali
     calistir(
       `INSERT INTO counts (id, campus_id, count_date, count_type, status, is_opening)
@@ -134,8 +151,22 @@ describe('Teshis araci', () => {
     const b = bolum(2);
     assert.match(b, /RİSKLİ · #4 ETİ ÇİK/);
     assert.match(b, /sayım kesinleşirse ciroya ₺0,00 yazılır/);
+    // Hangi kampusun hangi sayimi oldugu YAZMALI
+    assert.match(b, /Teşhis Kampüsü \(2026-10-19 sayımı\)/);
     // HAMMADDE'nin satis fiyati olmaz: eksiklik sayilmamali
     assert.doesNotMatch(b, /RİSKLİ · #10 Un/);
+  });
+
+  // Fiyat KARTTAN degil TARIHTEN okunur: kesinlestirme sayimin gunundeki
+  // fiyati kullanir. Bugun girilen fiyat gecmis bir donemi kurtarmaz.
+  test('2 — SAYIM GUNUNDEN SONRA gecerli fiyati "var" saymaz', () => {
+    const b = bolum(2);
+    assert.match(b, /RİSKLİ · #11 Tarihi Geç Fiyat/);
+    assert.match(b, /o günün satış fiyatı ₺0,00/);
+  });
+
+  test('2 — sayim gununden ONCE gecerli fiyati sorun saymaz', () => {
+    assert.doesNotMatch(bolum(2), /#12 Tarihi Erken Fiyat/);
   });
 
   test('3 — mukerrer kartlari gruplar', () => {
@@ -207,7 +238,7 @@ describe('Teshis araci', () => {
   test('veritabanini DEGISTIRMEZ', () => {
     const db = new DatabaseSync(dbPath, { readOnly: true });
     // Kurulumda 10 kart yazildi; rapor hicbirine dokunmamali
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM products').get().n, 10);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM products').get().n, 12);
     db.close();
     assert.match(rapor, /Veritabani degistirilmedi/);
   });

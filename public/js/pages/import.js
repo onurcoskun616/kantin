@@ -34,6 +34,11 @@ export function openImportWizard(onDone) {
   const fileInput = el('input', { type: 'file', accept: '.xlsx,.csv,.txt' });
   const resultBox = el('div.grid', { style: 'gap:12px' });
   const importBtn = el('button.btn.btn-primary', { text: 'İçeri Aktar', disabled: true });
+  // Satış fiyatı tarihe bağlı çözümlenir: bir sayım kesinleşirken o sayımın
+  // GÜNÜNDE geçerli olan fiyat kullanılır. Geçmişte sayılmış bir dönemin
+  // fiyatlarını düzeltiyorsanız bu tarihi sayım gününden ÖNCEYE çekin,
+  // yoksa fiyat o sayıma yansımaz.
+  const fiyatTarihi = el('input', { type: 'date', value: dateUtil.today(), style: 'max-width:180px' });
   let parsed = null;
 
   const m = modal({
@@ -61,6 +66,16 @@ export function openImportWizard(onDone) {
         el('span', { text: 'Doldurduğunuz dosyayı seçin (.xlsx veya .csv)' }),
         fileInput,
       ]),
+      el('label.inline-field', {}, [
+        el('span', { text: 'Satış fiyatları şu tarihten geçerli olsun' }),
+        fiyatTarihi,
+      ]),
+      el('p.card-note', {
+        text: 'Satış fiyatı tarihe bağlıdır: bir sayım kesinleşirken o sayımın GÜNÜNDE '
+          + 'geçerli olan fiyat kullanılır. Geçmişte sayılmış bir dönemi düzeltiyorsanız '
+          + 'bu tarihi sayım gününden önceye çekin — bugünü bırakırsanız fiyat o sayıma '
+          + 'yansımaz ve ciro sıfır kalır.',
+      }),
       resultBox,
     ],
     actions: [el('button.btn', { text: 'Vazgeç', onclick: () => m.close() }), importBtn],
@@ -90,6 +105,7 @@ export function openImportWizard(onDone) {
     try {
       const productResult = await api.post('/api/products/bulk-import', {
         items: parsed.products.valid,
+        priceEffectiveFrom: fiyatTarihi.value || dateUtil.today(),
       });
 
       let openingResult = null;
@@ -347,6 +363,12 @@ function showSummary(productResult, openingResult) {
       el('dt', { text: 'Yeni eklenen ürün' }), el('dd', { text: String(productResult.created) }),
       el('dt', { text: 'Güncellenen ürün' }), el('dd', { text: String(productResult.updated) }),
       el('dt', { text: 'Yeni kategori' }), el('dd', { text: String(productResult.categoriesCreated ?? 0) }),
+      // Hangi tarihten geçerli olduğu YAZILIR: yanlış tarih sessizce
+      // yanlış ciro üretir, kullanıcı burada görüp fark edebilsin.
+      ...(productResult.priceEffectiveFrom ? [
+        el('dt', { text: 'Satış fiyatları geçerlilik' }),
+        el('dd', { text: fmt.date(productResult.priceEffectiveFrom) }),
+      ] : []),
       ...(openingResult ? [
         el('dt', { text: 'Açılış stoğu girilen satır' }), el('dd', { text: String(openingResult.imported) }),
       ] : []),

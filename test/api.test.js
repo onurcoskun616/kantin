@@ -1733,6 +1733,34 @@ describe('Toplu ice aktarma', () => {
     assert.equal(list.items[0].purchase_price, 9);
   });
 
+  // Satis fiyati TARIHLIDIR: kesinlestirme sayimin GUNUNDE gecerli olani
+  // kullanir. Toplu yukleme hep "bugun" yazsaydi, gecmiste sayilmis bir
+  // donemin fiyatlari duzeltilince o sayima yansimaz, ciro sifir kalirdi.
+  test('toplu yuklemede fiyat GECERLILIK TARIHI secilebilir', async () => {
+    const gecmis = daysAgo(45);
+    const r = await ok('POST', '/api/products/bulk-import', {
+      priceEffectiveFrom: gecmis,
+      items: [{ barcode: 'IMP-TARIH', name: 'Tarihli Fiyat Ürünü', purchasePrice: 10, salePrice: 25, vatRate: 1 }],
+    });
+    assert.equal(r.created, 1);
+    assert.equal(r.priceEffectiveFrom, gecmis, 'kullanilan tarih yanitta bildirilmeli');
+
+    const urun = (await ok('GET', '/api/products?search=Tarihli Fiyat Ürünü')).items[0];
+    const fiyatlar = await ok('GET', `/api/products/${urun.id}/prices`);
+    const satir = fiyatlar.items.find((x) => x.sale_price === 25);
+    assert.ok(satir, 'fiyat listesine satir yazilmali');
+    assert.equal(satir.effective_from, gecmis, 'bugun degil, SECILEN tarihten gecerli olmali');
+    // Gecmis tarihli oldugu icin karttaki deger de tazelenir
+    assert.equal(urun.sale_price, 25);
+  });
+
+  test('toplu yuklemede tarih verilmezse bugun kullanilir', async () => {
+    const r = await ok('POST', '/api/products/bulk-import', {
+      items: [{ barcode: 'IMP-BUGUN', name: 'Tarihsiz Fiyat Ürünü', purchasePrice: 10, salePrice: 30, vatRate: 1 }],
+    });
+    assert.equal(r.priceEffectiveFrom, daysAgo(0));
+  });
+
   test('barkodsuz urun ada gore eslestirilir', async () => {
     const r = await ok('POST', '/api/products/bulk-import', {
       items: [{ name: 'İçe Aktarılan Tost', purchasePrice: 20, salePrice: 38, vatRate: 10 }],

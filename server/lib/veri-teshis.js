@@ -112,28 +112,101 @@ export function veriTeshisi(all) {
     });
 
     // Henuz kesinlesmemis ama ayni kaybi uretecek kartlar: stok hareketi
-    // var, satis fiyati yok. Sayim kesinlesince ciroya ₺0 yazilacak.
-    // Bunlari ONCEDEN gostermek, kesinlestirmeden duzeltme sansi verir.
-    const fiyatsiz = all(`
-      SELECT p.id, p.name, p.unit, ROUND(SUM(m.quantity), 3) AS stok,
-             COUNT(m.id) AS hareket
-        FROM products p JOIN stock_movements m ON m.product_id = p.id
-       WHERE p.is_active = 1 AND COALESCE(p.sale_price, 0) <= 0
-         AND p.product_type <> 'HAMMADDE'
-       GROUP BY p.id ORDER BY p.name`);
-    for (const r of fiyatsiz) {
+    // var, sayim gununde gecerli satis fiyati yok.
+    //
+    // FIYAT KARTTAN DEGIL, TARIHTEN OKUNUR. Satis fiyati tarihlidir ve
+    // kesinlestirmede SAYIMIN GUNUNDE gecerli olan fiyat kullanilir
+    // (bkz. salePriceSql, server/lib/stock.js). Karta bugun fiyat girmek
+    // 19 Ekim'de sayilmis bir donemi KURTARMAZ; hatta kampuse ozel ya da
+    // daha geç tarihli hatali bir satir, dogru fiyati tamamen golgeler.
+    // Bu yuzden kontrol de ayni sirayi izler, yoksa rapor "fiyat var" der
+    // ama sayim yine sifir ciro uretir.
+    //
+    // SQL buraya kopyalanmadi: lib/stock.js, acilista veritabanini acan
+    // db.js'e baglidir; komut satiri araci kendi dosyasini actigi icin onu
+    // ice aktaramaz. Sira degisirse iki yer birlikte guncellenmelidir.
+    const fiyatSatirlari = all(
+      'SELECT product_id, campus_id, sale_price, effective_from, id FROM product_prices'
+    );
+    const fiyatDizini = new Map();
+    for (const r of fiyatSatirlari) {
+      const k = `${r.product_id}:${r.campus_id ?? ''}`;
+      if (!fiyatDizini.has(k)) fiyatDizini.set(k, []);
+      fiyatDizini.get(k).push(r);
+    }
+    const sonFiyat = (productId, campusId, tarih) => {
+      const liste = fiyatDizini.get(`${productId}:${campusId ?? ''}`) || [];
+      let secili = null;
+      for (const r of liste) {
+        if (r.effective_from > tarih) continue;
+        if (!secili || r.effective_from > secili.effective_from
+          || (r.effective_from === secili.effective_from && r.id > secili.id)) secili = r;
+      }
+      return secili;
+    };
+    const kampusKart = new Map(all(
+      'SELECT campus_id, product_id, sale_price FROM campus_products'
+    ).map((r) => [`${r.campus_id}:${r.product_id}`, r.sale_price]));
+    const katalogKart = new Map(all(
+      "SELECT id, name, unit, sale_price FROM products WHERE is_active = 1 AND product_type <> 'HAMMADDE'"
+    ).map((r) => [r.id, r]));
+
+    /** salePriceSql() ile AYNI sira: kampus tarihli -> katalog tarihli -> kampus sutunu -> katalog sutunu. */
+    const fiyatCoz = (productId, campusId, tarih) => {
+      const k = sonFiyat(productId, campusId, tarih);
+      if (k) return k.sale_price;
+      const g = sonFiyat(productId, null, tarih);
+      if (g) return g.sale_price;
+      const cp = kampusKart.get(`${campusId}:${productId}`);
+      if (cp !== undefined && cp !== null) return cp;
+      return katalogKart.get(productId)?.sale_price ?? 0;
+    };
+
+    // Hangi gun icin bakacagiz? Kesinlesmeyi bekleyen DONEM sayimi varsa
+    // ONUN gunu; yoksa bugun. Kritik olan bu: kesinlestirme o gunun
+    // fiyatini kullanacak.
+    const bugun = new Date().toISOString().slice(0, 10);
+    const hedefler = all(`
+      SELECT k.id, k.name,
+             (SELECT c.count_date FROM counts c
+               WHERE c.campus_id = k.id AND c.count_type = 'DONEM'
+                 AND c.status <> 'KESINLESMIS'
+               ORDER BY c.count_date DESC, c.id DESC LIMIT 1) AS acik_tarih
+        FROM campuses k WHERE k.is_active = 1 ORDER BY k.name`);
+    const hareketli = all(`
+      SELECT campus_id, product_id, ROUND(SUM(quantity), 3) AS stok, COUNT(id) AS hareket
+        FROM stock_movements GROUP BY campus_id, product_id`);
+
+    const urunBasi = new Map();
+    for (const h of hareketli) {
+      const urun = katalogKart.get(h.product_id);
+      if (!urun) continue;                                  // pasif ya da HAMMADDE
+      const hedef = hedefler.find((x) => x.id === h.campus_id);
+      if (!hedef) continue;
+      const tarih = hedef.acik_tarih || bugun;
+      if (fiyatCoz(h.product_id, h.campus_id, tarih) > 0) continue;
+      if (!urunBasi.has(h.product_id)) urunBasi.set(h.product_id, { urun, yerler: [] });
+      urunBasi.get(h.product_id).yerler.push(
+        `${hedef.name}${hedef.acik_tarih ? ` (${hedef.acik_tarih} sayımı)` : ''}`
+      );
+    }
+    const fiyatsiz = [...urunBasi.values()]
+      .sort((a, b) => a.urun.name.localeCompare(b.urun.name, 'tr'));
+    for (const { urun, yerler } of fiyatsiz) {
       bulgular.push({
         tur: 'riskli',
-        productId: r.id,
-        baslik: `RİSKLİ · #${r.id} ${r.name}`,
-        detay: `satış fiyatı tanımsız · stok ${sayi(r.stok)} ${r.unit}`
-          + ` · ${r.hareket} hareket · sayım kesinleşirse ciroya ₺0,00 yazılır`,
+        productId: urun.id,
+        baslik: `RİSKLİ · #${urun.id} ${urun.name}`,
+        detay: `o günün satış fiyatı ₺0,00 · ${yerler.join(' · ')}`
+          + ' · sayım kesinleşirse ciroya ₺0,00 yazılır',
       });
     }
 
     const ozetSatir = [];
     if (satilan.length) ozetSatir.push(`Gerçekleşen kayıp: ${satilan.length} kalem, maliyeti ${tl(toplam)}`);
     if (fiyatsiz.length) ozetSatir.push(`Fiyatı girilmeyi bekleyen: ${fiyatsiz.length} kart`);
+    ozetSatir.push('Fiyat SAYIM GÜNÜNE göre okunur: geçmiş bir dönemi düzeltirken '
+      + 'geçerlilik tarihini sayım gününden önceye alın.');
     ekle(2, 'Satış fiyatı tanımsız kalemler',
       'İki tür bulgu: GERÇEKLEŞEN — kesinleşmiş DÖNEM sayımında raftan çıkmış ama satış '
       + 'fiyatı 0 olan kalemler; beklenen ciroya SIFIR TL yazılmıştır. RİSKLİ — stok '

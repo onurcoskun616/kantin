@@ -799,7 +799,17 @@ productRoutes.post('/bulk-import', async (ctx) => {
   if (!rows || !rows.length) throw badRequest('Iceri aktarilacak satir bulunamadi.');
   if (rows.length > 5000) throw badRequest('Tek seferde en fazla 5000 satir aktarilabilir.');
 
-  const result = { created: 0, updated: 0, categoriesCreated: 0, errors: [] };
+  // FIYAT GECERLILIK TARIHI.
+  //
+  // Satis fiyati TARIHE BAGLI cozumlenir: bir sayim kesinlesirken o sayimin
+  // GUNUNDE gecerli olan fiyat kullanilir. Toplu yukleme her zaman "bugun"
+  // yazsaydi, 19 Ekim'de sayilmis bir donemin fiyatlari bugun girilince
+  // sayima yansimaz ve ciro sifir kalirdi. Tarihi cagiran belirler;
+  // verilmezse bugun.
+  const priceDate = date(ctx.body.priceEffectiveFrom, 'Fiyat gecerlilik tarihi', { def: today() })
+    || today();
+
+  const result = { created: 0, updated: 0, categoriesCreated: 0, errors: [], priceEffectiveFrom: priceDate };
   tx(() => {
     // Kategori adlarini id'ye cevir; olmayan kategoriyi olustur
     const categories = new Map(
@@ -841,14 +851,14 @@ productRoutes.post('/bulk-import', async (ctx) => {
               `INSERT INTO price_history (product_id, campus_id, old_purchase, new_purchase, old_sale, new_sale, effective_date, changed_by)
                VALUES (?, NULL, ?, ?, ?, ?, ?, ?)`,
               [existing.id, existing.purchase_price, data.purchasePrice,
-               existing.sale_price, data.salePrice, today(), ctx.user.id]
+               existing.sale_price, data.salePrice, priceDate, ctx.user.id]
             );
           }
           // Satis fiyati TARIHLI listeye de yazilir; yoksa toplu yuklemeyle
           // degisen fiyatin ne zamandan gecerli oldugu kayitsiz kalirdi.
           setDatedPrice({
             productId: existing.id, salePrice: data.salePrice,
-            effectiveFrom: today(), note: 'Excel ile toplu yukleme', userId: ctx.user.id,
+            effectiveFrom: priceDate, note: 'Excel ile toplu yukleme', userId: ctx.user.id,
           });
           result.updated += 1;
         } else {
@@ -862,11 +872,11 @@ productRoutes.post('/bulk-import', async (ctx) => {
           insert(
             `INSERT INTO price_history (product_id, campus_id, old_purchase, new_purchase, old_sale, new_sale, effective_date, changed_by)
              VALUES (?, NULL, NULL, ?, NULL, ?, ?, ?)`,
-            [id, data.purchasePrice, data.salePrice, today(), ctx.user.id]
+            [id, data.purchasePrice, data.salePrice, priceDate, ctx.user.id]
           );
           setDatedPrice({
             productId: id, salePrice: data.salePrice,
-            effectiveFrom: today(), note: 'Excel ile toplu yukleme', userId: ctx.user.id,
+            effectiveFrom: priceDate, note: 'Excel ile toplu yukleme', userId: ctx.user.id,
           });
           result.created += 1;
         }
