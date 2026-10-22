@@ -87,6 +87,7 @@ function upgradeExistingSchema() {
   rebuildIfMissing('products', "'HAMMADDE'");   // SATIN_ALINAN/URETILEN -> + HAMMADDE
   rebuildIfMissing('users', "'MUHASEBE'");      // roller -> + MUHASEBE (on muhasebe)
   backfillProductPrices();
+  sifirFiyatSatirlariniTemizle();
   tightenPaymentCampus();
   alisFiyatlariniKdvDahilYap();
 }
@@ -233,23 +234,27 @@ function tightenPaymentCampus() {
 function backfillProductPrices() {
   if (!tableExists('product_prices') || !tableExists('products')) return;
 
+  // Fiyati olmayan urune satir YAZILMAZ: ₺0 bir fiyat degil, "tanimsiz"
+  // demektir ve takvimde sonradan girilen dogru fiyati golgeler
+  // (bkz. setDatedPrice, routes/products.js).
   const urunler = db.prepare(
     `SELECT p.id, p.sale_price, DATE(p.created_at) AS gun
        FROM products p
-      WHERE NOT EXISTS (SELECT 1 FROM product_prices pp WHERE pp.product_id = p.id AND pp.campus_id IS NULL)`
+      WHERE p.sale_price > 0
+        AND NOT EXISTS (SELECT 1 FROM product_prices pp WHERE pp.product_id = p.id AND pp.campus_id IS NULL)`
   ).all();
   for (const u of urunler) {
     db.prepare(
       `INSERT INTO product_prices (product_id, campus_id, sale_price, effective_from, note)
        VALUES (?, NULL, ?, ?, 'Mevcut fiyat (listeye aktarildi)')`
-    ).run(u.id, u.sale_price ?? 0, u.gun || '2000-01-01');
+    ).run(u.id, u.sale_price, u.gun || '2000-01-01');
   }
 
   // Kampuse ozel fiyatlar da listeye tasinir
   const kampus = tableExists('campus_products') ? db.prepare(
     `SELECT cp.campus_id, cp.product_id, cp.sale_price, DATE(p.created_at) AS gun
        FROM campus_products cp JOIN products p ON p.id = cp.product_id
-      WHERE cp.sale_price IS NOT NULL
+      WHERE cp.sale_price > 0
         AND NOT EXISTS (SELECT 1 FROM product_prices pp
                          WHERE pp.product_id = cp.product_id AND pp.campus_id = cp.campus_id)`
   ).all() : [];
@@ -262,6 +267,30 @@ function backfillProductPrices() {
 
   const toplam = urunler.length + kampus.length;
   if (toplam) console.log(`[SEMA] ${toplam} satis fiyati tarihli fiyat listesine aktarildi.`);
+}
+
+/**
+ * TAKVIMDEKI ₺0 FIYAT SATIRLARINI SILER. Tekrar calistirilabilir.
+ *
+ * Satis fiyati tarihe gore cozulur: o gune kadarki EN SON satir gecerlidir.
+ * ₺0 bir fiyat degil "henuz tanimlanmadi" demektir; takvimde durursa
+ * kendisinden ONCE girilmis dogru fiyati golgeler. Sahada tam bu oldu:
+ * 1 Eylul'den gecerli ₺40 girildi ama 16 Ekim tarihli ₺0 satiri onu
+ * ezdigi icin ekranda fiyat ₺0 kaldi.
+ *
+ * Bu satirlar gercek bir fiyat gecmisi tasimadigi icin silinmeleri
+ * gecmisi degistirmez; yalnizca yanlis golgelemeyi kaldirir. Kartlardaki
+ * sutun degerine DOKUNULMAZ, hangi urunun fiyatsiz oldugu orada durur.
+ */
+function sifirFiyatSatirlariniTemizle() {
+  if (!tableExists('product_prices')) return;
+  const n = db.prepare('SELECT COUNT(*) AS n FROM product_prices WHERE sale_price <= 0').get().n;
+  if (!n) return;
+  db.prepare('DELETE FROM product_prices WHERE sale_price <= 0').run();
+  console.log(
+    `[SEMA] Fiyat takviminden ${n} adet ₺0 satiri kaldirildi; `
+    + 'bunlar daha once girilmis dogru fiyatlari golgeliyordu.'
+  );
 }
 
 /** Eski veritabanlarina sonradan eklenen sutunlar. Tekrar calistirilabilir. */

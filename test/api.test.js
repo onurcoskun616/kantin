@@ -1754,6 +1754,33 @@ describe('Toplu ice aktarma', () => {
     assert.equal(urun.sale_price, 25);
   });
 
+  // SAHADAN: 1 Eylul'den gecerli ₺40 girildi, ama urun 16 Ekim'de fiyatsiz
+  // acildigi icin takvimde ₺0 satiri vardi ve onu golgeledi. ₺0 bir fiyat
+  // degil "tanimsiz" demektir; takvime hic yazilmamalidir.
+  test('fiyatsiz acilan urun takvime ₺0 satiri BIRAKMAZ', async () => {
+    const u = await ok('POST', '/api/products', {
+      name: 'Fiyatsız Açılan Ürün', unit: 'ADET', vatRate: 1, salePrice: 0,
+    });
+    const fiyatlar = await ok('GET', `/api/products/${u.id}/prices`);
+    assert.equal(fiyatlar.items.length, 0, '₺0 icin takvim satiri yazilmamali');
+
+    // Gecmise donuk dogru fiyat artik golgelenmeden gecerli olmali
+    await ok('POST', `/api/products/${u.id}/prices`, { salePrice: 40, effectiveFrom: daysAgo(50) });
+    const sonra = await ok('GET', `/api/products/${u.id}/prices`);
+    assert.equal(sonra.items.length, 1);
+    assert.equal(sonra.items[0].sale_price, 40);
+    assert.equal((await ok('GET', `/api/products?search=Fiyatsız Açılan Ürün`)).items[0].sale_price, 40);
+  });
+
+  test('takvime ₺0 girilmek istenirse SEBEBI soylenir', async () => {
+    const u = await ok('POST', '/api/products', {
+      name: 'Sıfır Fiyat Denemesi', unit: 'ADET', vatRate: 1, salePrice: 25,
+    });
+    const r = await api('POST', `/api/products/${u.id}/prices`, { salePrice: 0 });
+    assert.equal(r.status, 400);
+    assert.match(r.data.error, /HAMMADDE|pasife/, r.data.error);
+  });
+
   test('toplu yuklemede tarih verilmezse bugun kullanilir', async () => {
     const r = await ok('POST', '/api/products/bulk-import', {
       items: [{ barcode: 'IMP-BUGUN', name: 'Tarihsiz Fiyat Ürünü', purchasePrice: 10, salePrice: 30, vatRate: 1 }],

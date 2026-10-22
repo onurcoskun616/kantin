@@ -903,6 +903,14 @@ productRoutes.post('/bulk-import', async (ctx) => {
  * @returns yazilan satir
  */
 function setDatedPrice({ productId, campusId = null, salePrice, effectiveFrom, note = null, userId }) {
+  // ₺0 BIR FIYAT DEGILDIR, "henuz tanimlanmadi" demektir -- ve takvime
+  // yazilirsa ZEHIRLER: fiyat cozumlemesi tarihe gore EN SON satiri alir,
+  // yani 16 Ekim tarihli bir ₺0 satiri, 1 Eylul tarihli dogru ₺40'i
+  // golgeler. Satis fiyati bos birakilarak acilan her urun kartta boyle
+  // bir satir birakiyordu; sonradan girilen dogru fiyat tutmuyordu.
+  //
+  // Sutun yine 0 kalir (tanimsiz); yalnizca TAKVIME satir yazilmaz.
+  if (!(salePrice > 0)) return null;
   const tarih = effectiveFrom || today();
   // Ayni gune ikinci kez fiyat girilirse sonuncusu gecerlidir
   run(
@@ -959,6 +967,14 @@ productRoutes.post('/:id/prices', async (ctx) => {
   const id = Number(ctx.params.id);
   if (!get('SELECT id FROM products WHERE id = ?', [id])) throw notFound('Urun bulunamadi.');
   const salePrice = num(ctx.body.salePrice, 'Satis fiyati', { required: true, min: 0, max: 1e6 });
+  // Takvime ₺0 yazilamaz (bkz. setDatedPrice): sessizce yutmak yerine
+  // sebebini soyleriz, yoksa kullanici fiyati girdim sanir.
+  if (!(salePrice > 0)) {
+    throw badRequest(
+      '₺0 bir satis fiyati degildir. Urun satilmiyorsa kartini HAMMADDE yapin ya da pasife alin; '
+      + 'satiliyorsa gercek raf fiyatini yazin.'
+    );
+  }
   const effectiveFrom = date(ctx.body.effectiveFrom, 'Gecerlilik tarihi', { def: today() }) || today();
   const campusId = ctx.body.campusId ? assertCampusAccess(ctx.user, ctx.body.campusId) : null;
   const note = str(ctx.body.note, 'Aciklama', { max: 200 });
