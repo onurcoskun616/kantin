@@ -44,8 +44,14 @@ describe('Teshis araci', () => {
     urun(6, 'ayran', 'ADET', 12, 30);
     // SAGLIKLI kart: hicbir listede olmamali
     urun(7, 'Sağlıklı Ürün', 'ADET', 20, 50);
+    // ACILIS sayiminda "satilmis" gorunen kalem: SATIS DEGILDIR, devirdir
+    urun(8, 'Devir Kalemi', 'ADET', 10, 0);
+    // Kurusu TAM olan ucuz fiyat: bozuk DEGILDIR, listeye dusmemeli
+    urun(9, 'Tekli Sakız', 'ADET', 1, 2.5);
+    // HAMMADDE'nin satis fiyati olmaz; eksiklik sayilmamali
+    urun(10, 'Un', 'KG', 30, 0, 'HAMMADDE');
 
-    for (const [pid, qty] of [[1, 2], [2, 4], [4, 144], [7, 10]]) {
+    for (const [pid, qty] of [[1, 2], [2, 4], [4, 144], [7, 10], [8, 50], [10, 25]]) {
       calistir(
         `INSERT INTO stock_movements (campus_id, product_id, movement_type, quantity, unit_cost, movement_date)
          VALUES (1, ?, 'ALIS', ?, 1, '2026-10-01')`, [pid, qty]
@@ -77,6 +83,16 @@ describe('Teshis araci', () => {
                                 sold_qty, purchase_price, sale_price, vat_rate)
        VALUES (1, 7, 10, 4, -6, 6, 20, 50, 1)`
     );
+    // ACILIS (devir) sayimi: farki satis sayilmamali
+    calistir(
+      `INSERT INTO counts (id, campus_id, count_date, count_type, status, is_opening)
+       VALUES (2, 1, '2026-09-30', 'DONEM', 'KESINLESMIS', 1)`
+    );
+    calistir(
+      `INSERT INTO count_lines (count_id, product_id, expected_qty, counted_qty, diff_qty,
+                                sold_qty, purchase_price, sale_price, vat_rate)
+       VALUES (2, 8, 50, 2, -48, 48, 10, 0, 1)`
+    );
     db.close();
 
     rapor = execFileSync('node', ['scripts/veri-teshis.mjs', dbPath], { encoding: 'utf8' });
@@ -104,6 +120,24 @@ describe('Teshis araci', () => {
     assert.match(b, /ciroya ₺0,00/);
   });
 
+  // Esenyurt raporunda 5.120 PAKET "satilmis" gorundu: oysa o kampuste
+  // yalnizca ACILIS sayimi vardi. Acilista fark satis degil devirdir;
+  // rapor olmayan bir ciro kaybi uydurmamali.
+  test('2 — ACILIS sayimindaki farki SATIS saymaz', () => {
+    const b = bolum(2);
+    assert.doesNotMatch(b, /GERÇEKLEŞEN.*Devir Kalemi/);
+    assert.doesNotMatch(b, /48 ADET satılmış/);
+    assert.match(b, /AÇILIŞ \(devir\) sayımları hariçtir/);
+  });
+
+  test('2 — fiyati girilmeyi bekleyen karti ONCEDEN uyarir', () => {
+    const b = bolum(2);
+    assert.match(b, /RİSKLİ · #4 ETİ ÇİK/);
+    assert.match(b, /sayım kesinleşirse ciroya ₺0,00 yazılır/);
+    // HAMMADDE'nin satis fiyati olmaz: eksiklik sayilmamali
+    assert.doesNotMatch(b, /RİSKLİ · #10 Un/);
+  });
+
   test('3 — mukerrer kartlari gruplar', () => {
     const b = bolum(3);
     assert.match(b, /#5/);
@@ -114,6 +148,14 @@ describe('Teshis araci', () => {
     const b = bolum(4);
     assert.match(b, /ÇİZİ 70 GR\.24 AD\./);
     assert.match(b, /birim KUTU/);
+  });
+
+  // Gercek raporda ₺2,00 yara bandi ve ₺2,50 sakiz "bozuk" listesine
+  // dusuyordu: olcut fiyatin KUCUK olmasi degil, kurusa sigmamasidir.
+  test('5 — kurusu TAM olan ucuz fiyati bozuk SAYMAZ', () => {
+    const b = bolum(5);
+    assert.doesNotMatch(b, /Tekli Sakız/);
+    assert.doesNotMatch(b, /Sağlıklı Ürün/);
   });
 
   test('5 — bozuk ondalikli satis fiyatini isaretler', () => {
@@ -164,7 +206,8 @@ describe('Teshis araci', () => {
 
   test('veritabanini DEGISTIRMEZ', () => {
     const db = new DatabaseSync(dbPath, { readOnly: true });
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM products').get().n, 7);
+    // Kurulumda 10 kart yazildi; rapor hicbirine dokunmamali
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM products').get().n, 10);
     db.close();
     assert.match(rapor, /Veritabani degistirilmedi/);
   });

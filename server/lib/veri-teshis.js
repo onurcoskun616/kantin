@@ -84,29 +84,63 @@ export function veriTeshisi(all) {
 
   /* 2 ---------------------------------------------------------------- */
   {
-    const satirlar = all(`
+    // ACILIS (devir) sayimlari HARIC. Acilista fark satis degildir: stok
+    // sifirdan kurulurken beklenen ile sayilan arasindaki fark devir
+    // duzeltmesidir, raftan cikis degil. Ciro raporlari da acilis
+    // sayimlarini saymaz (is_opening = 0); burada da saymamak gerekir,
+    // yoksa rapor olmayan bir ciro kaybi uydurur.
+    const satilan = all(`
       SELECT k.name AS kampus, c.count_date, p.name AS urun, p.unit,
              l.sold_qty, l.purchase_price
         FROM count_lines l
-        JOIN counts c ON c.id = l.count_id AND c.status = 'KESINLESMIS'
+        JOIN counts c ON c.id = l.count_id
+         AND c.status = 'KESINLESMIS' AND c.is_opening = 0
         JOIN campuses k ON k.id = c.campus_id
         JOIN products p ON p.id = l.product_id
        WHERE l.sold_qty > 0 AND COALESCE(l.sale_price, 0) <= 0
        ORDER BY k.name, l.sold_qty * l.purchase_price DESC`);
     let toplam = 0;
-    const bulgular = satirlar.map((r) => {
+    const bulgular = satilan.map((r) => {
       const maliyet = r.sold_qty * r.purchase_price;
       toplam += maliyet;
       return {
-        baslik: `${r.kampus} · ${r.count_date} · ${r.urun}`,
+        tur: 'gerceklesen',
+        baslik: `GERÇEKLEŞEN · ${r.kampus} · ${r.count_date} · ${r.urun}`,
         detay: `${sayi(r.sold_qty)} ${r.unit} satılmış · maliyeti ${tl(maliyet)} · ciroya ₺0,00`,
         maliyet: Math.round(maliyet * 100) / 100,
       };
     });
-    ekle(2, 'Satılmış ama satış fiyatı tanımsız',
-      'Kesinleşmiş sayımlarda raftan çıkmış ama satış fiyatı 0 olan kalemler. '
-      + 'Beklenen ciroya SIFIR TL yazılmıştır.', bulgular,
-      bulgular.length ? `Toplam maliyet ${tl(toplam)}` : null);
+
+    // Henuz kesinlesmemis ama ayni kaybi uretecek kartlar: stok hareketi
+    // var, satis fiyati yok. Sayim kesinlesince ciroya ₺0 yazilacak.
+    // Bunlari ONCEDEN gostermek, kesinlestirmeden duzeltme sansi verir.
+    const fiyatsiz = all(`
+      SELECT p.id, p.name, p.unit, ROUND(SUM(m.quantity), 3) AS stok,
+             COUNT(m.id) AS hareket
+        FROM products p JOIN stock_movements m ON m.product_id = p.id
+       WHERE p.is_active = 1 AND COALESCE(p.sale_price, 0) <= 0
+         AND p.product_type <> 'HAMMADDE'
+       GROUP BY p.id ORDER BY p.name`);
+    for (const r of fiyatsiz) {
+      bulgular.push({
+        tur: 'riskli',
+        productId: r.id,
+        baslik: `RİSKLİ · #${r.id} ${r.name}`,
+        detay: `satış fiyatı tanımsız · stok ${sayi(r.stok)} ${r.unit}`
+          + ` · ${r.hareket} hareket · sayım kesinleşirse ciroya ₺0,00 yazılır`,
+      });
+    }
+
+    const ozetSatir = [];
+    if (satilan.length) ozetSatir.push(`Gerçekleşen kayıp: ${satilan.length} kalem, maliyeti ${tl(toplam)}`);
+    if (fiyatsiz.length) ozetSatir.push(`Fiyatı girilmeyi bekleyen: ${fiyatsiz.length} kart`);
+    ekle(2, 'Satış fiyatı tanımsız kalemler',
+      'İki tür bulgu: GERÇEKLEŞEN — kesinleşmiş DÖNEM sayımında raftan çıkmış ama satış '
+      + 'fiyatı 0 olan kalemler; beklenen ciroya SIFIR TL yazılmıştır. RİSKLİ — stok '
+      + 'hareketi olan ama satış fiyatı tanımsız kartlar; sayım kesinleşince aynı kayıp '
+      + 'bunlarda da oluşur, şimdi düzeltilebilir. AÇILIŞ (devir) sayımları hariçtir: '
+      + 'orada fark satış değil, devir düzeltmesidir.', bulgular,
+      ozetSatir.join(' · ') || null);
   }
 
   /* 3 ---------------------------------------------------------------- */
@@ -153,22 +187,25 @@ export function veriTeshisi(all) {
 
   /* 5 ---------------------------------------------------------------- */
   {
+    // Olcut ONDALIKTIR, fiyatin kucuk olmasi degil. Onceki surum "5 TL'den
+    // dusuk" olanlari listeliyordu; ₺2,00 yara bandi ve ₺2,50 sakiz gibi
+    // DOGRU fiyatlar da listeye duserek yanlis alarm veriyordu. Kurusa
+    // yuvarlandiginda degisen fiyat elle girilmis olamaz: bir bolme
+    // isleminin artigi demektir (or. 50 / 18 = 2,777778).
     const satirlar = all(`
       SELECT id, name, unit, sale_price FROM products
-       WHERE is_active = 1 AND sale_price > 0 AND sale_price < 5
+       WHERE is_active = 1 AND sale_price > 0 AND ROUND(sale_price, 2) <> sale_price
        ORDER BY sale_price`);
-    const bulgular = satirlar.map((r) => {
-      const bozuk = String(r.sale_price).split('.')[1]?.length > 2;
-      return {
-        productId: r.id,
-        baslik: `#${r.id} ${r.name}`,
-        detay: `${r.sale_price}${bozuk ? '  ← ondalık bozuk' : ''}`,
-        ondalikBozuk: Boolean(bozuk),
-      };
-    });
+    const bulgular = satirlar.map((r) => ({
+      productId: r.id,
+      baslik: `#${r.id} ${r.name}`,
+      detay: `${r.sale_price}  ← ondalık bozuk (kuruşa yuvarlanmışı ${tl(r.sale_price)})`,
+      ondalikBozuk: true,
+    }));
     ekle(5, 'Satış fiyatı bozuk görünen kartlar',
-      'Koli fiyatının paket adedine bölünmüş hali gibi duran, kuruş seviyesinde '
-      + 'ondalıklı satış fiyatları.', bulgular);
+      'Kuruşa yuvarlandığında değişen satış fiyatları: elle böyle bir fiyat girilmez, '
+      + 'koli fiyatının paket adedine bölünmüş hali olabilir. Doğru perakende fiyatını '
+      + 'elle yazın.', bulgular);
   }
 
   /* 6 ---------------------------------------------------------------- */
@@ -210,12 +247,17 @@ export function veriTeshisi(all) {
        ORDER BY pu.document_date DESC, l.unit_price DESC`);
     const bulgular = satirlar.map((r) => {
       const ipucu = adAdetIpucu(r.urun)[0];
+      // Kiyas KARTIN satis fiyatidir. O fiyat bozuksa (5. bolum) satir
+      // haksiz yere suclu gorunur: sebep faturada degil, kartta olabilir.
+      const kiyasBozuk = Math.round(r.sale_price * 100) / 100 !== r.sale_price;
       return {
         baslik: `${r.document_date} · ${r.document_no || '(no yok)'} · ${r.kampus} · ${r.tedarikci}`,
         detay: `${r.urun}: ${sayi(r.quantity)} ${r.unit} × ${tl(r.unit_price)}`
           + ` (satış ${tl(r.sale_price)})`
-          + (ipucu ? `  → ÷${ipucu} = ${tl(r.unit_price / ipucu)}` : ''),
+          + (ipucu ? `  → ÷${ipucu} = ${tl(r.unit_price / ipucu)}` : '')
+          + (kiyasBozuk ? '  ⚠ kartın satış fiyatı da bozuk — ÖNCE onu düzeltin' : ''),
         carpan: ipucu ?? null,
+        kiyasBozuk,
       };
     });
     ekle(7, 'Fatura satırı koli girilmiş olabilir',
