@@ -246,12 +246,20 @@ export function veriTeshisi(all) {
         FROM products p JOIN stock_movements m ON m.product_id = p.id
        WHERE p.is_active = 1 AND UPPER(p.unit) IN ('KUTU','PAKET','KOLI')
        GROUP BY p.id ORDER BY p.name`);
-    const bulgular = satirlar.map((r) => ({
-      productId: r.id,
-      baslik: `#${r.id} ${r.name}`,
-      detay: `birim ${r.unit} · stok ${sayi(r.stok)} · ${r.hareket} hareket`
-        + ` · satış ${tl(r.sale_price)}`,
-    }));
+    const bulgular = satirlar.map((r) => {
+      // Adindaki ambalaj adedi, cevrim carpanini ararken ilk bakilacak yer.
+      // KESIN DEGIL: "36,5GRx24x6" gibi adlarda hem 24 hem 6 gecer, hangisinin
+      // bir KUTU oldugunu ad soylemez. Bu yuzden hepsi aday olarak yazilir.
+      const ipuclari = adAdetIpucu(r.name);
+      return {
+        productId: r.id,
+        baslik: `#${r.id} ${r.name}`,
+        detay: `birim ${r.unit} · stok ${sayi(r.stok)} · ${r.hareket} hareket`
+          + ` · satış ${tl(r.sale_price)}`
+          + (ipuclari.length ? `  → ad ipucu: 1 ${r.unit} = ${ipuclari.join(' ya da ')} adet?` : ''),
+        carpanAdaylari: ipuclari,
+      };
+    });
     ekle(4, 'Birimi KUTU/PAKET olan, kullanımdaki kartlar',
       'Stok adet üzerinden sayılıyorsa bu kartların birimi ADET olmalıdır; aksi halde '
       + 'miktar ve fiyat koli bazında kalır. Stok şu an 0 olsa da geçmiş hareketleri '
@@ -285,25 +293,45 @@ export function veriTeshisi(all) {
   {
     const kampusler = all('SELECT id, name FROM campuses WHERE is_active = 1 ORDER BY name');
     const bulgular = kampusler.map((k) => {
+      // LIMIT YOK. Onceki surum son 5 sayima bakiyordu; devir sayimi
+      // genelde EN ESKI olandir, yani tam da gozden kacani oydu.
       const s = all(`
-        SELECT status, is_opening, count_date FROM counts
+        SELECT id, status, is_opening, count_date FROM counts
          WHERE campus_id = ? AND count_type = 'DONEM'
-         ORDER BY count_date DESC, id DESC LIMIT 5`, [k.id]);
-      const kesin = s.filter((x) => x.status === 'KESINLESMIS');
-      const sayilan = kesin.filter((x) => !x.is_opening);
+         ORDER BY count_date DESC, id DESC`, [k.id]);
+
+      // DEVIR (acilis) ayri yazilir. Devir kesinlesmeden donem sayimini
+      // kesinlestirmek, gecmis yildan kalan stogu "fazla" gosterir:
+      // beklenen miktar sifirdan baslar, sayilan ise dolu cikar.
+      const acilis = s.filter((x) => x.is_opening);
+      const acilisKesin = acilis.find((x) => x.status === 'KESINLESMIS');
+      const devir = acilisKesin ? `devir ✓ ${acilisKesin.count_date}`
+        : (acilis.length
+          ? `DEVİR SAYIMI KESİNLEŞMEMİŞ (${acilis[0].count_date} · ${acilis[0].status})`
+          : 'DEVİR SAYIMI YOK');
+
+      const sayilan = s.filter((x) => x.status === 'KESINLESMIS' && !x.is_opening);
       const durum = sayilan.length ? `son dönem sayımı ${sayilan[0].count_date}`
-        : (kesin.length ? `yalnızca AÇILIŞ sayımı (${kesin[0].count_date})`
-          : 'kesinleşmiş sayım YOK');
-      const acik = s.find((x) => x.status !== 'KESINLESMIS');
+        : 'kesinleşmiş dönem sayımı YOK';
+
+      // Acik sayimlarin HEPSI yazilir: biri kesinlestirilirken otekinin
+      // varligindan haberdar olmak gerekir.
+      const acik = s.filter((x) => x.status !== 'KESINLESMIS')
+        .map((x) => `${x.count_date} (${x.status}${x.is_opening ? ', DEVİR' : ''})`);
+
       return {
         campusId: k.id,
         baslik: k.name,
-        detay: durum + (acik ? `  · açık sayım: ${acik.count_date} (${acik.status})` : ''),
-        sorunlu: !sayilan.length,
+        detay: `${durum} · ${devir}`
+          + (acik.length ? `  · açık sayım: ${acik.join(' , ')}` : ''),
+        sorunlu: !sayilan.length || !acilisKesin,
       };
     });
     ekle(6, 'Kampüs sayım durumu',
-      'Satış/maliyet/kâr sütunları kesinleşmiş DÖNEM sayımından gelir.', bulgular);
+      'Satış/maliyet/kâr sütunları kesinleşmiş DÖNEM sayımından gelir. DEVİR (açılış) '
+      + 'sayımı o kampüsün başlangıç stoğunu kurar; devir kesinleşmeden dönem sayımını '
+      + 'kesinleştirirseniz beklenen miktar sıfırdan başlar ve eldeki mal "fazla" çıkar.',
+      bulgular);
   }
 
   /* 7 ---------------------------------------------------------------- */

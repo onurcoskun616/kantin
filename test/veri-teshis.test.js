@@ -25,6 +25,8 @@ describe('Teshis araci', () => {
 
     const calistir = (sql, p = []) => db.prepare(sql).run(...p);
     calistir("INSERT INTO campuses (id, name, code, is_active) VALUES (1, 'Teşhis Kampüsü', 'TSH', 1)");
+    // Hic sayimi olmayan ikinci kampus: "DEVIR SAYIMI YOK" bunun icin
+    calistir("INSERT INTO campuses (id, name, code, is_active) VALUES (2, 'Devirsiz Kampüs', 'DVZ', 1)");
     calistir("INSERT INTO suppliers (id, name, tax_no) VALUES (1, 'Teşhis Tedarikçi', '1234567890')");
 
     const urun = (id, name, unit, purchase, sale, type = 'SATIN_ALINAN') => calistir(
@@ -54,9 +56,11 @@ describe('Teshis araci', () => {
     urun(11, 'Tarihi Geç Fiyat', 'ADET', 10, 0);
     // Fiyati SAYIMDAN ONCE gecerli: sorun yok
     urun(12, 'Tarihi Erken Fiyat', 'ADET', 10, 0);
+    // Adinda ambalaj adedi GECEN, birimi KUTU kalmis kart: 4. bolum ipucu vermeli
+    urun(13, 'TEST GOFRET 40GRx12', 'KUTU', 10, 50);
 
     for (const [pid, qty] of [[1, 2], [2, 4], [4, 144], [7, 10], [8, 50], [10, 25],
-      [11, 20], [12, 20]]) {
+      [11, 20], [12, 20], [13, 8]]) {
       calistir(
         `INSERT INTO stock_movements (campus_id, product_id, movement_type, quantity, unit_cost, movement_date)
          VALUES (1, ?, 'ALIS', ?, 1, '2026-10-01')`, [pid, qty]
@@ -179,6 +183,9 @@ describe('Teshis araci', () => {
     const b = bolum(4);
     assert.match(b, /ÇİZİ 70 GR\.24 AD\./);
     assert.match(b, /birim KUTU/);
+    // Cevrim carpanini ararken ilk bakilacak yer adindaki ambalaj adedidir
+    assert.match(b, /TEST GOFRET 40GRx12/);
+    assert.match(b, /ad ipucu: 1 KUTU = 12 adet\?/);
   });
 
   // Gercek raporda ₺2,00 yara bandi ve ₺2,50 sakiz "bozuk" listesine
@@ -200,6 +207,19 @@ describe('Teshis araci', () => {
     const b = bolum(6);
     assert.match(b, /Teşhis Kampüsü/);
     assert.match(b, /son dönem sayımı 2026-10-20/);
+  });
+
+  // Devir sayimi EN ESKI sayimdir; onceki surum son 5 sayima baktigi icin
+  // tam da onu kacirabiliyordu. Devir kesinlesmeden donem sayimi
+  // kesinlesirse gecmis yildan kalan stok "fazla" cikar.
+  test('6 — DEVIR sayimini ayrica yazar', () => {
+    const b = bolum(6);
+    assert.match(b, /devir ✓ 2026-09-30/);
+    assert.match(b, /DEVİR SAYIMI YOK/, 'hic sayimi olmayan kampus ayrica isaretlenmeli');
+  });
+
+  test('6 — acik sayimlari da yazar', () => {
+    assert.match(bolum(6), /açık sayım: 2026-10-19 \(SAYILDI\)/);
   });
 
   test('7 — koli girilmis fatura satirini bulur', () => {
@@ -238,7 +258,7 @@ describe('Teshis araci', () => {
   test('veritabanini DEGISTIRMEZ', () => {
     const db = new DatabaseSync(dbPath, { readOnly: true });
     // Kurulumda 10 kart yazildi; rapor hicbirine dokunmamali
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM products').get().n, 12);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM products').get().n, 13);
     db.close();
     assert.match(rapor, /Veritabani degistirilmedi/);
   });
