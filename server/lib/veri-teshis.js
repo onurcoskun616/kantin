@@ -90,7 +90,7 @@ export function veriTeshisi(all) {
     // sayimlarini saymaz (is_opening = 0); burada da saymamak gerekir,
     // yoksa rapor olmayan bir ciro kaybi uydurur.
     const satilan = all(`
-      SELECT k.name AS kampus, c.count_date, p.name AS urun, p.unit,
+      SELECT k.name AS kampus, c.count_date, p.name AS urun, p.unit, p.product_type,
              l.sold_qty, l.purchase_price
         FROM count_lines l
         JOIN counts c ON c.id = l.count_id
@@ -103,10 +103,20 @@ export function veriTeshisi(all) {
     const bulgular = satilan.map((r) => {
       const maliyet = r.sold_qty * r.purchase_price;
       toplam += maliyet;
+      // HAMMADDE'nin satis fiyati OLMAZ: rafa cikmaz, uretimde tukenir.
+      // Oyleyse burada gorunmesi "fiyat girilmemis" demek degil, "tuketimi
+      // uretime baglanmamis" demektir -- recete yok ya da uretim beyan
+      // edilmemis. Cozumu de farklidir: fiyat yazmak yanlis olurdu.
+      const hammadde = r.product_type === 'HAMMADDE';
       return {
         tur: 'gerceklesen',
+        hammadde,
         baslik: `GERÇEKLEŞEN · ${r.kampus} · ${r.count_date} · ${r.urun}`,
-        detay: `${sayi(r.sold_qty)} ${r.unit} satılmış · maliyeti ${tl(maliyet)} · ciroya ₺0,00`,
+        detay: `${sayi(r.sold_qty)} ${r.unit} ${hammadde ? 'eksilmiş' : 'satılmış'}`
+          + ` · maliyeti ${tl(maliyet)}`
+          + (hammadde
+            ? ' · HAMMADDE: reçetesi yok ya da üretim beyan edilmemiş, tüketim SATIŞ sayıldı'
+            : ' · ciroya ₺0,00'),
         maliyet: Math.round(maliyet * 100) / 100,
       };
     });
@@ -204,6 +214,10 @@ export function veriTeshisi(all) {
 
     const ozetSatir = [];
     if (satilan.length) ozetSatir.push(`Gerçekleşen kayıp: ${satilan.length} kalem, maliyeti ${tl(toplam)}`);
+    const hammaddeSayisi = bulgular.filter((b) => b.hammadde).length;
+    if (hammaddeSayisi) {
+      ozetSatir.push(`Bunların ${hammaddeSayisi} tanesi HAMMADDE: çözüm fiyat değil REÇETE`);
+    }
     if (fiyatsiz.length) ozetSatir.push(`Fiyatı girilmeyi bekleyen: ${fiyatsiz.length} kart`);
     ozetSatir.push('Fiyat SAYIM GÜNÜNE göre okunur: geçmiş bir dönemi düzeltirken '
       + 'geçerlilik tarihini sayım gününden önceye alın.');
@@ -211,8 +225,10 @@ export function veriTeshisi(all) {
       'İki tür bulgu: GERÇEKLEŞEN — kesinleşmiş DÖNEM sayımında raftan çıkmış ama satış '
       + 'fiyatı 0 olan kalemler; beklenen ciroya SIFIR TL yazılmıştır. RİSKLİ — stok '
       + 'hareketi olan ama satış fiyatı tanımsız kartlar; sayım kesinleşince aynı kayıp '
-      + 'bunlarda da oluşur, şimdi düzeltilebilir. AÇILIŞ (devir) sayımları hariçtir: '
-      + 'orada fark satış değil, devir düzeltmesidir.', bulgular,
+      + 'bunlarda da oluşur, şimdi düzeltilebilir. HAMMADDE ayrıca işaretlenir: onun satış '
+      + 'fiyatı olmaz, rafa çıkmaz; listede görünüyorsa eksik olan fiyat değil REÇETEDİR. '
+      + 'AÇILIŞ (devir) sayımları hariçtir: orada fark satış değil, devir düzeltmesidir.',
+      bulgular,
       ozetSatir.join(' · ') || null);
   }
 

@@ -24,7 +24,12 @@ const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
 const BASE = process.argv[2] || 'http://127.0.0.1:3000';
 
-const RUN = Date.now().toString(36).slice(-5).toUpperCase();
+// 'X' ELENIR. Base36 zaman damgasi "1X24B" gibi bir dizi uretebiliyor;
+// o zaman urun adi KAZARA ambalaj ipucu tasiyor ("x24"), yazilim cevrim
+// alanini 24 ile on-dolduruyor ve "Cevrim adedini girin" uyarisi hic
+// cikmiyor -- test de o uyariyi bekledigi icin dusuyordu. Yazilim dogru
+// davraniyordu; kusur testin rastgele adindaydi.
+const RUN = Date.now().toString(36).slice(-5).toUpperCase().replace(/X/g, 'Z');
 const AD = `MÜKERRER SU ${RUN}`;
 
 const b = await chromium.launch();

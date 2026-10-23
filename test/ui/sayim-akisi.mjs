@@ -19,7 +19,9 @@ const ADMIN = { email: 'admin@topkapiokullari.com', password: 'Kantin2026!' };
 // Test ayni veritabaninda tekrar calistirilabilsin diye her kosuda kendi
 // kampusunu ve onaylayanini olusturur: ayni gune ikinci bir donem sayimi
 // acilamadigi icin sabit kampusle ikinci kosu basarisiz oluyordu.
-const RUN = Date.now().toString(36).slice(-5).toUpperCase();
+// 'X' elenir: base36 damgasi "1X24B" uretirse urun adi KAZARA ambalaj
+// ipucu tasir ("x24") ve birim/cevrim mantigi yanilir.
+const RUN = Date.now().toString(36).slice(-5).toUpperCase().replace(/X/g, 'Z');
 const CAMPUS_CODE = `UIS${RUN}`;
 const APPROVER = { email: `onaylayan.${RUN}@topkapiokullari.com`, password: 'Onay123456' };
 

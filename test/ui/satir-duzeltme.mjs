@@ -23,7 +23,9 @@ const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
 const BASE = process.argv[2] || 'http://127.0.0.1:3000';
 
-const RUN = Date.now().toString(36).slice(-6).toUpperCase();
+// 'X' elenir: base36 damgasi "1X24B" uretirse urun adi KAZARA ambalaj
+// ipucu tasir ("x24") ve birim/cevrim mantigi yanilir.
+const RUN = Date.now().toString(36).slice(-6).toUpperCase().replace(/X/g, 'Z');
 const VKN = String(Date.now()).slice(-10);
 
 const b = await chromium.launch();

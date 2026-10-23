@@ -27,7 +27,9 @@ const BASE = process.argv[2] || 'http://127.0.0.1:3000';
 
 // Ayni veritabaninda tekrar calistirilabilsin diye belge no ve ETTN her
 // kosuda benzersiz: sistem ayni ETTN'yi ikinci kez kabul etmiyor.
-const RUN = Date.now().toString(36).slice(-6).toUpperCase();
+// 'X' elenir: base36 damgasi "1X24B" uretirse urun adi KAZARA ambalaj
+// ipucu tasir ("x24") ve birim/cevrim mantigi yanilir.
+const RUN = Date.now().toString(36).slice(-6).toUpperCase().replace(/X/g, 'Z');
 const DOC_NO = `QR${RUN}`;
 const ETTN = `7c1e45f0-aaaa-4bbb-8ccc-${RUN.toLowerCase().padEnd(12, '0')}`;
 const VKN = '1234567890';

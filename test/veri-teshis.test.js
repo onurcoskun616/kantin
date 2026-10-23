@@ -52,6 +52,9 @@ describe('Teshis araci', () => {
     urun(9, 'Tekli Sakız', 'ADET', 1, 2.5);
     // HAMMADDE'nin satis fiyati olmaz; eksiklik sayilmamali
     urun(10, 'Un', 'KG', 30, 0, 'HAMMADDE');
+    // Recetesiz tuketilen HAMMADDE: sayimda "satilmis" gorunur ama
+    // eksik olan FIYAT degil RECETEDIR
+    urun(14, 'Döner Ekmek', 'ADET', 9.59, 0, 'HAMMADDE');
     // Fiyati SAYIMDAN SONRA gecerli: o sayim icin fiyat YOK demektir
     urun(11, 'Tarihi Geç Fiyat', 'ADET', 10, 0);
     // Fiyati SAYIMDAN ONCE gecerli: sorun yok
@@ -60,7 +63,7 @@ describe('Teshis araci', () => {
     urun(13, 'TEST GOFRET 40GRx12', 'KUTU', 10, 50);
 
     for (const [pid, qty] of [[1, 2], [2, 4], [4, 144], [7, 10], [8, 50], [10, 25],
-      [11, 20], [12, 20], [13, 8]]) {
+      [11, 20], [12, 20], [13, 8], [14, 700]]) {
       calistir(
         `INSERT INTO stock_movements (campus_id, product_id, movement_type, quantity, unit_cost, movement_date)
          VALUES (1, ?, 'ALIS', ?, 1, '2026-10-01')`, [pid, qty]
@@ -91,6 +94,12 @@ describe('Teshis araci', () => {
       `INSERT INTO count_lines (count_id, product_id, expected_qty, counted_qty, diff_qty,
                                 sold_qty, purchase_price, sale_price, vat_rate)
        VALUES (1, 7, 10, 4, -6, 6, 20, 50, 1)`
+    );
+    // Recetesiz tuketilen hammadde ayni sayimda "satilmis" gorunuyor
+    calistir(
+      `INSERT INTO count_lines (count_id, product_id, expected_qty, counted_qty, diff_qty,
+                                sold_qty, purchase_price, sale_price, vat_rate)
+       VALUES (1, 14, 700, 84, -616, 616, 9.59, 0, 1)`
     );
     // Satis fiyati TARIHLIDIR: kesinlestirme sayimin GUNUNDE gecerli olani
     // kullanir. 22 Ekim'de girilen fiyat 19 Ekim sayimini kurtarmaz.
@@ -159,6 +168,18 @@ describe('Teshis araci', () => {
     assert.match(b, /Teşhis Kampüsü \(2026-10-19 sayımı\)/);
     // HAMMADDE'nin satis fiyati olmaz: eksiklik sayilmamali
     assert.doesNotMatch(b, /RİSKLİ · #10 Un/);
+  });
+
+  // Sahadan: DONER SANDVIC EKMEK 616 ADET "satilmis" cikti. Hammaddenin
+  // satis fiyati olmaz; ona fiyat yazmak yanlis olurdu. Eksik olan recete.
+  test('2 — HAMMADDE icin "fiyat yok" degil "RECETE yok" der', () => {
+    const b = bolum(2);
+    assert.match(b, /GERÇEKLEŞEN.*Döner Ekmek/);
+    assert.match(b, /616 ADET eksilmiş/, 'hammadde "satilmis" denmemeli');
+    assert.match(b, /HAMMADDE: reçetesi yok ya da üretim beyan edilmemiş/);
+    assert.match(b, /1 tanesi HAMMADDE: çözüm fiyat değil REÇETE/);
+    // Satilan urun icin mesaj DEGISMEMELI
+    assert.match(b, /136 ADET satılmış/);
   });
 
   // Fiyat KARTTAN degil TARIHTEN okunur: kesinlestirme sayimin gunundeki
@@ -258,7 +279,7 @@ describe('Teshis araci', () => {
   test('veritabanini DEGISTIRMEZ', () => {
     const db = new DatabaseSync(dbPath, { readOnly: true });
     // Kurulumda 10 kart yazildi; rapor hicbirine dokunmamali
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM products').get().n, 13);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM products').get().n, 14);
     db.close();
     assert.match(rapor, /Veritabani degistirilmedi/);
   });

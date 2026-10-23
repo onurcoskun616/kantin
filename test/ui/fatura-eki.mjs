@@ -24,7 +24,9 @@ const SAMPLE = new URL('../../docs/sablonlar/ornek-efatura.xml', import.meta.url
 // Ayni veritabaninda tekrar calistirilabilmesi icin her kosuda belge no ve
 // ETTN benzersiz yapilir: sistem ayni faturayi iki kez kabul etmedigi icin
 // sabit ornek dosya ikinci kosuda reddedilirdi.
-const RUN = Date.now().toString(36).slice(-6).toUpperCase();
+// 'X' elenir: base36 damgasi "1X24B" uretirse urun adi KAZARA ambalaj
+// ipucu tasir ("x24") ve birim/cevrim mantigi yanilir.
+const RUN = Date.now().toString(36).slice(-6).toUpperCase().replace(/X/g, 'Z');
 const DOC_NO = `GIB${RUN}`;
 const XML_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'kantin-efatura-')), 'fatura.xml');
 fs.writeFileSync(XML_PATH, fs.readFileSync(SAMPLE, 'utf8')
